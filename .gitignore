@@ -1,0 +1,25 @@
+# Build artifacts
+*.o
+*.ll
+build/
+
+# Fixpoint / bootstrap scratch binaries
+torvc_new
+tn1
+tn2
+tn3
+g2.ll
+g3.ll
+
+# Backups from apply-scripts
+*.bak
+*.bak[0-9]
+*.bak[0-9][0-9]
+
+# Compiler scratch (in case it ever lands in-tree)
+fn_chunk.ll
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store

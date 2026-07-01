@@ -1,0 +1,428 @@
+// torvc_main.tv -  full self-hosting Torvik compiler 
+
+apply torvik_lexer;
+apply torvik_parser;
+apply torvik_codegen;
+apply diag;
+
+df is_version_arg(c: str) -> i64 {
+    check c == "version" { return 1; }
+    check c == "--version" { return 1; }
+    check c == "-V" { return 1; }
+    return 0;
+}
+
+df is_help_arg(c: str) -> i64 {
+    check c == "help" { return 1; }
+    check c == "--help" { return 1; }
+    check c == "-h" { return 1; }
+    return 0;
+}
+
+df main() -> void {
+    fixed argc: i64 = args();
+    check argc < 2 {
+        print_version();
+        echo!("");
+        print_help();
+        exit(0);
+    }
+    fixed first: str = args_get(1);
+    fixed vf: i64 = is_version_arg(first);
+    check vf == 1 { print_version(); exit(0); }
+    fixed hf: i64 = is_help_arg(first);
+    check hf == 1 { print_help(); exit(0); }
+
+    set srcfile: str = "";
+    set outpath: str = str_concat(sys_home_dir(), "/tv_out");
+    set verbose: i64 = 0;
+    set quiet: i64 = 0;
+    set final: i64 = 0;
+    set i: i64 = 1;
+    whilst i < argc {
+        fixed a: str = args_get(i);
+        check a == "-o" {
+            check i + 1 < argc { outpath = args_get(i + 1); i += 1; }
+        } fallback {
+            check a == "-v" || a == "--verbose" { verbose = 1; } fallback {
+                check a == "-q" || a == "--quiet" { quiet = 1; } fallback {
+                    check a == "--final" { final = 1; } fallback {
+                        check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    check len(srcfile) == 0 {
+        echo!("torvc: no source file given (try 'torvc --help')"); exit(1);
+    }
+    compile_file(srcfile, outpath, verbose, quiet, final);
+}
+
+df resolve_asset(devpath: str, name: str) -> str {
+    fixed devfull: str = str_concat(devpath, name);
+    fixed rc: i64 = sys_run(str_concat("test -e ", devfull));
+    check rc == 0 { return devfull; }
+    return str_concat(str_concat(sys_home_dir(), "/.torvik/lib/"), name);
+}
+
+df ver_match(line: str, key: str) -> str {
+    fixed t: str = trim(line);
+    fixed kl: i64 = len(key);
+    check len(t) > kl {
+        check starts(t, key) {
+            fixed after: i64 = byte_at(t, kl);
+            check after == 32 || after == 61 || after == 9 {
+                set j: i64 = kl;
+                whilst j < len(t) {
+                    check byte_at(t, j) == 61 { return trim(substr(t, j + 1, len(t))); }
+                    j += 1;
+                }
+            }
+        }
+    }
+    return "";
+}
+
+df ver_field(content: str, key: str) -> str {
+    set found: str = "";
+    set buf: str = "";
+    set i: i64 = 0;
+    fixed n: i64 = len(content);
+    whilst i < n {
+        fixed c: i64 = byte_at(content, i);
+        check c == 10 {
+            check len(found) == 0 { fixed v: str = ver_match(buf, key); check len(v) > 0 { found = v; } }
+            buf = "";
+        } fallback {
+            buf = str_concat(buf, substr(content, i, i + 1));
+        }
+        i += 1;
+    }
+    check len(found) == 0 { fixed v2: str = ver_match(buf, key); check len(v2) > 0 { found = v2; } }
+    return found;
+}
+
+df version_of(key: str) -> str {
+    fixed content: str = readfile(resolve_asset("./", "VERSION"));
+    fixed v: str = ver_field(content, key);
+    check len(v) > 0 { return v; }
+    return "0.0.0";
+}
+
+df print_version() -> void {
+    echo!(str_concat(str_concat("torvik v", version_of("torvik")), str_concat(" / torvc v", version_of("torvc"))));
+}
+
+df print_help() -> void {
+    echo!("torvc - the Torvik compiler");
+    echo!("");
+    echo!("USAGE:");
+    echo!("  torvc <file.tv> [-o <out>] [-v] [--final]   Compile a Torvik source file");
+    echo!("  torvc version | --version | -V              Show version");
+    echo!("  torvc help | --help | -h                    Show this help");
+    echo!("");
+    echo!("FLAGS:");
+    echo!("  -v, --verbose   Show compile details (bytes, tokens, IR path)");
+    echo!("  -q, --quiet     Suppress all output except errors");
+    echo!("  --final         Production build (-O3, stripped)");
+}
+
+// Scan for an unterminated string literal. Returns the 0-based offset of the
+// opening quote of the first string with no closing quote, or -1 if all strings
+// are balanced. Mirrors the lexer: skips // comments, honors backslash escapes.
+// True for characters that may appear in an identifier.
+df ident_char(c: i64) -> i64 {
+    check is_alpha(c) { return 1; }
+    check is_digit(c) { return 1; }
+    check c == 95 { return 1; }
+    return 0;
+}
+
+// Single source-ordered pass that collects ALL of the source-level errors we
+// can detect before lexing — unterminated string literals and function
+// declarations missing their parameter list — pushing each (offset, message)
+// onto the parallel out-lists. Skips // comments. After an unterminated string
+// it resumes past that line so later errors are still reported.
+df collect_source_errors(source: str, offs: list<i64>, msgs: list<str>) -> void {
+    fixed n: i64 = len(source);
+    set pos: i64 = 0;
+    whilst pos < n {
+        fixed c: i64 = byte_at(source, pos);
+        check c == 47 && pos + 1 < n && byte_at(source, pos + 1) == 47 {
+            pos += 2;
+            whilst pos < n && byte_at(source, pos) != 10 { pos += 1; }
+            continue;
+        }
+        check c == 34 || c == 39 {
+            fixed q: i64 = c;
+            fixed open_at: i64 = pos;
+            pos += 1;
+            set closed: i64 = 0;
+            whilst pos < n {
+                fixed ch: i64 = byte_at(source, pos);
+                check ch == 92 { pos += 2; continue; }
+                check ch == 10 { break; }
+                check ch == q { closed = 1; pos += 1; break; }
+                pos += 1;
+            }
+            check closed == 0 {
+                push(offs, open_at);
+                push(msgs, "unterminated string literal (missing closing quote)");
+                whilst pos < n && byte_at(source, pos) != 10 { pos += 1; }
+            }
+            continue;
+        }
+        // 'df' as a whole word: 'd','f', non-identifier on both sides.
+        check c == 100 && pos + 1 < n && byte_at(source, pos + 1) == 102 {
+            set prev_ok: i64 = 1;
+            check pos > 0 && ident_char(byte_at(source, pos - 1)) == 1 { prev_ok = 0; }
+            set after_ok: i64 = 0;
+            check pos + 2 < n && ident_char(byte_at(source, pos + 2)) == 0 { after_ok = 1; }
+            check prev_ok == 1 && after_ok == 1 {
+                set q: i64 = pos + 2;
+                set go: i64 = 1;
+                whilst go == 1 {
+                    check q >= n { go = 0; }
+                    check go == 1 {
+                        fixed wc: i64 = byte_at(source, q);
+                        check wc == 32 || wc == 9 || wc == 10 || wc == 13 { q += 1; } fallback { go = 0; }
+                    }
+                }
+                fixed name_start: i64 = q;
+                whilst q < n && ident_char(byte_at(source, q)) == 1 { q += 1; }
+                fixed name_end: i64 = q;
+                set go2: i64 = 1;
+                whilst go2 == 1 {
+                    check q >= n { go2 = 0; }
+                    check go2 == 1 {
+                        fixed wc2: i64 = byte_at(source, q);
+                        check wc2 == 32 || wc2 == 9 || wc2 == 10 || wc2 == 13 { q += 1; } fallback { go2 = 0; }
+                    }
+                }
+                check name_end > name_start {
+                    check q < n && byte_at(source, q) != 40 {
+                        push(offs, name_end);
+                        push(msgs, "expected '(' after function name — a function needs a parameter list, e.g. df name() -> type { ... }");
+                    }
+                }
+                pos = q;
+                continue;
+            }
+        }
+        pos += 1;
+    }
+}
+
+// ── Module import resolution ─────────────────────────────────────────────────
+// Imports are declared with `apply` directives at the top of a file:
+//   apply name;            -> include src/name.tv (project module), falling back
+//                             to the installed library dir (std + Rune libraries)
+//   apply name::func;      -> same file; selective scoping is reserved for a
+//   apply name::{a, b};      later release, so the whole module is included now
+//   apply extern "path";   -> include a .tv file by path, outside of src/
+// Resolution is recursive (a module's own imports are pulled in first, so
+// dependencies precede dependents) and de-duplicated by resolved path, so the
+// same module is never emitted twice no matter how many files import it. A file
+// with no `apply` directives — any ordinary user program — gets nothing prepended.
+
+df import_seen(seen: list<str>, path: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(seen) {
+        check line_eq(seen[i], path) == 1 { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+df is_name_char(c: i64) -> i64 {
+    check c >= 48 && c <= 57 { return 1; }
+    check c >= 65 && c <= 90 { return 1; }
+    check c >= 97 && c <= 122 { return 1; }
+    check c == 95 { return 1; }
+    return 0;
+}
+
+// Resolve one `base::item` reference to a file path and append it to `out`.
+// A submodule file (base/item.tv) wins; otherwise the whole module (base.tv) is
+// used, so the reserved `name::func` selective form still pulls in name.tv.
+// `apply std...` is hard-refused when the project is built with no_std.
+df add_import(out: list<str>, base: str, item: str, no_std: i64) -> void {
+    check no_std == 1 && line_eq(base, "std") == 1 {
+        echo!("torvc: `apply std` is disabled — torvik.rune sets std = no_std");
+        exit(1);
+    }
+    check len(item) > 0 {
+        fixed subp: str = resolve_asset("./src/", str_concat(base, str_concat("/", str_concat(item, ".tv"))));
+        check sys_run(str_concat("test -e ", subp)) == 0 { push(out, subp); return; }
+    }
+    fixed _modp: str = resolve_asset("./src/", str_concat(base, ".tv"));
+    fixed _mex: i64 = sys_run(str_concat("test -e ", _modp));
+    check _mex == 0 { } fallback {
+        echo!(str_concat(str_concat("torvc: error: unknown module '", base), "' — no matching .tv file found in ./src or ~/.torvik/lib"));
+        exit(1);
+    }
+    push(out, _modp);
+}
+
+// Parse a single trimmed `apply ...` line into zero or more resolved file paths.
+df resolve_import_paths(ln: str, no_std: i64, out: list<str>) -> void {
+    check starts(ln, "apply extern ") {
+        set q1s: i64 = 0;       whilst q1s < len(ln) && byte_at(ln, q1s) != 34 { q1s += 1; }
+        set q1e: i64 = q1s + 1; whilst q1e < len(ln) && byte_at(ln, q1e) != 34 { q1e += 1; }
+        check q1e < len(ln) { push(out, substr(ln, q1s + 1, q1e)); }
+        return;
+    }
+    check starts(ln, "apply ") {
+        fixed rest: str = substr(ln, 6, len(ln));
+        set j: i64 = 0;
+        whilst j < len(rest) && is_name_char(byte_at(rest, j)) == 1 { j += 1; }
+        fixed base: str = substr(rest, 0, j);
+        check len(base) == 0 { return; }
+        // plain `apply base;`?
+        check j + 1 >= len(rest) || byte_at(rest, j) != 58 || byte_at(rest, j + 1) != 58 {
+            add_import(out, base, "", no_std);
+            return;
+        }
+        // `apply base::...`
+        fixed after: str = substr(rest, j + 2, len(rest));
+        check starts(after, "{") {
+            // brace list: base::{a, b, c}
+            set ke: i64 = 1; whilst ke < len(after) && byte_at(after, ke) != 125 { ke += 1; }
+            fixed inner: str = substr(after, 1, ke);
+            fixed items: list<str> = split(inner, ",");
+            set k: i64 = 0;
+            whilst k < len(items) {
+                fixed it: str = trim(items[k]);
+                check len(it) > 0 { add_import(out, base, it, no_std); }
+                k += 1;
+            }
+            return;
+        }
+        // single item: base::item
+        set m: i64 = 0;
+        whilst m < len(after) && is_name_char(byte_at(after, m)) == 1 { m += 1; }
+        add_import(out, base, substr(after, 0, m), no_std);
+        return;
+    }
+}
+
+// Read the project's std policy from torvik.rune (in the working directory).
+// Returns 1 when the manifest sets `std = no_std`, disabling the standard library
+// project-wide; 0 when there is no manifest or std is enabled.
+df project_no_std() -> i64 {
+    fixed rc: i64 = sys_run("test -e torvik.rune");
+    check rc != 0 { return 0; }
+    fixed content: str = readfile("torvik.rune");
+    fixed lines: list<str> = split(content, "\n");
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        fixed t: str = trim(lines[i]);
+        check starts(t, "std") && str_contains(t, "no_std") { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+df build_prelude(source: str, seen: list<str>, no_std: i64) -> str {
+    set prelude: str = "";
+    fixed lines: list<str> = split(source, "\n");
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        fixed ln: str = trim(lines[i]);
+        set paths: list<str> = list_new();
+        resolve_import_paths(ln, no_std, paths);
+        set pi: i64 = 0;
+        whilst pi < len(paths) {
+            fixed incpath: str = paths[pi];
+            check import_seen(seen, incpath) == 0 {
+                push(seen, incpath);
+                fixed dep_src: str = readfile(incpath);
+                check len(dep_src) == 0 {
+                    echo!(str_concat("torvc: cannot resolve import -> ", incpath));
+                    exit(1);
+                }
+                // dependency-first: the module's own imports, then the module
+                prelude = str_concat(prelude, build_prelude(dep_src, seen, no_std));
+                prelude = str_concat(prelude, dep_src);
+            }
+            pi += 1;
+        }
+        i += 1;
+    }
+    return prelude;
+}
+
+df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> void {
+    // A missing input file is a user error, not a toolchain fault — give a clean
+    // message instead of letting readfile raise a runtime panic.
+    check diag_path_exists(path) == 0 {
+        echo!(str_concat(str_concat("torvc: cannot open '", path), "' — no such file"));
+        exit(1);
+    }
+    fixed source: str = readfile(path);
+    fixed _t_build0: i64 = time_ms();
+    fixed slen: i64   = len(source);
+    check slen == 0 { echo!("torvc: file is empty or could not be read — nothing to compile"); exit(1); }
+    set err_offs: list<i64> = list_new();
+    set err_msgs: list<str> = list_new();
+    collect_source_errors(source, err_offs, err_msgs);
+    check len(err_offs) > 0 {
+        set ei: i64 = 0;
+        whilst ei < len(err_offs) {
+            render_source_error(source, path, err_offs[ei], err_msgs[ei]);
+            echo!("");
+            ei += 1;
+        }
+        echo!(fmt("{} error(s) found.", len(err_offs)));
+        exit(1);
+    }
+
+    // clang is a required external dependency; a missing clang is an environment
+    // problem, not a Torvik bug. Detect it here so the TVC-5001/5002 internal codes
+    // are reserved for genuine compiler/linker failures.
+    check sys_run("command -v clang > /dev/null 2>&1") != 0 {
+        echo!("torvc: clang not found in PATH — Torvik needs clang to compile.");
+        echo!("  install clang (your distribution's 'clang' package) and try again.");
+        exit(1);
+    }
+
+    check verbose == 1 {
+        echo!(str_concat("-- Compiling ", path));
+        echo!(str_concat("   ", str_concat(int_to_str(slen), " bytes")));
+    }
+
+    set import_seen_set: list<str> = list_new();
+    fixed no_std: i64 = project_no_std();
+    fixed combined:  str = str_concat(build_prelude(source, import_seen_set, no_std), source);
+
+    fixed tokens: list<i64> = lex_source(combined);
+    fixed ntok: i64 = len(tokens);
+    check verbose == 1 { echo!(str_concat("   ", str_concat(int_to_str(ntok), " tokens"))); }
+
+    fixed ir_path: str = "/tmp/.torvik/torvik_compile.ll";
+    sys_run("mkdir -p /tmp/.torvik");
+    codegen_tokens(tokens, combined, ir_path, path);
+    // Safety net: codegen always writes IR for a well-formed program. A missing IR
+    // file means codegen bailed without emitting — an internal fault distinct from
+    // "clang rejected the IR" (TVC-5002). Catch it as a coded internal error.
+    check diag_path_exists(ir_path) == 0 {
+        internal_error("TVC-9001", "codegen", path, "code generation produced no IR output");
+    }
+    check verbose == 1 { echo!(str_concat("   IR -> ", ir_path)); }
+
+    fixed rt_src: str = resolve_asset("./runtime/", "torvik_runtime.c");
+    fixed rt_compile: str = str_concat(str_concat("clang -Wno-override-module -ffunction-sections -fdata-sections -c ", rt_src), " -o /tmp/.torvik/torvik_runtime.o");
+    fixed rt_result: i64 = sys_run(rt_compile);
+    check rt_result != 0 { internal_error("TVC-5001", "runtime-build", path, "bundled runtime C failed to compile (clang error)"); }
+
+    set optflags: str = "-O2";
+    check final == 1 { optflags = "-O3 -Wl,-s"; }
+    fixed cmd: str = str_concat(str_concat(str_concat("clang ", optflags), " -Wno-override-module -Wl,--gc-sections "), str_concat(ir_path, str_concat(" /tmp/.torvik/torvik_runtime.o -o ", out)));
+    fixed result: i64 = sys_run(cmd);
+    check result == 0 {
+        check verbose == 1 { echo!(str_concat("   BIN -> ", out)); }
+        check quiet == 0 { echo!(fmt("Compiled successfully! ({})", diag_fmt_secs(time_ms() - _t_build0))); }
+    } fallback { internal_error("TVC-5002", "ir-build", path, "clang rejected generated IR or linking failed"); }
+}

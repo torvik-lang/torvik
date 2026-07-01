@@ -1,0 +1,48 @@
+// std/strings.tv — Torvik standard library: strings
+//
+// Part of the standard library. Bring in with `apply std::strings;` or `apply std;`.
+// Pure Torvik over core builtins.
+
+// Join a list of strings with a separator (the inverse of split).
+df join(parts: list<str>, sep: str) -> str {
+    set out: str = "";
+    set i: i64 = 0;
+    whilst i < len(parts) {
+        check i > 0 { out = str_concat(out, sep); }
+        out = str_concat(out, parts[i]);
+        i += 1;
+    }
+    return out;
+}
+
+// Repeat a string n times.
+df repeat_str(s: str, n: i64) -> str {
+    set out: str = "";
+    set i: i64 = 0;
+    whilst i < n { out = str_concat(out, s); i += 1; }
+    return out;
+}
+
+// Left-pad a string to at least `width` characters using `pad`.
+df pad_left(s: str, width: i64, pad: str) -> str {
+    set out: str = s;
+    whilst len(out) < width { out = str_concat(pad, out); }
+    return out;
+}
+
+// Right-pad a string to at least `width` characters using `pad`.
+df pad_right(s: str, width: i64, pad: str) -> str {
+    set out: str = s;
+    whilst len(out) < width { out = str_concat(out, pad); }
+    return out;
+}
+
+// Content equality for two strings. The `==` operator already content-compares
+// when both operands are known to be strings (declared vars, params, literals,
+// bound values) — which is most code. str_eq guarantees content comparison for
+// ANY strings, including raw index/call results whose element type isn't yet
+// statically tracked (e.g. comparing list<str> elements inline). Inside here the
+// parameters are typed `str`, so `==` always lowers to a content comparison.
+df str_eq(a: str, b: str) -> bool {
+    return a == b;
+}

@@ -1,0 +1,264 @@
+// diag.tv — Torvik internal diagnostics.
+//
+// Structured reporting of INTERNAL faults (a bug inside torvc or rune, or user
+// input that drove the toolchain into a state it should have handled) with a
+// stable error code, plus an append-only maintainer log under
+// ~/.torvik/diagnostics.log. Ordinary user errors — a syntax mistake, a missing
+// source file, a type error in user code — are NOT internal faults: they keep
+// their normal messages and are never logged here.
+//
+// Privacy: the log records only a code, phase, the input file PATH, a short
+// internal message, a timestamp, and the tool+version. It never records the
+// contents of a user's source.
+//
+// Shared by torvc and rune, so this module depends only on builtins (no
+// codegen/rune helpers) and is fully self-contained.
+
+// ── constants (as functions; modules avoid top-level globals) ────────────────
+df diag_retain_secs() -> i64 { return 2592000; }   // keep 30 days of entries
+df diag_max_entries() -> i64 { return 500; }       // hard backstop on size
+df diag_exit_code()  -> i64 { return 70; }         // sysexits EX_SOFTWARE
+
+// Format an elapsed millisecond count as seconds with two decimals, e.g.
+// 420 -> "0.42s", 1300 -> "1.30s", 50 -> "0.05s". Used by build-time reporting.
+df diag_fmt_secs(ms: i64) -> str {
+    set m: i64 = ms;
+    check m < 0 { m = 0; }
+    fixed whole: i64 = m / 1000;
+    fixed cs: i64 = (m % 1000) / 10;
+    set frac: str = int_to_str(cs);
+    check cs < 10 { frac = str_concat("0", frac); }
+    return str_concat(str_concat(int_to_str(whole), "."), str_concat(frac, "s"));
+}
+
+// ── small self-contained string helpers ──────────────────────────────────────
+df diag_streq(a: str, b: str) -> i64 {
+    fixed la: i64 = len(a);
+    check la != len(b) { return 0; }
+    set i: i64 = 0;
+    whilst i < la {
+        check byte_at(a, i) != byte_at(b, i) { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
+df diag_dequote(v: str) -> str {
+    fixed n: i64 = len(v);
+    check n >= 2 {
+        set q1: i64 = 0; check starts(v, "\"") { q1 = 1; }
+        set q2: i64 = 0; check ends(v, "\"") { q2 = 1; }
+        check q1 == 1 {
+            check q2 == 1 { return substr(v, 1, n - 1); }
+        }
+    }
+    return v;
+}
+
+// Replace tabs/newlines with spaces so a field can't break the line format.
+df diag_clean_field(s: str) -> str {
+    fixed a: str = replace(s, "\t", " ");
+    return replace(a, "\n", " ");
+}
+
+// ── filesystem locations ─────────────────────────────────────────────────────
+df diag_dir() -> str { return str_concat(sys_home_dir(), "/.torvik"); }
+df diag_log_path() -> str { return str_concat(diag_dir(), "/diagnostics.log"); }
+df diag_config_path() -> str { return str_concat(diag_dir(), "/config.rune"); }
+
+df diag_path_exists(path: str) -> i64 {
+    fixed cmd: str = str_concat(str_concat("test -e '", path), "'");
+    fixed r: i64 = sys_run(cmd);
+    check r == 0 { return 1; }
+    return 0;
+}
+
+df diag_read_or_empty(path: str) -> str {
+    check diag_path_exists(path) == 1 { return readfile(path); }
+    return "";
+}
+
+// ── config: diagnostics on/off (default ON) ──────────────────────────────────
+// Minimal `key = value` scan over the INI-style config.rune; value is trimmed
+// and de-quoted. Returns "" when absent.
+df diag_cfg_value(content: str, key: str) -> str {
+    fixed lines: list<str> = split(content, "\n");
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        fixed ln: str = trim(lines[i]);
+        check starts(ln, key) {
+            fixed rest: str = trim(substr(ln, len(key), len(ln)));
+            check starts(rest, "=") {
+                fixed raw: str = trim(substr(rest, 1, len(rest)));
+                return diag_dequote(raw);
+            }
+        }
+        i += 1;
+    }
+    return "";
+}
+
+// Disabled only when explicitly turned off; otherwise on.
+df diag_enabled() -> i64 {
+    fixed cfg: str = diag_read_or_empty(diag_config_path());
+    check len(cfg) == 0 { return 1; }
+    fixed v: str = diag_cfg_value(cfg, "diagnostics");
+    check len(v) == 0 { return 1; }
+    check diag_streq(v, "false") == 1 { return 0; }
+    check diag_streq(v, "off") == 1 { return 0; }
+    check diag_streq(v, "no") == 1 { return 0; }
+    check diag_streq(v, "0") == 1 { return 0; }
+    return 1;
+}
+
+// ── tool + version for the entry ─────────────────────────────────────────────
+df diag_tool(code: str) -> str {
+    check starts(code, "RUNE") { return "rune"; }
+    return "torvc";
+}
+
+df diag_version() -> str {
+    set content: str = "";
+    fixed p1: str = str_concat(diag_dir(), "/lib/VERSION");
+    check diag_path_exists(p1) == 1 { content = readfile(p1); }
+    fallback {
+        check diag_path_exists("VERSION") == 1 { content = readfile("VERSION"); }
+    }
+    check len(content) == 0 { return "unknown"; }
+    fixed v: str = diag_cfg_value(content, "torvik");
+    check len(v) > 0 { return v; }
+    return "unknown";
+}
+
+// ── log entry + retention ────────────────────────────────────────────────────
+// epoch \t datetime \t tool version \t CODE \t phase \t input-path \t message
+df diag_make_entry(code: str, phase: str, srcfile: str, message: str, now: i64) -> str {
+    set e: str = int_to_str(now);
+    e = str_concat(e, str_concat("\t", datetime_str()));
+    e = str_concat(e, str_concat("\t", str_concat(diag_tool(code), str_concat(" ", diag_version()))));
+    e = str_concat(e, str_concat("\t", code));
+    e = str_concat(e, str_concat("\t", diag_clean_field(phase)));
+    e = str_concat(e, str_concat("\t", diag_clean_field(srcfile)));
+    e = str_concat(e, str_concat("\t", diag_clean_field(message)));
+    return e;
+}
+
+df diag_line_epoch(ln: str) -> i64 {
+    fixed parts: list<str> = split(ln, "\t");
+    check len(parts) >= 1 { return toint(parts[0]); }
+    return 0;
+}
+
+// Drop entries older than 30 days, then cap to the most recent N.
+df diag_prune(content: str, now: i64) -> str {
+    check len(content) == 0 { return ""; }
+    fixed cutoff: i64 = now - diag_retain_secs();
+    fixed lines: list<str> = split(content, "\n");
+    set kept: list<str> = list_new();
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        fixed ln: str = lines[i];
+        check len(ln) > 0 {
+            fixed ep: i64 = diag_line_epoch(ln);
+            check ep >= cutoff { push(kept, ln); }
+        }
+        i += 1;
+    }
+    set startidx: i64 = 0;
+    fixed nk: i64 = len(kept);
+    check nk > diag_max_entries() { startidx = nk - diag_max_entries(); }
+    set out: str = "";
+    set j: i64 = startidx;
+    whilst j < len(kept) {
+        check len(out) > 0 { out = str_concat(out, "\n"); }
+        out = str_concat(out, kept[j]);
+        j += 1;
+    }
+    return out;
+}
+
+// ── public surface ───────────────────────────────────────────────────────────
+df diag_record(code: str, phase: str, srcfile: str, message: str) -> void {
+    fixed dir: str = diag_dir();
+    sys_run(str_concat(str_concat("mkdir -p '", dir), "'"));
+    fixed path: str = diag_log_path();
+    fixed now: i64 = time_now();
+    fixed pruned: str = diag_prune(diag_read_or_empty(path), now);
+    fixed entry: str = diag_make_entry(code, phase, srcfile, message, now);
+    set out: str = pruned;
+    check len(out) > 0 { out = str_concat(out, "\n"); }
+    out = str_concat(out, entry);
+    writefile(path, str_concat(out, "\n"));
+}
+
+// Report an internal fault: print a coded message, log it if enabled, exit 70.
+df internal_error(code: str, phase: str, srcfile: str, message: str) -> void {
+    echo!(fmt("{} internal error {} [{}]: {}", diag_tool(code), code, phase, message));
+    echo!(fmt("  this is a bug in the Torvik toolchain — please report code {}.", code));
+    check diag_enabled() == 1 { diag_record(code, phase, srcfile, message); }
+    exit(diag_exit_code());
+}
+
+// Helpers for `rune dev` log management.
+df diag_log_read() -> str { return diag_read_or_empty(diag_log_path()); }
+
+df diag_log_clear() -> void {
+    fixed path: str = diag_log_path();
+    check diag_path_exists(path) == 1 {
+        sys_run(str_concat(str_concat("rm -f '", path), "'"));
+    }
+}
+
+df diag_count(content: str) -> i64 {
+    check len(content) == 0 { return 0; }
+    fixed lines: list<str> = split(content, "\n");
+    set c: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        check len(lines[i]) > 0 { c += 1; }
+        i += 1;
+    }
+    return c;
+}
+
+// ── user-facing source diagnostics ───────────────────────────────────────────
+df diag_spaces(n: i64) -> str {
+    set s: str = "";
+    set i: i64 = 0;
+    whilst i < n { s = str_concat(s, " "); i += 1; }
+    return s;
+}
+
+// Render a user error with location and a caret, e.g.:
+//   error: unterminated string literal (missing closing quote)
+//    --> src/main.tv:4:7
+//      |
+//    4 | echo!("This is a test!);
+//      |       ^
+// `offset` is the 0-based byte offset in `source` of the offending character.
+df render_source_error(source: str, file: str, offset: i64, message: str) -> void {
+    fixed n: i64 = len(source);
+    set off: i64 = offset;
+    check off < 0 { off = 0; }
+    check off > n { off = n; }
+    // locate line number (1-based) and the start of that line
+    set line_no: i64 = 1;
+    set line_start: i64 = 0;
+    set i: i64 = 0;
+    whilst i < off {
+        check byte_at(source, i) == 10 { line_no += 1; line_start = i + 1; }
+        i += 1;
+    }
+    fixed col: i64 = off - line_start + 1;
+    // find the end of the line
+    set lend: i64 = line_start;
+    whilst lend < n && byte_at(source, lend) != 10 { lend += 1; }
+    fixed src_line: str = substr(source, line_start, lend);
+    fixed gutter: str = int_to_str(line_no);
+    fixed gpad: str = diag_spaces(len(gutter));
+    echo!(str_concat("error: ", message));
+    echo!(fmt("  --> {}:{}:{}", file, line_no, col));
+    echo!(str_concat(gpad, " |"));
+    echo!(str_concat(str_concat(gutter, " | "), src_line));
+    echo!(str_concat(str_concat(gpad, " | "), str_concat(diag_spaces(col - 1), "^")));
+}

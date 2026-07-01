@@ -1,0 +1,164 @@
+// torvik_version.tv — Torvik Version Management written in Torvik
+// The single source of truth for all Torvik versioning.
+
+
+// ─── Version constants ────────────────────────────────────────────────────────
+// Update ONLY these constants when releasing a new version of Torvik.
+
+// Single source of truth: repo-root VERSION (or ~/.torvik/lib/VERSION when installed).
+df tv_chomp(s: str) -> str { set n: i64 = len(s); set go: i64 = 1; whilst go == 0 { check n <= 0 { go = 0; } fallback { fixed c: i64 = byte_at(s, n - 1); check c == 10 || c == 13 || c == 32 || c == 9 { n -= 1; } fallback { go = 0; } } } return substr(s, 0, n); }
+df tv_match(line: str, key: str) -> str {
+    fixed t: str = trim(line);
+    fixed kl: i64 = len(key);
+    check len(t) > kl {
+        check starts(t, key) {
+            fixed after: i64 = byte_at(t, kl);
+            check after == 32 || after == 61 || after == 9 {
+                set j: i64 = kl;
+                whilst j < len(t) {
+                    check byte_at(t, j) == 61 { return trim(substr(t, j + 1, len(t))); }
+                    j += 1;
+                }
+            }
+        }
+    }
+    return "";
+}
+df tv_content() -> str {
+    fixed drc: i64 = sys_run("test -e VERSION");
+    check drc == 0 { return readfile("VERSION"); }
+    fixed inst: str = str_concat(sys_home_dir(), "/.torvik/lib/VERSION");
+    fixed irc: i64 = sys_run(str_concat("test -e ", inst));
+    check irc == 0 { return readfile(inst); }
+    return "";
+}
+df tv_get(key: str) -> str {
+    fixed content: str = tv_content();
+    set buf: str = ""; set i: i64 = 0; fixed n: i64 = len(content);
+    whilst i < n {
+        fixed c: i64 = byte_at(content, i);
+        check c == 10 { fixed v: str = tv_match(buf, key); check len(v) > 0 { return v; } buf = ""; } fallback { buf = str_concat(buf, substr(content, i, i + 1)); }
+        i += 1;
+    }
+    fixed vl: str = tv_match(buf, key); check len(vl) > 0 { return vl; }
+    return "0.0.0";
+}
+
+// ─── Version display ──────────────────────────────────────────────────────────
+
+df show_versions() -> void {
+    echo!("Torvik Ecosystem Versions");
+    echo!(str_concat("  torvik    v", str_concat(tv_get("torvik"), "   (language spec)")));
+    echo!(str_concat("  torvc     v", str_concat(tv_get("torvc"), "   (compiler)")));
+    echo!(str_concat("  rune      v", str_concat(tv_get("rune"), "   (package manager)")));
+    echo!(str_concat("  std       v", str_concat(tv_get("std"), "   (standard library)")));
+    echo!(str_concat("  icons     v", str_concat(tv_get("icons"), "   (icon / file-type assets)")));
+}
+
+// ─── RuneVer — Torvik version comparison ─────────────────────────────────────
+
+df parse_major(v: str) -> i64 {
+    fixed dot: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(v) && byte_at(v, i) != 46 {
+        i += 1;
+    }
+    return toint(substr(v, 0, i));
+}
+
+df parse_minor(v: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(v) && byte_at(v, i) != 46 { i += 1; }
+    i += 1;  // skip first dot
+    fixed start: i64 = i;
+    whilst i < len(v) && byte_at(v, i) != 46 { i += 1; }
+    return toint(substr(v, start, i));
+}
+
+df parse_patch(v: str) -> i64 {
+    set i: i64 = 0;
+    set dots: i64 = 0;
+    whilst i < len(v) {
+        check byte_at(v, i) == 46 {
+            dots += 1;
+            check dots == 2 {
+                return toint(substr(v, i + 1, len(v)));
+            }
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+df version_gte(a: str, b: str) -> bool {
+    fixed a_major: i64 = parse_major(a);
+    fixed b_major: i64 = parse_major(b);
+    check a_major > b_major { return true; }
+    check a_major < b_major { return false; }
+    fixed a_minor: i64 = parse_minor(a);
+    fixed b_minor: i64 = parse_minor(b);
+    check a_minor > b_minor { return true; }
+    check a_minor < b_minor { return false; }
+    fixed a_patch: i64 = parse_patch(a);
+    fixed b_patch: i64 = parse_patch(b);
+    return a_patch >= b_patch;
+}
+
+df version_eq(a: str, b: str) -> bool {
+    return a == b;
+}
+
+df version_compatible(v: str, req: str) -> bool {
+    // ^1.2.0 means >=1.2.0 and <2.0.0
+    check starts(req, "^") {
+        fixed r: str = substr(req, 1, len(req));
+        fixed v_major: i64 = parse_major(v);
+        fixed r_major: i64 = parse_major(r);
+        check v_major != r_major { return false; }
+        return version_gte(v, r);
+    }
+    check starts(req, ">=") {
+        fixed r: str = substr(req, 2, len(req));
+        return version_gte(v, r);
+    }
+    check req == "*" { return true; }
+    return version_eq(v, req);
+}
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
+df main() -> void {
+    fixed argc: i64 = args();
+
+    check argc < 2 {
+        show_versions();
+        exit(0);
+    }
+
+    fixed cmd: str = args_get(1);
+
+    check cmd == "check" && argc >= 4 {
+        // torvik_version check 1.2.3 ^1.0.0
+        fixed v: str   = args_get(2);
+        fixed req: str = args_get(3);
+        check version_compatible(v, req) {
+            echo!(str_concat(v, str_concat(" satisfies ", req)));
+        } fallback {
+            echo!(str_concat(v, str_concat(" does NOT satisfy ", req)));
+            exit(1);
+        }
+        exit(0);
+    }
+
+    check cmd == "gte" && argc >= 4 {
+        fixed a: str = args_get(2);
+        fixed b: str = args_get(3);
+        check version_gte(a, b) {
+            echo!("true"); exit(0);
+        } fallback {
+            echo!("false"); exit(1);
+        }
+    }
+
+    show_versions();
+}

@@ -1,0 +1,63 @@
+// std/math.tv — Torvik standard library: math
+//
+// Part of the standard library. Bring in with `apply std::math;` (just this part)
+// or `apply std;` (the whole library). Pure Torvik over core builtins; adds no
+// runtime dependencies. Predicates return i64 (1 = true, 0 = false) until bool
+// lands as a usable type.
+
+// Integer power: base raised to a non-negative exponent.
+df pow(base: i64, exp: i64) -> i64 {
+    set result: i64 = 1;
+    set i: i64 = 0;
+    whilst i < exp { result *= base; i += 1; }
+    return result;
+}
+
+// Greatest common divisor (Euclid).
+df gcd(a: i64, b: i64) -> i64 {
+    set x: i64 = a;
+    set y: i64 = b;
+    check x < 0 { x = 0 - x; }
+    check y < 0 { y = 0 - y; }
+    whilst y != 0 {
+        set t: i64 = y;
+        y = x % y;
+        x = t;
+    }
+    return x;
+}
+
+// Least common multiple.
+df lcm(a: i64, b: i64) -> i64 {
+    check a == 0 { return 0; }
+    check b == 0 { return 0; }
+    fixed g: i64 = gcd(a, b);
+    fixed prod: i64 = (a / g) * b;
+    check prod < 0 { return 0 - prod; }
+    return prod;
+}
+
+// Clamp x into the inclusive range [lo, hi].
+df clamp(x: i64, lo: i64, hi: i64) -> i64 {
+    check x < lo { return lo; }
+    check x > hi { return hi; }
+    return x;
+}
+
+// Factorial (n!).
+df factorial(n: i64) -> i64 {
+    check n < 2 { return 1; }
+    return n * factorial(n - 1);
+}
+
+// 1 if n is even, else 0.
+df is_even(n: i64) -> i64 {
+    check n % 2 == 0 { return 1; }
+    return 0;
+}
+
+// 1 if n is odd, else 0.
+df is_odd(n: i64) -> i64 {
+    check n % 2 == 0 { return 0; }
+    return 1;
+}

@@ -1,0 +1,36 @@
+// std/list.tv — Torvik standard library: list<i64> helpers
+//
+// Part of the standard library. Bring in with `apply std::list;` or `apply std;`.
+// Pure Torvik over core builtins.
+
+// Build the list [start, stop) of consecutive integers.
+df range(start: i64, stop: i64) -> list<i64> {
+    set xs: list<i64> = list_new();
+    set i: i64 = start;
+    whilst i < stop { push(xs, i); i += 1; }
+    return xs;
+}
+
+// Sum of all elements.
+df sum(xs: list<i64>) -> i64 {
+    set total: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(xs) { total += xs[i]; i += 1; }
+    return total;
+}
+
+// Largest element (assumes a non-empty list).
+df list_max(xs: list<i64>) -> i64 {
+    set m: i64 = xs[0];
+    set i: i64 = 1;
+    whilst i < len(xs) { check xs[i] > m { m = xs[i]; } i += 1; }
+    return m;
+}
+
+// Smallest element (assumes a non-empty list).
+df list_min(xs: list<i64>) -> i64 {
+    set m: i64 = xs[0];
+    set i: i64 = 1;
+    whilst i < len(xs) { check xs[i] < m { m = xs[i]; } i += 1; }
+    return m;
+}

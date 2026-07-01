@@ -1,0 +1,691 @@
+// torvik_lexer.tv — Torvik Lexer written in Torvik
+
+
+fixed TOK_EOF:       i64 = 0;
+fixed TOK_IDENT:     i64 = 1;
+fixed TOK_INT:       i64 = 2;
+fixed TOK_FLOAT:     i64 = 3;
+fixed TOK_STRING:    i64 = 4;
+fixed TOK_BOOL:      i64 = 5;
+fixed KW_DF:         i64 = 100;
+fixed KW_TASK:       i64 = 101;
+fixed KW_SET:        i64 = 102;
+fixed KW_FIXED:      i64 = 103;
+fixed KW_RETURN:     i64 = 104;
+fixed KW_CHECK:      i64 = 105;
+fixed KW_FALLBACK:   i64 = 106;
+fixed KW_EACH:       i64 = 107;
+fixed KW_IN:         i64 = 108;
+fixed KW_UNTIL:      i64 = 109;
+fixed KW_WHEN:       i64 = 110;
+fixed KW_SHAPE:      i64 = 111;
+fixed KW_APPLY:      i64 = 112;
+fixed KW_GUARD:      i64 = 113;
+fixed KW_ECHO:       i64 = 114;
+fixed KW_ECHO_BANG:  i64 = 115;
+fixed KW_HALT:       i64 = 116;
+fixed KW_VOW:        i64 = 117;
+fixed KW_RUNE:       i64 = 118;
+fixed KW_OK:         i64 = 119;
+fixed KW_FAIL:       i64 = 120;
+fixed KW_TRUE:       i64 = 121;
+fixed KW_FALSE:      i64 = 122;
+fixed OP_PLUS:       i64 = 200;
+fixed OP_MINUS:      i64 = 201;
+fixed OP_STAR:       i64 = 202;
+fixed OP_SLASH:      i64 = 203;
+fixed OP_EQ:         i64 = 204;
+fixed OP_EQEQ:       i64 = 205;
+fixed OP_BANGEQ:     i64 = 206;
+fixed OP_LT:         i64 = 207;
+fixed OP_GT:         i64 = 208;
+fixed OP_LTEQ:       i64 = 209;
+fixed OP_GTEQ:       i64 = 210;
+fixed OP_ARROW:      i64 = 211;
+fixed OP_AMPAMP:     i64 = 212;
+fixed OP_PIPEPIPE:   i64 = 213;
+fixed OP_BANG:       i64 = 214;
+fixed OP_PLUSEQ:     i64 = 215;
+fixed OP_MINUSEQ:    i64 = 216;
+fixed OP_DOTDOT:     i64 = 217;
+fixed OP_PERCENT:    i64 = 218;
+fixed OP_AMP:        i64 = 219;
+fixed OP_PIPE:       i64 = 220;
+fixed OP_CARET:      i64 = 221;
+fixed OP_TILDE:      i64 = 222;
+fixed OP_SHL:        i64 = 223;
+fixed OP_SHR:        i64 = 224;
+fixed OP_STAREQ:     i64 = 225;
+fixed OP_SLASHEQ:    i64 = 226;
+fixed OP_PERCENTEQ:  i64 = 227;
+fixed OP_PLUSPLUS:   i64 = 228;
+fixed OP_TERNTHEN:   i64 = 229;
+fixed OP_TERNELSE:   i64 = 230;
+fixed OP_BOUND:      i64 = 231;
+fixed OP_KINDRED:    i64 = 232;
+fixed OP_WEAVE:      i64 = 233;
+fixed PUNCT_LPAREN:  i64 = 300;
+fixed PUNCT_RPAREN:  i64 = 301;
+fixed PUNCT_LBRACE:  i64 = 302;
+fixed PUNCT_RBRACE:  i64 = 303;
+fixed PUNCT_COMMA:   i64 = 304;
+fixed PUNCT_COLON:   i64 = 305;
+fixed PUNCT_SEMI:    i64 = 306;
+fixed PUNCT_DOT:     i64 = 307;
+fixed PUNCT_COLONCOLON: i64 = 308;
+fixed PUNCT_LBRACKET: i64 = 309;
+fixed PUNCT_RBRACKET: i64 = 310;
+
+fixed KW_CONTINUE: i64 = 123;
+fixed KW_BREAK:    i64 = 124;
+fixed KW_UNSAFE:     i64 = 125;
+
+df is_digit(c: i64) -> bool { return c >= 48 && c <= 57; }
+df is_alpha(c: i64) -> bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+}
+df is_alnum(c: i64) -> bool { return is_alpha(c) || is_digit(c); }
+df is_space(c: i64) -> bool { return c == 32 || c == 9 || c == 10 || c == 13; }
+
+df keyword_for(word: str) -> i64 {
+    check word == "df"       { return KW_DF; }
+    check word == "task"     { return KW_TASK; }
+    check word == "set"      { return KW_SET; }
+    check word == "fixed"    { return KW_FIXED; }
+    check word == "return"   { return KW_RETURN; }
+    check word == "check"    { return KW_CHECK; }
+    check word == "fallback" { return KW_FALLBACK; }
+    check word == "each"     { return KW_EACH; }
+    check word == "in"       { return KW_IN; }
+    check word == "whilst"   { return KW_UNTIL; }
+    check word == "when"     { return KW_WHEN; }
+    check word == "shape"    { return KW_SHAPE; }
+    check word == "apply"    { return KW_APPLY; }
+    check word == "guard"    { return KW_GUARD; }
+    check word == "echo"     { return KW_ECHO; }
+    check word == "halt"     { return KW_HALT; }
+    check word == "vow"      { return KW_VOW; }
+    check word == "rune"     { return KW_RUNE; }
+    check word == "true"     { return KW_TRUE; }
+    check word == "false"    { return KW_FALSE; }
+    check word == "continue" { return KW_CONTINUE; }
+    check word == "break"    { return KW_BREAK; }
+    check word == "unsafe"   { return KW_UNSAFE; }
+    return TOK_IDENT;
+}
+
+df get_token(tokens: list<i64>, i: i64) -> i64 { return tokens[i]; }
+df count_tokens(tokens: list<i64>) -> i64 { return len(tokens); }
+
+df lex_source(source: str) -> list<i64> {
+    set kinds: list<i64> = list_new();
+    fixed slen: i64 = len(source);
+    set pos: i64 = 0;
+    whilst pos < slen {
+        fixed c: i64 = byte_at(source, pos);
+        check is_space(c) { pos += 1; continue; }
+        check c == 47 {
+            check pos + 1 < slen {
+                fixed nc: i64 = byte_at(source, pos + 1);
+                check nc == 47 {
+                    pos += 2;
+                    whilst pos < slen && byte_at(source, pos) != 10 { pos += 1; }
+                    continue;
+                }
+            }
+        }
+        check c == 34 || c == 39 {
+            fixed q: i64 = c;
+            pos += 1;
+            whilst pos < slen && byte_at(source, pos) != q {
+                check byte_at(source, pos) == 92 { pos += 1; }
+                pos += 1;
+            }
+            push(kinds, TOK_STRING);
+            pos += 1;
+            continue;
+        }
+        check is_digit(c) {
+            whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
+                pos += 1;
+                whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+                push(kinds, TOK_FLOAT);
+                continue;
+            }
+            push(kinds, TOK_INT);
+            continue;
+        }
+        check is_alpha(c) {
+            fixed start: i64 = pos;
+            whilst pos < slen && is_alnum(byte_at(source, pos)) { pos += 1; }
+            fixed word: str = substr(source, start, pos);
+            fixed kw: i64 = keyword_for(word);
+            check kw == KW_ECHO && pos < slen && byte_at(source, pos) == 33 {
+                push(kinds, KW_ECHO_BANG); pos += 1; continue;
+            }
+            push(kinds, kw);
+            continue;
+        }
+        check c == 40  { push(kinds, PUNCT_LPAREN);   pos += 1; continue; }
+        check c == 41  { push(kinds, PUNCT_RPAREN);   pos += 1; continue; }
+        check c == 123 { push(kinds, PUNCT_LBRACE);   pos += 1; continue; }
+        check c == 125 { push(kinds, PUNCT_RBRACE);   pos += 1; continue; }
+        check c == 44  { push(kinds, PUNCT_COMMA);    pos += 1; continue; }
+        check c == 59  { push(kinds, PUNCT_SEMI);     pos += 1; continue; }
+        check c == 91  { push(kinds, PUNCT_LBRACKET); pos += 1; continue; }
+        check c == 93  { push(kinds, PUNCT_RBRACKET); pos += 1; continue; }
+        check c == 46 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 46 {
+                push(kinds, OP_DOTDOT); pos += 2; continue;
+            }
+            push(kinds, PUNCT_DOT); pos += 1; continue;
+        }
+        check c == 58 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 58 {
+                push(kinds, PUNCT_COLONCOLON); pos += 2; continue;
+            }
+            push(kinds, PUNCT_COLON); pos += 1; continue;
+        }
+        check c == 61 {
+            // =|= kindred (identity) — check 3-char form first
+            check pos + 2 < slen && byte_at(source, pos + 1) == 124 && byte_at(source, pos + 2) == 61 {
+                push(kinds, OP_KINDRED); pos += 3; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_EQEQ); pos += 2; continue;
+            }
+            push(kinds, OP_EQ); pos += 1; continue;
+        }
+        check c == 45 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_ARROW); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_MINUSEQ); pos += 2; continue;
+            }
+            push(kinds, OP_MINUS); pos += 1; continue;
+        }
+        check c == 43 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 43 {
+                push(kinds, OP_PLUSPLUS); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_PLUSEQ); pos += 2; continue;
+            }
+            push(kinds, OP_PLUS); pos += 1; continue;
+        }
+        check c == 33 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_TERNELSE); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_BANGEQ); pos += 2; continue;
+            }
+            push(kinds, OP_BANG); pos += 1; continue;
+        }
+        check c == 63 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_TERNTHEN); pos += 2; continue;
+            }
+            pos += 1; continue;
+        }
+        check c == 60 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 124 {
+                push(kinds, OP_BOUND); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 60 {
+                push(kinds, OP_SHL); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_LTEQ); pos += 2; continue;
+            }
+            push(kinds, OP_LT); pos += 1; continue;
+        }
+        check c == 62 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_SHR); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_GTEQ); pos += 2; continue;
+            }
+            push(kinds, OP_GT); pos += 1; continue;
+        }
+        check c == 42 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_STAREQ); pos += 2; continue;
+            }
+            push(kinds, OP_STAR);  pos += 1; continue;
+        }
+        check c == 47 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_SLASHEQ); pos += 2; continue;
+            }
+            push(kinds, OP_SLASH); pos += 1; continue;
+        }
+        check c == 37 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(kinds, OP_PERCENTEQ); pos += 2; continue;
+            }
+            push(kinds, OP_PERCENT); pos += 1; continue;
+        }
+        check c == 94 { push(kinds, OP_CARET); pos += 1; continue; }
+        check c == 126 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_WEAVE); pos += 2; continue;
+            }
+            push(kinds, OP_TILDE); pos += 1; continue;
+        }
+        check c == 38 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 38 {
+                push(kinds, OP_AMPAMP); pos += 2; continue;
+            }
+            push(kinds, OP_AMP); pos += 1; continue;
+        }
+        check c == 124 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 124 {
+                push(kinds, OP_PIPEPIPE); pos += 2; continue;
+            }
+            push(kinds, OP_PIPE); pos += 1; continue;
+        }
+        pos += 1;
+    }
+    push(kinds, TOK_EOF);
+    return kinds;
+}
+
+// hex digit -> 0..15, or -1 if not a hex digit
+df hex_val(c: i64) -> i64 {
+    check c >= 48 && c <= 57  { return c - 48; }
+    check c >= 97 && c <= 102 { fixed lo: i64 = c - 97; return lo + 10; }
+    check c >= 65 && c <= 70  { fixed up: i64 = c - 65; return up + 10; }
+    return -1;
+}
+
+// Build a 1-character string from a byte value (0..255) without new runtime fns.
+// Strategy: find an existing source byte equal to b and substr it. Falls back to
+// scanning a 256-entry ASCII reference the compiler embeds once. For control bytes
+// not present in source we use a tiny embedded table of escapable controls.
+df chr_str(b: i64) -> str {
+    fixed ref: str = "\0\a\b\t\n\v\f\r";
+    // ref decodes (via THIS lexer) to the 8 control bytes 0,7,8,9,10,11,12,13 in order.
+    check b == 0  { return substr(ref, 0, 1); }
+    check b == 7  { return substr(ref, 1, 2); }
+    check b == 8  { return substr(ref, 2, 3); }
+    check b == 9  { return substr(ref, 3, 4); }
+    check b == 10 { return substr(ref, 4, 5); }
+    check b == 11 { return substr(ref, 5, 6); }
+    check b == 12 { return substr(ref, 6, 7); }
+    check b == 13 { return substr(ref, 7, 8); }
+    // Printable ASCII: index into a constant table at position (b - 32)
+    fixed printable: str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    check b >= 32 && b <= 126 { return substr(printable, b - 32, b - 31); }
+    return "";
+}
+
+// Extract all string literals from source in order
+// Simple approach: just scan for "..." patterns directly
+df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
+    set strings: list<str> = list_new();
+    fixed slen: i64 = len(source);
+    set pos: i64 = 0;
+
+    whilst pos < slen {
+        fixed c: i64 = byte_at(source, pos);
+
+        // Skip line comments
+        check c == 47 && pos + 1 < slen && byte_at(source, pos + 1) == 47 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 10 { pos += 1; }
+            continue;
+        }
+
+        // Found a string literal — decode escape sequences into real bytes
+        // so the in-memory value matches the Rust lexer. llvm_escape re-encodes
+        // control bytes for the LLVM constant downstream.
+        check c == 34 || c == 39 {
+            fixed q: i64 = c;
+            pos += 1;
+            set sval: str = "";
+            whilst pos < slen && byte_at(source, pos) != q {
+                fixed ch: i64 = byte_at(source, pos);
+                check ch == 92 && pos + 1 < slen {
+                    fixed e: i64 = byte_at(source, pos + 1);
+                    check e == 110 { sval = str_concat(sval, "\n"); pos += 2; continue; }
+                    check e == 116 { sval = str_concat(sval, "\t"); pos += 2; continue; }
+                    check e == 114 { sval = str_concat(sval, "\r"); pos += 2; continue; }
+                    check e == 34  { sval = str_concat(sval, "\""); pos += 2; continue; }
+                    check e == 92  { sval = str_concat(sval, "\\"); pos += 2; continue; }
+                    check e == 48  { sval = str_concat(sval, chr_str(0));  pos += 2; continue; }
+                    check e == 97  { sval = str_concat(sval, chr_str(7));  pos += 2; continue; }
+                    check e == 98  { sval = str_concat(sval, chr_str(8));  pos += 2; continue; }
+                    check e == 102 { sval = str_concat(sval, chr_str(12)); pos += 2; continue; }
+                    check e == 118 { sval = str_concat(sval, chr_str(11)); pos += 2; continue; }
+                    check e == 39  { sval = str_concat(sval, "'"); pos += 2; continue; }
+                    check e == 120 && pos + 3 < slen {
+                        fixed h1: i64 = hex_val(byte_at(source, pos + 2));
+                        fixed h2: i64 = hex_val(byte_at(source, pos + 3));
+                        check h1 >= 0 && h2 >= 0 {
+                            fixed hi: i64 = h1 * 16;
+                            fixed bb: i64 = hi + h2;
+                            sval = str_concat(sval, chr_str(bb));
+                            pos += 4; continue;
+                        }
+                    }
+                    // Unknown escape: keep the char after the backslash as-is
+                    sval = str_concat(sval, substr(source, pos + 1, pos + 2));
+                    pos += 2;
+                } fallback {
+                    sval = str_concat(sval, substr(source, pos, pos + 1));
+                    pos += 1;
+                }
+            }
+            push(strings, sval);
+            pos += 1;
+            continue;
+        }
+
+        // Found an integer literal — only if NOT inside an identifier or number
+        // Check that previous char is not alpha/underscore/digit
+        check c >= 48 && c <= 57 {
+            set is_standalone: i64 = 1;
+            check pos > 0 {
+                fixed prev: i64 = byte_at(source, pos - 1);
+                check (prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || prev == 95 || (prev >= 48 && prev <= 57) {
+                    is_standalone = 0;
+                }
+            }
+            check is_standalone == 1 {
+                fixed start: i64 = pos;
+                set brk2: i64 = 0;
+                whilst brk2 == 0 {
+                    check pos >= slen { brk2 = 1; continue; }
+                    fixed cc2: i64 = byte_at(source, pos);
+                    check cc2 >= 48 && cc2 <= 57 { pos += 1; continue; }
+                    brk2 = 1;
+                }
+                check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
+                    pos += 1;
+                    whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+                }
+                push(strings, substr(source, start, pos));
+                continue;
+            }
+            pos += 1;
+            continue;
+        }
+
+        pos += 1;
+    }
+    return strings;
+}
+
+// Returns true if the identifier is a Torvik KEYWORD token
+// Only words that keyword_for() returns non-TOK_IDENT for
+// Everything else (extern, from, str, i64, list, etc.) is TOK_IDENT
+df is_keyword(s: str) -> bool {
+    check s == "df"       { return true; }
+    check s == "task"     { return true; }
+    check s == "set"      { return true; }
+    check s == "fixed"    { return true; }
+    check s == "return"   { return true; }
+    check s == "check"    { return true; }
+    check s == "fallback" { return true; }
+    check s == "each"     { return true; }
+    check s == "in"       { return true; }
+    check s == "whilst"   { return true; }
+    check s == "when"     { return true; }
+    check s == "shape"    { return true; }
+    check s == "apply"    { return true; }
+    check s == "guard"    { return true; }
+    check s == "echo"     { return true; }
+    check s == "halt"     { return true; }
+    check s == "vow"      { return true; }
+    check s == "rune"     { return true; }
+    check s == "true"     { return true; }
+    check s == "false"    { return true; }
+    check s == "continue" { return true; }
+    check s == "break"    { return true; }
+    check s == "unsafe"   { return true; }
+    return false;
+}
+
+// Extract all user-defined names (string literals + non-keyword identifiers)
+// in source order, matching the token stream's TOK_IDENT/TOK_STRING ordering
+df extract_all_names(source: str) -> list<str> {
+    set names: list<str> = list_new();
+    fixed slen: i64 = len(source);
+    set pos: i64 = 0;
+
+    whilst pos < slen {
+        fixed c: i64 = byte_at(source, pos);
+
+        // Skip line comments (// to end of line)
+        check c == 47 && pos + 1 < slen && byte_at(source, pos + 1) == 47 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 10 { pos += 1; }
+            continue;
+        }
+
+        // String literal → extract and push
+        check c == 34 || c == 39 {
+            fixed q: i64 = c;
+            pos += 1;
+            fixed start: i64 = pos;
+            whilst pos < slen && byte_at(source, pos) != q {
+                check byte_at(source, pos) == 92 { pos += 1; }
+                pos += 1;
+            }
+            push(names, substr(source, start, pos));
+            pos += 1;
+            continue;
+        }
+
+        // Identifier → extract, filter keywords, push if user-defined
+        check (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 {
+            fixed start: i64 = pos;
+            pos += 1;
+            // Advance while alphanumeric or underscore
+            set inner_end: i64 = pos;
+            set brk: i64 = 0;
+            whilst brk == 0 {
+                check inner_end >= slen { brk = 1; continue; }
+                fixed cc: i64 = byte_at(source, inner_end);
+                check cc >= 65 && cc <= 90 { inner_end += 1; continue; }
+                check cc >= 97 && cc <= 122 { inner_end += 1; continue; }
+                check cc >= 48 && cc <= 57 { inner_end += 1; continue; }
+                check cc == 95 { inner_end += 1; continue; }
+                brk = 1;
+            }
+            pos = inner_end;
+            fixed ident: str = substr(source, start, pos);
+            check is_keyword(ident) == false { push(names, ident); }
+            continue;
+        }
+
+        pos += 1;
+    }
+    return names;
+}
+
+// extract_offsets: per-token source byte offset, parallel to lex_source's
+// token kinds (identical scan ⇒ identical token count/order). Powers
+// line+caret diagnostics. Kept in lockstep with lex_source; codegen_tokens
+// guards len(offsets)==len(tokens) to catch any drift immediately.
+df extract_offsets(source: str) -> list<i64> {
+    set offs: list<i64> = list_new();
+    fixed slen: i64 = len(source);
+    set pos: i64 = 0;
+    whilst pos < slen {
+        fixed c: i64 = byte_at(source, pos);
+        fixed tok_start: i64 = pos;
+        check is_space(c) { pos += 1; continue; }
+        check c == 47 {
+            check pos + 1 < slen {
+                fixed nc: i64 = byte_at(source, pos + 1);
+                check nc == 47 {
+                    pos += 2;
+                    whilst pos < slen && byte_at(source, pos) != 10 { pos += 1; }
+                    continue;
+                }
+            }
+        }
+        check c == 34 || c == 39 {
+            fixed q: i64 = c;
+            pos += 1;
+            whilst pos < slen && byte_at(source, pos) != q {
+                check byte_at(source, pos) == 92 { pos += 1; }
+                pos += 1;
+            }
+            push(offs, tok_start);
+            pos += 1;
+            continue;
+        }
+        check is_digit(c) {
+            whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
+                pos += 1;
+                whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+                push(offs, tok_start);
+                continue;
+            }
+            push(offs, tok_start);
+            continue;
+        }
+        check is_alpha(c) {
+            fixed start: i64 = pos;
+            whilst pos < slen && is_alnum(byte_at(source, pos)) { pos += 1; }
+            fixed word: str = substr(source, start, pos);
+            fixed kw: i64 = keyword_for(word);
+            check kw == KW_ECHO && pos < slen && byte_at(source, pos) == 33 {
+                push(offs, tok_start); pos += 1; continue;
+            }
+            push(offs, tok_start);
+            continue;
+        }
+        check c == 40  { push(offs, tok_start);   pos += 1; continue; }
+        check c == 41  { push(offs, tok_start);   pos += 1; continue; }
+        check c == 123 { push(offs, tok_start);   pos += 1; continue; }
+        check c == 125 { push(offs, tok_start);   pos += 1; continue; }
+        check c == 44  { push(offs, tok_start);    pos += 1; continue; }
+        check c == 59  { push(offs, tok_start);     pos += 1; continue; }
+        check c == 91  { push(offs, tok_start); pos += 1; continue; }
+        check c == 93  { push(offs, tok_start); pos += 1; continue; }
+        check c == 46 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 46 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 58 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 58 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 61 {
+            // =|= kindred (identity) — check 3-char form first
+            check pos + 2 < slen && byte_at(source, pos + 1) == 124 && byte_at(source, pos + 2) == 61 {
+                push(offs, tok_start); pos += 3; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 45 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 43 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 43 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 33 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 63 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            pos += 1; continue;
+        }
+        check c == 60 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 124 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 60 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 62 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 42 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start);  pos += 1; continue;
+        }
+        check c == 47 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 37 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 94 { push(offs, tok_start); pos += 1; continue; }
+        check c == 126 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 38 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 38 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        check c == 124 {
+            check pos + 1 < slen && byte_at(source, pos + 1) == 124 {
+                push(offs, tok_start); pos += 2; continue;
+            }
+            push(offs, tok_start); pos += 1; continue;
+        }
+        pos += 1;
+    }
+    push(offs, slen);
+    return offs;
+}

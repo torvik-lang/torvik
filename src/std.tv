@@ -1,0 +1,14 @@
+// std.tv — Torvik standard library (umbrella)
+//
+// Optional, opt-in layer on top of the always-available core builtins. Pull in
+// the whole library with `apply std;`, or a single part with e.g.
+// `apply std::math;`. Disabled entirely when a project's torvik.rune sets
+// `std = no_std`.
+//
+// The library is versioned independently of the compiler (see the `std` key in
+// VERSION); parts may grow and migrate runtime-backed functionality in over time
+// without forcing a compiler version bump.
+
+apply std::math;
+apply std::strings;
+apply std::list;

@@ -1,0 +1,513 @@
+// torvik_parser.tv — Torvik Parser written in Torvik
+// Parses a token stream into a flat AST representation
+// using parallel lists (no recursive structs needed)
+
+apply torvik_lexer;
+
+// ─── AST node kind constants ──────────────────────────────────────────────────
+
+fixed NODE_PROGRAM:   i64 = 1;
+fixed NODE_FUNCTION:  i64 = 2;
+fixed NODE_LET:       i64 = 3;   // fixed/set declaration
+fixed NODE_ASSIGN:    i64 = 4;
+fixed NODE_CHECK:     i64 = 5;   // if/else
+fixed NODE_UNTIL:     i64 = 6;   // while loop
+fixed NODE_RETURN:    i64 = 7;
+fixed NODE_CALL:      i64 = 8;   // function call statement
+fixed NODE_ECHO:      i64 = 9;   // echo!()
+fixed NODE_EXIT:      i64 = 10;
+fixed NODE_BREAK:     i64 = 11;
+fixed NODE_CONTINUE:  i64 = 12;
+
+// Expression kinds
+fixed EXPR_IDENT:     i64 = 100;
+fixed EXPR_STR:       i64 = 101;
+fixed EXPR_INT:       i64 = 102;
+fixed EXPR_BOOL:      i64 = 103;
+fixed EXPR_CALL:      i64 = 104;
+fixed EXPR_BINOP:     i64 = 105;
+fixed EXPR_FMT:       i64 = 106;
+
+// ─── Parser state ─────────────────────────────────────────────────────────────
+// We use global mutable state via set variables passed around
+// The parser operates on: tokens (list<i64>), strings (list<str>), pos (i64)
+
+// Token navigation
+df tok_peek(tokens: list<i64>, pos: i64) -> i64 {
+    check pos < len(tokens) { return tokens[pos]; }
+    return TOK_EOF;
+}
+
+df tok_advance(pos: i64) -> i64 {
+    return pos + 1;
+}
+
+df tok_expect(tokens: list<i64>, pos: i64, kind: i64) -> i64 {
+    fixed got: i64 = tok_peek(tokens, pos);
+    check got != kind {
+        echo!(str_concat("parse error: expected token ", int_to_str(kind)));
+        echo!(str_concat("  got token: ", int_to_str(got)));
+        exit(1);
+    }
+    return pos + 1;
+}
+
+df tok_at(tokens: list<i64>, pos: i64, kind: i64) -> bool {
+    return tok_peek(tokens, pos) == kind;
+}
+
+// ─── String value extraction ──────────────────────────────────────────────────
+// str_idx tracks which string literal we're on in the strings list
+
+df next_string(strings: list<str>, str_idx: i64) -> str {
+    check str_idx < len(strings) { return strings[str_idx]; }
+    return "";
+}
+
+// ─── Expression parser ────────────────────────────────────────────────────────
+// Returns: new pos
+// Stores result in out_exprs and out_kinds lists
+
+df parse_args_count(tokens: list<i64>, pos: i64) -> i64 {
+    // Count arguments in a call: skip to matching )
+    // Returns number of comma-separated args
+    set depth: i64 = 1;
+    set p: i64 = pos;
+    set count: i64 = 0;
+    fixed ntok: i64 = len(tokens);
+
+    check tok_peek(tokens, p) == PUNCT_RPAREN { return 0; }
+    count = 1;
+
+    whilst p < ntok && depth > 0 {
+        fixed t: i64 = tok_peek(tokens, p);
+        check t == PUNCT_LPAREN { depth += 1; }
+        check t == PUNCT_RPAREN {
+            depth -= 1;
+            check depth == 0 { return count; }
+        }
+        check t == PUNCT_COMMA && depth == 1 { count += 1; }
+        p += 1;
+    }
+    return count;
+}
+
+df skip_to_close_paren(tokens: list<i64>, pos: i64) -> i64 {
+    set depth: i64 = 1;
+    set p: i64 = pos;
+    fixed ntok: i64 = len(tokens);
+    whilst p < ntok && depth > 0 {
+        fixed t: i64 = tok_peek(tokens, p);
+        check t == PUNCT_LPAREN { depth += 1; }
+        check t == PUNCT_RPAREN { depth -= 1; }
+        p += 1;
+    }
+    return p;
+}
+
+df skip_to_close_brace(tokens: list<i64>, pos: i64) -> i64 {
+    set depth: i64 = 1;
+    set p: i64 = pos;
+    fixed ntok: i64 = len(tokens);
+    whilst p < ntok && depth > 0 {
+        fixed t: i64 = tok_peek(tokens, p);
+        check t == PUNCT_LBRACE { depth += 1; }
+        check t == PUNCT_RBRACE { depth -= 1; }
+        p += 1;
+    }
+    return p;
+}
+
+// ─── Top-level parser ─────────────────────────────────────────────────────────
+
+// Parse result stored in these parallel lists:
+//   fn_names:       list<str>   function names
+//   fn_param_names: list<str>   param names (space-separated per function)
+//   fn_param_types: list<str>   param types (space-separated per function)
+//   fn_ret_types:   list<str>   return types
+//   fn_body_start:  list<i64>   start token index of each function body
+//   fn_body_end:    list<i64>   end token index of each function body
+//   global_names:   list<str>   global fixed constant names
+//   global_values:  list<str>   global fixed constant values (as strings)
+//   global_types:   list<str>   global fixed constant types
+
+df parse_type_str(tokens: list<i64>, strings: list<str>, pos: i64,
+                  str_idx: i64, out_type: list<str>) -> i64 {
+    // Read a type like: str, i64, void, list<i64>, etc.
+    fixed t: i64 = tok_peek(tokens, pos);
+    set p: i64 = pos;
+
+    // Handle primitive types (keywords or idents)
+    check t == TOK_IDENT || t == KW_OK || t == KW_FAIL ||
+          t == KW_SET || t == KW_FIXED {
+        // Skip the type tokens - just advance past them
+        p += 1;
+        // Check for <T> generic suffix
+        check tok_peek(tokens, p) == OP_LT {
+            p += 1;
+            set depth: i64 = 1;
+            whilst p < len(tokens) && depth > 0 {
+                fixed inner: i64 = tok_peek(tokens, p);
+                check inner == OP_LT { depth += 1; }
+                check inner == OP_GT { depth -= 1; }
+                p += 1;
+            }
+        }
+        push(out_type, "ptr");
+        return p;
+    }
+
+    // i64, i32, etc. are identifiers in our token stream
+    push(out_type, "i64");
+    return p + 1;
+}
+
+df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
+                 fn_names: list<str>, fn_param_names: list<str>,
+                 fn_param_types: list<str>, fn_ret_types: list<str>,
+                 fn_body_start: list<i64>, fn_body_end: list<i64>,
+                 fn_body_an: list<i64>, fn_body_s: list<i64>,
+                 global_names: list<str>, global_values: list<str>,
+                 global_types: list<str>, global_init_pos: list<i64>,
+                 global_init_s: list<i64>, global_init_an: list<i64>,
+                 err_pos: list<i64>, err_msg: list<str>) -> void {
+
+    set pos: i64 = 0;
+    set str_idx: i64 = 0;
+    set str_idx_s: i64 = 0;  // tracks TOK_STRING and TOK_INT only (for s index in compile_stmts)
+    fixed ntok: i64 = len(tokens);
+
+    set unsafe_g: i64 = 0;
+    whilst pos < ntok && tok_peek(tokens, pos) != TOK_EOF {
+        fixed t: i64 = tok_peek(tokens, pos);
+
+        // `unsafe` prefixes the next declaration to opt into operations the
+        // compiler would otherwise reject (e.g. out-of-range literal wrapping).
+        check t == KW_UNSAFE { unsafe_g = 1; pos += 1; continue; }
+        fixed g_unsafe: i64 = unsafe_g;
+        unsafe_g = 0;
+
+        // Skip apply statements — advance str_idx (allnames) and str_idx_s (strings/ints)
+        check t == KW_APPLY {
+            whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                fixed sk: i64 = tok_peek(tokens, pos);
+                check sk == TOK_STRING || sk == TOK_IDENT { str_idx += 1; }
+                check sk == TOK_STRING || sk == TOK_INT || sk == TOK_FLOAT { str_idx_s += 1; }
+                pos += 1;
+            }
+            pos += 1; // skip semicolon
+            continue;
+        }
+
+        // Global variables declared outside any function:
+        //   fixed NAME: TYPE = LITERAL;   (constant)
+        //   set   NAME: TYPE = LITERAL;   (mutable, shared across functions)
+        check t == KW_FIXED || t == KW_SET {
+            pos += 1; // skip 'fixed'/'set'
+            // Read name
+            set name_str: str = "";
+            check tok_peek(tokens, pos) == TOK_IDENT {
+                name_str = strings[str_idx];
+                str_idx += 1;
+                pos += 1;
+            }
+            // Read the declared type annotation, reconstructing the full type
+            // string (e.g. "list<i64>") so heap globals know their element type.
+            set decl_type: str = "";
+            check tok_peek(tokens, pos) == PUNCT_COLON {
+                pos += 1; // skip :
+                whilst pos < ntok &&
+                      tok_peek(tokens, pos) != OP_EQ &&
+                      tok_peek(tokens, pos) != PUNCT_SEMI {
+                    fixed sk: i64 = tok_peek(tokens, pos);
+                    check sk == TOK_IDENT { decl_type = str_concat(decl_type, strings[str_idx]); str_idx += 1; }
+                    check sk == TOK_STRING { str_idx += 1; }
+                    check sk == OP_LT { decl_type = str_concat(decl_type, "<"); }
+                    check sk == OP_GT { decl_type = str_concat(decl_type, ">"); }
+                    pos += 1;
+                }
+            }
+            // Skip =
+            check tok_peek(tokens, pos) == OP_EQ { pos += 1; }
+            // Reject an out-of-range integer literal for a sized global (unless
+            // 'unsafe' was given). Same rule locals use — no silent truncation.
+            check g_unsafe == 0 && tok_peek(tokens, pos) == TOK_INT && tok_peek(tokens, pos + 1) == PUNCT_SEMI {
+                set _glo: list<i64> = list_new();
+                set _ghi: list<i64> = list_new();
+                check int_range(decl_type, _glo, _ghi) == 1 {
+                    fixed _glit: str = str_vals[str_idx_s];
+                    fixed _gv: i64 = toint(_glit);
+                    check _gv < _glo[0] || _gv > _ghi[0] {
+                        set _gmsg: str = str_concat("literal ", _glit);
+                        _gmsg = str_concat(_gmsg, " is out of range for ");
+                        _gmsg = str_concat(_gmsg, decl_type);
+                        _gmsg = str_concat(_gmsg, " (valid ");
+                        _gmsg = str_concat(_gmsg, int_to_str(_glo[0]));
+                        _gmsg = str_concat(_gmsg, " to ");
+                        _gmsg = str_concat(_gmsg, int_to_str(_ghi[0]));
+                        _gmsg = str_concat(_gmsg, ") — prefix the statement with 'unsafe' to wrap intentionally");
+                        push(err_pos, pos);
+                        push(err_msg, _gmsg);
+                        str_idx_s += 1; pos += 1;
+                        check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                        continue;
+                    }
+                }
+            }
+            // A single str/int literal becomes an LLVM constant. Floats and anything
+            // else are compiled at startup: a float must be boxed (bitcast+inttoptr)
+            // into the uniform ptr slot, which the constant path can't express, so it
+            // takes the same runtime-init route as list/table/computed initializers.
+            fixed it0: i64 = tok_peek(tokens, pos);
+            fixed it1: i64 = tok_peek(tokens, pos + 1);
+            set is_literal: i64 = 0;
+            check (it0 == TOK_STRING || it0 == TOK_INT) && it1 == PUNCT_SEMI { is_literal = 1; }
+            // Sized-int globals run through the startup-init path (not LLVM constants)
+            // so the value is canonicalized to the type's width, exactly like locals.
+            check line_eq(decl_type, "i8")  == 1 { is_literal = 0; }
+            check line_eq(decl_type, "u8")  == 1 { is_literal = 0; }
+            check line_eq(decl_type, "i16") == 1 { is_literal = 0; }
+            check line_eq(decl_type, "u16") == 1 { is_literal = 0; }
+            check line_eq(decl_type, "i32") == 1 { is_literal = 0; }
+            check line_eq(decl_type, "u32") == 1 { is_literal = 0; }
+
+            check is_literal == 1 {
+                set val_str: str = "";
+                set val_type: str = "str";
+                check it0 == TOK_STRING {
+                    val_str = strings[str_idx];
+                    str_idx += 1;
+                    str_idx_s += 1;
+                    pos += 1;
+                }
+                check it0 == TOK_INT {
+                    val_str = str_vals[str_idx_s];
+                    str_idx_s += 1;
+                    pos += 1;
+                    val_type = "i64";
+                }
+                check it0 == TOK_FLOAT {
+                    val_str = str_vals[str_idx_s];
+                    str_idx_s += 1;
+                    pos += 1;
+                    val_type = "float";
+                }
+                check len(name_str) > 0 {
+                    push(global_names, name_str);
+                    push(global_values, val_str);
+                    push(global_types, val_type);
+                    push(global_init_pos, 0 - 1);
+                    push(global_init_s, 0 - 1);
+                    push(global_init_an, 0 - 1);
+                }
+            }
+            check is_literal == 0 {
+                // Expression initializer: snapshot the token + cursor position so
+                // codegen can compile it at startup, then scan to ';' keeping the
+                // cursors in sync for the rest of the program.
+                fixed init_pos: i64 = pos;
+                fixed init_an: i64 = str_idx;
+                fixed init_s: i64 = str_idx_s;
+                // An empty initializer (`= ;`) would leave the global null and crash
+                // at first use — reject it with a located error instead.
+                check tok_peek(tokens, pos) == PUNCT_SEMI {
+                    push(err_pos, pos);
+                    push(err_msg, "expected a value after '=' — a global must be initialized");
+                }
+                whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                    fixed sk: i64 = tok_peek(tokens, pos);
+                    check sk == TOK_IDENT || sk == TOK_STRING { str_idx += 1; }
+                    check sk == TOK_STRING || sk == TOK_INT || sk == TOK_FLOAT { str_idx_s += 1; }
+                    pos += 1;
+                }
+                check len(name_str) > 0 {
+                    push(global_names, name_str);
+                    push(global_values, "");
+                    push(global_types, decl_type);
+                    push(global_init_pos, init_pos);
+                    push(global_init_s, init_s);
+                    push(global_init_an, init_an);
+                }
+            }
+            // Skip ;
+            check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+            continue;
+        }
+
+        // Function definition: df NAME(PARAMS) -> TYPE { BODY }
+        check t == KW_DF {
+            // ── Validate the header shape BEFORE parsing it. Each required element
+            // (name, '()', '->', a return type, '{', and a matching '}') is checked
+            // with read-only lookahead via `vp`; the first problem records a located
+            // error and we recover to the next 'df'. Without this, a malformed header
+            // either silently defaulted (missing '->' -> "void") or produced broken IR
+            // that clang rejected as an internal TVC-5002 for what is really a user typo.
+            set vp: i64 = pos + 1;        // token after 'df'
+            set herr: str = "";           // first header error message ("" = none)
+            set herr_at: i64 = pos + 1;   // token position for the caret
+            // The current function ends at the next 'df' (or EOF). Errors for THIS
+            // function must point inside it, never into the following function.
+            set fn_limit: i64 = pos + 1;
+            whilst fn_limit < ntok && tok_peek(tokens, fn_limit) != KW_DF && tok_peek(tokens, fn_limit) != TOK_EOF { fn_limit += 1; }
+            check herr == "" && tok_peek(tokens, vp) != TOK_IDENT { herr = "expected a function name after 'df'"; herr_at = vp; }
+            check herr == "" { vp += 1; } // past name
+            check herr == "" && tok_peek(tokens, vp) != PUNCT_LPAREN { herr = "expected '(' after the function name"; herr_at = vp; }
+            check herr == "" { vp += 1; } // past '('
+            // Scan to the closing ')', bounded by '{' / 'df' / EOF so a missing ')'
+            // can't borrow a later function's paren (which corrupted the parse).
+            whilst herr == "" && vp < ntok && tok_peek(tokens, vp) != PUNCT_RPAREN && tok_peek(tokens, vp) != PUNCT_LBRACE && tok_peek(tokens, vp) != KW_DF && tok_peek(tokens, vp) != TOK_EOF { vp += 1; }
+            check herr == "" && tok_peek(tokens, vp) != PUNCT_RPAREN { herr = "expected ')' to close the parameter list"; herr_at = vp; }
+            check herr == "" { vp += 1; } // past ')'
+            check herr == "" && tok_peek(tokens, vp) != OP_ARROW { herr = "expected '->' and a return type before the function body"; herr_at = vp; }
+            check herr == "" { vp += 1; } // past '->'
+            check herr == "" && tok_peek(tokens, vp) == PUNCT_LBRACE { herr = "expected a return type after '->'"; herr_at = vp; }
+            whilst herr == "" && vp < ntok && tok_peek(tokens, vp) != PUNCT_LBRACE && tok_peek(tokens, vp) != KW_DF && tok_peek(tokens, vp) != TOK_EOF && tok_peek(tokens, vp) != PUNCT_SEMI && tok_peek(tokens, vp) != PUNCT_LPAREN { vp += 1; }
+            check herr == "" && tok_peek(tokens, vp) != PUNCT_LBRACE { herr = "expected '{' to open the function body"; herr_at = vp; }
+            check herr == "" {
+                // Match the closing '}', bounded by 'df' / EOF so a missing '}' can't
+                // borrow a later function's brace. Nested blocks raise/lower bd.
+                set bd: i64 = 1;
+                set bp: i64 = vp + 1;   // after '{'
+                whilst bd > 0 && bp < ntok && tok_peek(tokens, bp) != KW_DF && tok_peek(tokens, bp) != TOK_EOF {
+                    check tok_peek(tokens, bp) == PUNCT_LBRACE { bd += 1; }
+                    check tok_peek(tokens, bp) == PUNCT_RBRACE { bd -= 1; }
+                    check bd > 0 { bp += 1; }
+                }
+                check bd != 0 { herr = "expected '}' to close the function body"; herr_at = vp; }
+            }
+            check len(herr) > 0 {
+                // Keep the caret inside this function (an incomplete header can leave
+                // herr_at pointing at the next 'df').
+                check herr_at >= fn_limit { herr_at = fn_limit - 1; }
+                check herr_at < pos + 1 { herr_at = pos + 1; }
+                push(err_pos, herr_at);
+                push(err_msg, herr);
+                // Recover: skip past this malformed function to the next 'df' (or EOF),
+                // keeping str_idx (allnames) and str_idx_s (strings/ints) in sync so any
+                // later functions still parse and report their own errors cleanly.
+                pos += 1; // skip the 'df' we are bailing on
+                whilst pos < ntok && tok_peek(tokens, pos) != KW_DF && tok_peek(tokens, pos) != TOK_EOF {
+                    fixed rk: i64 = tok_peek(tokens, pos);
+                    check rk == TOK_STRING || rk == TOK_IDENT { str_idx += 1; }
+                    check rk == TOK_STRING || rk == TOK_INT || rk == TOK_FLOAT { str_idx_s += 1; }
+                    pos += 1;
+                }
+                continue;
+            }
+            pos += 1; // skip 'df'
+            // Read function name
+            set fname: str = "";
+            check tok_peek(tokens, pos) == TOK_IDENT {
+                fname = strings[str_idx];
+                str_idx += 1;
+                pos += 1;
+            }
+            // Skip to opening brace, collecting params
+            set param_names: str = "";
+            set param_types: str = "";
+            set ret_type: str = "void";
+
+            // Skip (
+            check tok_peek(tokens, pos) == PUNCT_LPAREN { pos += 1; }
+            // Parse params: NAME : TYPE. Collect names AND types (space-separated,
+            // positionally aligned). str_idx advances IDENTICALLY to before; type
+            // capture is additive. `reading_type` tracks whether the current token
+            // is part of a param's type annotation (after its colon).
+            set reading_type: i64 = 0;
+            set cur_type: str = "";
+            whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_RPAREN {
+                fixed sk: i64 = tok_peek(tokens, pos);
+                check sk == TOK_IDENT {
+                    fixed pk: i64 = tok_peek(tokens, pos + 1);
+                    check pk == PUNCT_COLON {
+                        // This IDENT is a param NAME.
+                        fixed pname: str = strings[str_idx];
+                        check len(param_names) > 0 { param_names = str_concat(param_names, " "); }
+                        param_names = str_concat(param_names, pname);
+                        reading_type = 1; cur_type = "";
+                    } fallback {
+                        // This IDENT is part of the TYPE (e.g. str, list, i64, str inside <>).
+                        check reading_type == 1 { cur_type = str_concat(cur_type, strings[str_idx]); }
+                    }
+                    str_idx += 1;
+                }
+                check sk == TOK_STRING { str_idx += 1; }
+                // Generic brackets are part of the type: list<str>
+                check sk == OP_LT { check reading_type == 1 { cur_type = str_concat(cur_type, "<"); } }
+                check sk == OP_GT { check reading_type == 1 { cur_type = str_concat(cur_type, ">"); } }
+                // Param boundary: comma ends the current param's type.
+                check sk == PUNCT_COMMA {
+                    check reading_type == 1 {
+                        check len(param_types) > 0 { param_types = str_concat(param_types, " "); }
+                        param_types = str_concat(param_types, cur_type);
+                        reading_type = 0; cur_type = "";
+                    }
+                }
+                pos += 1;
+            }
+            // Flush the final param's type (no trailing comma before the close paren).
+            check reading_type == 1 {
+                check len(param_types) > 0 { param_types = str_concat(param_types, " "); }
+                param_types = str_concat(param_types, cur_type);
+            }
+            check tok_peek(tokens, pos) == PUNCT_RPAREN { pos += 1; }
+            // Parse -> TYPE — capture the full return type, including any <...>
+            // generic (e.g. "result<str>", "list<i64>"). Earlier this kept only
+            // the first ident, dropping the <T>; the element type is needed so a
+            // returned result<str>/list<str> is marked managed at the ret site.
+            check tok_peek(tokens, pos) == OP_ARROW {
+                pos += 1;
+                set rt_built: str = "";
+                whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_LBRACE {
+                    fixed sk: i64 = tok_peek(tokens, pos);
+                    check sk == TOK_IDENT || sk == TOK_STRING { rt_built = str_concat(rt_built, strings[str_idx]); str_idx += 1; }
+                    check sk == OP_LT { rt_built = str_concat(rt_built, "<"); }
+                    check sk == OP_GT { rt_built = str_concat(rt_built, ">"); }
+                    check sk == OP_SHR { rt_built = str_concat(rt_built, ">>"); }
+                    check sk == PUNCT_COMMA { rt_built = str_concat(rt_built, ","); }
+                    pos += 1;
+                }
+                check len(rt_built) > 0 { ret_type = rt_built; }
+            }
+            // Now at {
+            check tok_peek(tokens, pos) == PUNCT_LBRACE {
+                pos += 1; // skip {
+                fixed body_start: i64 = pos;
+                fixed body_end: i64 = skip_to_close_brace(tokens, pos);
+
+                push(fn_names, fname);
+                push(fn_param_names, param_names);
+                push(fn_param_types, param_types);
+                push(fn_ret_types, ret_type);
+                push(fn_body_start, body_start);
+                push(fn_body_end, body_end - 1);
+                push(fn_body_an, str_idx);
+                push(fn_body_s, str_idx_s);
+                // Advance str_idx (allnames) and str_idx_s (strings) through body tokens
+                set bi: i64 = body_start;
+                whilst bi < body_end {
+                    fixed bt: i64 = tok_peek(tokens, bi);
+                    check bt == TOK_IDENT || bt == TOK_STRING { str_idx += 1; }
+                    check bt == TOK_STRING || bt == TOK_INT || bt == TOK_FLOAT { str_idx_s += 1; }
+                    bi += 1;
+                }
+
+                pos = body_end;
+            }
+            continue;
+        }
+
+        // No top-level item matched (apply / global fixed / df). A bare token here
+        // usually means a missing 'df' before a function header. Report it and
+        // recover to the next 'df', keeping the literal/name indices in sync.
+        check t == PUNCT_SEMI { pos += 1; continue; }   // stray ';' — ignore
+        push(err_pos, pos);
+        push(err_msg, "expected 'df' to begin a function definition");
+        whilst pos < ntok && tok_peek(tokens, pos) != KW_DF && tok_peek(tokens, pos) != TOK_EOF {
+            fixed uk: i64 = tok_peek(tokens, pos);
+            check uk == TOK_STRING || uk == TOK_IDENT { str_idx += 1; }
+            check uk == TOK_STRING || uk == TOK_INT || uk == TOK_FLOAT { str_idx_s += 1; }
+            pos += 1;
+        }
+    }
+}

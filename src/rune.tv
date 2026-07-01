@@ -1,0 +1,639 @@
+// rune.tv — Torvik Package Manager, written in Torvik
+//
+// User commands: new, init, build, run, clean, list/ls, version, help, uninstall.
+// Developer commands (unlisted in help): config, dev (config get/set), doctor.
+// add / remove / update + [runes] dependencies arrive with the Rune Library (future release).
+
+apply diag;
+
+
+// ─── Low-level helpers ──────────────────────────────────────────────────────
+
+df rune_is_ws(c: i64) -> i64 {
+    check c == 32 || c == 9 || c == 10 || c == 13 { return 1; }
+    return 0;
+}
+
+df rune_trim(s: str) -> str {
+    fixed n: i64 = len(s);
+    set a: i64 = 0;
+    set done1: i64 = 0;
+    whilst done1 == 0 {
+        check a >= n { done1 = 1; } fallback {
+            check rune_is_ws(byte_at(s, a)) == 1 { a += 1; } fallback { done1 = 1; }
+        }
+    }
+    set b: i64 = n;
+    set done2: i64 = 0;
+    whilst done2 == 0 {
+        check b <= a { done2 = 1; } fallback {
+            check rune_is_ws(byte_at(s, b - 1)) == 1 { b -= 1; } fallback { done2 = 1; }
+        }
+    }
+    return substr(s, a, b);
+}
+
+df rune_index_of(s: str, ch: str) -> i64 {
+    fixed target: i64 = byte_at(ch, 0);
+    set i: i64 = 0;
+    whilst i < len(s) {
+        check byte_at(s, i) == target { return i; }
+        i += 1;
+    }
+    return -1;
+}
+
+df rune_strip_quotes(v: str) -> str {
+    fixed t: str = rune_trim(v);
+    check len(t) >= 2 {
+        fixed a: str = substr(t, 0, 1);
+        fixed b: str = substr(t, len(t) - 1, len(t));
+        check a == "\"" && b == "\"" { return substr(t, 1, len(t) - 1); }
+    }
+    return t;
+}
+
+df rune_path_exists(p: str) -> i64 {
+    check fs_exists(p) == 1 { return 1; }
+    return 0;
+}
+
+df rune_mkdir(p: str) -> void {
+    fs_mkdir(p);
+}
+
+df rune_str_eq(a: str, b: str) -> i64 {
+    fixed la: i64 = len(a);
+    fixed lb: i64 = len(b);
+    check la != lb { return 0; }
+    set i: i64 = 0;
+    whilst i < la {
+        check byte_at(a, i) != byte_at(b, i) { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
+// ─── Manifest (.rune) field reader ──────────────────────────────────────────
+
+df rune_match_field(line: str, key: str) -> str {
+    fixed t: str = rune_trim(line);
+    check len(t) > len(key) {
+        check starts(t, key) {
+            fixed nb: str = substr(t, len(key), len(key) + 1);
+            check nb == " " || nb == "=" {
+                fixed eq: i64 = rune_index_of(t, "=");
+                check eq >= 0 {
+                    fixed raw: str = substr(t, eq + 1, len(t));
+                    return rune_strip_quotes(rune_trim(raw));
+                }
+            }
+        }
+    }
+    return "";
+}
+
+df rune_field(content: str, key: str) -> str {
+    set found: str = "";
+    set buf: str = "";
+    set i: i64 = 0;
+    whilst i < len(content) {
+        fixed cc: i64 = byte_at(content, i);
+        check cc == 10 {
+            check len(found) == 0 {
+                fixed v: str = rune_match_field(buf, key);
+                check len(v) > 0 { found = v; }
+            }
+            buf = "";
+        } fallback {
+            buf = str_concat(buf, substr(content, i, i + 1));
+        }
+        i += 1;
+    }
+    check len(found) == 0 {
+        fixed v2: str = rune_match_field(buf, key);
+        check len(v2) > 0 { found = v2; }
+    }
+    return found;
+}
+
+// ─── Project resolution ─────────────────────────────────────────────────────
+
+df rune_get_name() -> str {
+    // No manifest at all (a bare src/main.tv build): fall back to the directory
+    // name, which is more meaningful than a generic "output".
+    check rune_path_exists("torvik.rune") == 0 { return rune_cwd_name(); }
+    fixed content: str = readfile("torvik.rune");
+    fixed n: str = rune_field(content, "name");
+    check len(n) > 0 { return n; }
+    // A manifest that exists but has no name is malformed — surface it rather than
+    // silently building something called "output".
+    echo!("error: torvik.rune is missing a 'name' field.");
+    echo!("  add a line like:  name = \"myapp\"");
+    exit(1);
+    return "output";
+}
+
+df rune_get_entry() -> str {
+    check rune_path_exists("src/main.tv") == 1 { return "src/main.tv"; }
+    return "";
+}
+
+df rune_find_torvc() -> str {
+    fixed local: str = str_concat(sys_home_dir(), "/.torvik/bin/torvc");
+    check rune_path_exists(local) == 1 { return local; }
+    return "torvc";
+}
+
+df rune_has_final() -> i64 {
+    fixed argc: i64 = args();
+    set i: i64 = 2;
+    whilst i < argc {
+        fixed a: str = args_get(i);
+        check a == "--final" { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+df rune_has_yes() -> i64 {
+    fixed argc: i64 = args();
+    set i: i64 = 2;
+    whilst i < argc {
+        fixed a: str = args_get(i);
+        check a == "--yes" { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+df rune_cwd_name() -> str {
+    fixed full: str = cwd();
+    fixed n: i64 = len(full);
+    check n == 0 { return "project"; }
+    set cut: i64 = 0;
+    set i: i64 = 0;
+    whilst i < n {
+        check byte_at(full, i) == 47 { cut = i + 1; }
+        i += 1;
+    }
+    return substr(full, cut, n);
+}
+
+// ─── Templates ──────────────────────────────────────────────────────────────
+
+df rune_manifest(name: str) -> str {
+    set m: str = "[project]\nname        = \"";
+    m = str_concat(m, name);
+    m = str_concat(m, "\"\nversion     = \"0.0.1\"\ndescription = \"\"\nauthor      = \"\"\n\n[runes]\n# Dependencies (coming with the Rune Library; not yet supported)\n");
+    return m;
+}
+
+df rune_main_src(name: str) -> str {
+    set s: str = "// apply std;   // uncomment for the standard library (math, strings, list)\n\ndf main() -> void {\n    echo!(\"Hello from ";
+    s = str_concat(s, name);
+    s = str_concat(s, "!\");\n}\n");
+    return s;
+}
+
+// ─── User commands ──────────────────────────────────────────────────────────
+
+df rune_cmd_new(name: str) -> void {
+    check len(name) == 0 {
+        echo!("error: project name can't be empty");
+        exit(1);
+    }
+    check rune_index_of(name, "/") >= 0 {
+        echo!(str_concat(str_concat("error: project name '", name), "' can't contain '/' — use a plain name like 'myapp'"));
+        exit(1);
+    }
+    check rune_path_exists(name) == 1 {
+        echo!(str_concat(str_concat("error: directory '", name), "' already exists"));
+        exit(1);
+    }
+    rune_mkdir(str_concat(name, "/src"));
+    rune_mkdir(str_concat(name, "/lib"));
+    writefile(str_concat(name, "/torvik.rune"), rune_manifest(name));
+    writefile(str_concat(name, "/src/main.tv"), rune_main_src(name));
+    writefile(str_concat(name, "/.gitignore"), "build/\n*.ll\n*.o\n");
+    echo!(str_concat(str_concat("Created project '", name), "'"));
+    echo!(str_concat("  cd ", name));
+    echo!("  rune run");
+}
+
+df rune_cmd_init(name: str) -> void {
+    check rune_path_exists("torvik.rune") == 1 {
+        echo!("error: already a Torvik project (torvik.rune exists here).");
+        exit(1);
+    }
+    rune_mkdir("src");
+    rune_mkdir("lib");
+    writefile("torvik.rune", rune_manifest(name));
+    check rune_path_exists("src/main.tv") == 0 {
+        writefile("src/main.tv", rune_main_src(name));
+    }
+    check rune_path_exists(".gitignore") == 0 {
+        writefile(".gitignore", "build/\n*.ll\n*.o\n");
+    }
+    echo!(str_concat(str_concat("Initialized Torvik project '", name), "' in the current directory."));
+    echo!("  rune run");
+}
+
+// Resolve the project entry source, or print a precise error and exit. Distinguishes
+// "this is a configured project but its src/main.tv is missing" from "no project here".
+df rune_require_entry() -> str {
+    fixed entry: str = rune_get_entry();
+    check len(entry) > 0 { return entry; }
+    check rune_path_exists("torvik.rune") == 1 {
+        echo!("error: this Torvik project is missing its entry source (expected src/main.tv).");
+        echo!("  create src/main.tv containing a 'main' function.");
+        exit(1);
+    }
+    echo!("error: not a Torvik project (no torvik.rune or src/main.tv here).");
+    echo!("  run 'rune new <name>' to create one.");
+    exit(1);
+    return "";
+}
+
+df rune_cmd_build(final: i64) -> void {
+    fixed entry: str = rune_require_entry();
+    fixed t_start: i64 = time_ms();
+    fixed name: str = rune_get_name();
+    rune_mkdir("build");
+    fixed out: str = str_concat("build/", name);
+    fixed torvc: str = rune_find_torvc();
+    set cmd: str = str_concat(str_concat(str_concat(str_concat(torvc, " "), entry), " -o "), out);
+    cmd = str_concat(cmd, " -q");
+    check final == 1 { cmd = str_concat(cmd, " --final"); }
+    fixed rc: i64 = sys_run(cmd);
+    check rc == 0 {
+        check diag_path_exists(out) == 1 {
+            echo!(fmt("Compiled {} in {}", out, diag_fmt_secs(time_ms() - t_start)));
+        } fallback {
+            internal_error("RUNE-3001", "build", entry, "torvc reported success but produced no output binary");
+        }
+    } fallback {
+        exit(rc);
+    }
+}
+
+df rune_needs_rebuild(out: str, srcpath: str) -> i64 {
+    check rune_path_exists(out) == 0 { return 1; }
+    fixed st: i64 = fs_mtime(srcpath);
+    fixed ot: i64 = fs_mtime(out);
+    check st > ot { return 1; }
+    return 0;
+}
+
+df rune_cmd_run(final: i64) -> void {
+    fixed entry: str = rune_require_entry();
+    fixed name: str = rune_get_name();
+    rune_mkdir("build");
+    fixed out: str = str_concat("build/", name);
+    fixed torvc: str = rune_find_torvc();
+    set stale: i64 = rune_needs_rebuild(out, entry);
+    check rune_str_eq(rune_config_get("cache"), "false") == 1 { stale = 1; }
+    check stale == 1 || final == 1 {
+        set cmd: str = str_concat(str_concat(str_concat(str_concat(torvc, " "), entry), " -o "), out);
+        cmd = str_concat(cmd, " -q");
+        check final == 1 { cmd = str_concat(cmd, " --final"); }
+        fixed rc: i64 = sys_run(cmd);
+        check rc != 0 { exit(rc); }
+    }
+    fixed prc: i64 = sys_run(str_concat("./", out));
+    exit(prc);
+}
+
+df rune_cmd_clean() -> void {
+    check rune_path_exists("build") == 1 {
+        fs_remove("build");
+        echo!("Cleaned build/");
+    } fallback {
+        echo!("Nothing to clean.");
+    }
+}
+
+df rune_cmd_list() -> void {
+    check rune_path_exists("torvik.rune") == 0 {
+        echo!("error: not a Torvik project (no torvik.rune here).");
+        echo!("  run 'rune init' or 'rune new <name>' to create one.");
+        exit(1);
+    }
+    fixed content: str = readfile("torvik.rune");
+    echo!(str_concat("Project: ", rune_field(content, "name")));
+    fixed ver: str = rune_field(content, "version");
+    check len(ver) > 0 { echo!(str_concat("Version: ", ver)); }
+    fixed desc: str = rune_field(content, "description");
+    check len(desc) > 0 { echo!(str_concat("Description: ", desc)); }
+    fixed auth: str = rune_field(content, "author");
+    check len(auth) > 0 { echo!(str_concat("Author:  ", auth)); }
+    echo!("");
+    echo!("Dependencies arrive with the Rune Library (a future release).");
+}
+
+df rune_cmd_uninstall(confirmed: i64) -> void {
+    fixed root: str = str_concat(sys_home_dir(), "/.torvik");
+    check rune_path_exists(root) == 0 {
+        echo!("Torvik is not installed (~/.torvik not found).");
+        exit(0);
+    }
+    check confirmed == 0 {
+        echo!("This removes the Torvik toolchain at ~/.torvik (torvc, rune, libs, config).");
+        echo!("Re-run to confirm:  rune uninstall --yes");
+        exit(0);
+    }
+    fs_remove(root);
+    echo!("Removed ~/.torvik.");
+    echo!("To finish, delete the Torvik bin line (the one adding ~/.torvik/bin to PATH)");
+    echo!("from your shell startup file, e.g. ~/.bashrc or ~/.profile.");
+}
+
+// ─── Version / config (read) ────────────────────────────────────────────────
+
+df rune_version_content() -> str {
+    check rune_path_exists("VERSION") == 1 { return readfile("VERSION"); }
+    fixed inst: str = str_concat(sys_home_dir(), "/.torvik/lib/VERSION");
+    check rune_path_exists(inst) == 1 { return readfile(inst); }
+    return "";
+}
+
+df rune_ver_of(key: str) -> str {
+    fixed v: str = rune_field(rune_version_content(), key);
+    check len(v) > 0 { return v; }
+    return "0.0.0";
+}
+
+df rune_version() -> void {
+    echo!(str_concat("rune v", str_concat(rune_ver_of("rune"), " — Torvik Package Manager")));
+    echo!(str_concat("torvik v", rune_ver_of("torvik")));
+}
+
+df rune_config_get(key: str) -> str {
+    fixed cp: str = str_concat(sys_home_dir(), "/.torvik/config.rune");
+    check rune_path_exists(cp) == 1 { return rune_field(readfile(cp), key); }
+    return "";
+}
+
+df rune_cmd_config() -> void {
+    echo!("Rune config (~/.torvik/config.rune):");
+    echo!(str_concat("  optimize = ", rune_config_get("optimize")));
+    echo!(str_concat("  cache    = ", rune_config_get("cache")));
+    echo!(str_concat("  registry = ", rune_config_get("url")));
+}
+
+// ─── Developer commands (unlisted in `rune help`) ───────────────────────────
+
+df rune_config_path() -> str {
+    return str_concat(sys_home_dir(), "/.torvik/config.rune");
+}
+
+df rune_known_key(k: str) -> i64 {
+    check rune_str_eq(k, "optimize") == 1 { return 1; }
+    check rune_str_eq(k, "cache") == 1 { return 1; }
+    check rune_str_eq(k, "registry") == 1 { return 1; }
+    check rune_str_eq(k, "diagnostics") == 1 { return 1; }
+    return 0;
+}
+
+df rune_cfg_or(key: str, dflt: str) -> str {
+    fixed v: str = rune_config_get(key);
+    check len(v) > 0 { return v; }
+    return dflt;
+}
+
+// Render the whole config file from three values — single source of file format.
+df rune_render_config(optimize: str, cache: str, registry: str, diagnostics: str) -> str {
+    set m: str = "# config.rune — Rune package manager settings (managed by Rune; not a project file).\n";
+    m = str_concat(m, "# 'cache' is live: it governs incremental rebuilds.\n");
+    m = str_concat(m, "# 'diagnostics' is live: it governs the internal diagnostics log (see 'rune dev status').\n");
+    m = str_concat(m, "# 'optimize' and 'registry' are reserved for the Rune Library release.\n");
+    m = str_concat(m, "[settings]\noptimize = \"");
+    m = str_concat(m, optimize);
+    m = str_concat(m, "\"\ncache    = \"");
+    m = str_concat(m, cache);
+    m = str_concat(m, "\"\ndiagnostics = \"");
+    m = str_concat(m, diagnostics);
+    m = str_concat(m, "\"\n\n[registry]\nurl = \"");
+    m = str_concat(m, registry);
+    m = str_concat(m, "\"\n");
+    return m;
+}
+
+df rune_cmd_config_get(key: str) -> void {
+    check rune_known_key(key) == 0 {
+        echo!(str_concat(str_concat("rune: unknown config key '", key), "' (known: optimize, cache, registry)"));
+        exit(1);
+    }
+    echo!(rune_config_get(key));
+}
+
+// Rewrites config.rune entirely via writefile — no shell, no quoting.
+df rune_cmd_config_set(key: str, value: str) -> void {
+    check rune_known_key(key) == 0 {
+        echo!(str_concat(str_concat("rune: unknown config key '", key), "' (known: optimize, cache, registry)"));
+        exit(1);
+    }
+    check rune_path_exists(rune_config_path()) == 0 {
+        echo!("rune: config.rune not found; is Torvik installed?");
+        exit(1);
+    }
+    set o: str = rune_cfg_or("optimize", "false");
+    set c: str = rune_cfg_or("cache", "true");
+    set u: str = rune_cfg_or("url", "https://runes.torvik-lang.dev");
+    set d: str = rune_cfg_or("diagnostics", "true");
+    check rune_str_eq(key, "optimize") == 1 { o = value; }
+    check rune_str_eq(key, "cache") == 1 { c = value; }
+    check rune_str_eq(key, "registry") == 1 { u = value; }
+    check rune_str_eq(key, "diagnostics") == 1 { d = value; }
+    writefile(rune_config_path(), rune_render_config(o, c, u, d));
+    echo!(str_concat(str_concat("set ", key), str_concat(" = ", value)));
+    check rune_str_eq(key, "cache") == 0 {
+        check rune_str_eq(key, "diagnostics") == 0 {
+            echo!("  (note: only 'cache' is live today; this key is reserved for the Rune Library release)");
+        }
+    }
+}
+
+df rune_doctor() -> void {
+    fixed root: str = str_concat(sys_home_dir(), "/.torvik");
+    echo!("Torvik doctor:");
+    check rune_path_exists(str_concat(root, "/bin/torvc")) == 1 {
+        echo!("  [ok]   torvc present (~/.torvik/bin/torvc)");
+    } fallback {
+        echo!("  [MISS] torvc not found in ~/.torvik/bin");
+    }
+    check rune_path_exists(str_concat(root, "/bin/rune")) == 1 {
+        echo!("  [ok]   rune present (~/.torvik/bin/rune)");
+    } fallback {
+        echo!("  [MISS] rune not found in ~/.torvik/bin");
+    }
+    check rune_path_exists(str_concat(root, "/lib/torvik_codegen.tv")) == 1 {
+        echo!("  [ok]   compiler library present (~/.torvik/lib)");
+    } fallback {
+        echo!("  [MISS] compiler library missing in ~/.torvik/lib");
+    }
+    check rune_path_exists(str_concat(root, "/lib/VERSION")) == 1 {
+        echo!("  [ok]   VERSION present");
+    } fallback {
+        echo!("  [MISS] VERSION missing in ~/.torvik/lib");
+    }
+    check rune_path_exists(rune_config_path()) == 1 {
+        echo!("  [ok]   config.rune present");
+    } fallback {
+        echo!("  [MISS] config.rune missing");
+    }
+    check sys_run("command -v clang > /dev/null 2>&1") == 0 {
+        echo!("  [ok]   clang found on PATH");
+    } fallback {
+        echo!("  [MISS] clang not on PATH (required to link builds)");
+    }
+    check sys_run("command -v torvc > /dev/null 2>&1") == 0 {
+        echo!("  [ok]   torvc on PATH");
+    } fallback {
+        echo!("  [warn] torvc not on PATH (add ~/.torvik/bin to PATH)");
+    }
+}
+
+df rune_dev_log_tail(content: str, n: i64) -> void {
+    check len(content) == 0 { echo!("diagnostics log is empty"); return; }
+    fixed raw: list<str> = split(content, "\n");
+    set lines: list<str> = list_new();
+    set r: i64 = 0;
+    whilst r < len(raw) {
+        check len(raw[r]) > 0 { push(lines, raw[r]); }
+        r += 1;
+    }
+    fixed total: i64 = len(lines);
+    check total == 0 { echo!("diagnostics log is empty"); return; }
+    set startidx: i64 = 0;
+    check total > n { startidx = total - n; }
+    set i: i64 = startidx;
+    whilst i < total {
+        echo!(lines[i]);
+        i += 1;
+    }
+}
+
+df rune_dev_log(argc: i64) -> void {
+    check argc >= 4 {
+        check rune_str_eq(args_get(3), "clear") == 1 { diag_log_clear(); echo!("diagnostics log cleared"); return; }
+        check rune_str_eq(args_get(3), "tail") == 1 {
+            check argc >= 5 { rune_dev_log_tail(diag_log_read(), toint(args_get(4))); return; }
+            rune_dev_log_tail(diag_log_read(), 20);
+            return;
+        }
+    }
+    fixed content: str = diag_log_read();
+    check len(content) == 0 { echo!("diagnostics log is empty"); return; }
+    echo!(content);
+}
+
+df rune_dev_status() -> void {
+    check diag_enabled() == 1 { echo!("diagnostics: ON"); } fallback { echo!("diagnostics: OFF"); }
+    echo!(fmt("log file:   {}", diag_log_path()));
+    echo!(fmt("entries:    {}", diag_count(diag_log_read())));
+}
+
+df rune_dev_help() -> void {
+    echo!("rune — developer commands (maintainers only; unlisted in 'rune help')");
+    echo!("");
+    echo!("  rune config                 Show Rune's own settings (~/.torvik/config.rune)");
+    echo!("  rune dev config get <key>   Print one config value");
+    echo!("  rune dev config set <k> <v> Update a config value (optimize|cache|registry)");
+    echo!("  rune dev log                Show the internal diagnostics log");
+    echo!("  rune dev log tail <n>       Show the last n diagnostics entries");
+    echo!("  rune dev log clear          Clear the diagnostics log");
+    echo!("  rune dev diagnostics on|off Enable/disable internal diagnostics logging");
+    echo!("  rune dev status             Show diagnostics state + log stats");
+    echo!("  rune doctor                 Check toolchain health");
+    echo!("  rune version                Show component versions");
+    echo!("  rune dev                    Show this menu");
+    echo!("");
+    echo!("These act on the Torvik toolchain itself, not on a user project.");
+}
+
+df rune_help() -> void {
+    echo!("rune — Torvik Package Manager");
+    echo!("");
+    echo!("USAGE:");
+    echo!("  rune new <name>     Create a new project in a new directory");
+    echo!("  rune init [name]    Create a project in the current directory");
+    echo!("  rune build          Compile the project to build/<name>");
+    echo!("  rune run            Compile and run (incremental)");
+    echo!("  rune list           Show project info  (alias: ls)");
+    echo!("  rune clean          Remove the build/ directory");
+    echo!("  rune uninstall      Remove the Torvik toolchain (~/.torvik)");
+    echo!("  rune version        Show versions");
+    echo!("  rune help           Show this help");
+    echo!("");
+    echo!("FLAGS:");
+    echo!("  --final             Production build (-O3, stripped)");
+    echo!("");
+    echo!("  (add, remove, update: planned for a future release with the Rune Library)");
+}
+
+// ─── Entry point ────────────────────────────────────────────────────────────
+
+df main() -> void {
+    fixed argc: i64 = args();
+    check argc < 2 { rune_help(); exit(0); }
+    fixed cmd: str = args_get(1);
+
+    check cmd == "new" {
+        check argc < 3 { echo!("error: usage: rune new <project-name>"); exit(1); }
+        rune_cmd_new(args_get(2));
+        exit(0);
+    }
+    check cmd == "init" {
+        check argc < 3 { rune_cmd_init(rune_cwd_name()); exit(0); }
+        rune_cmd_init(args_get(2));
+        exit(0);
+    }
+    check cmd == "build"     { rune_cmd_build(rune_has_final()); exit(0); }
+    check cmd == "run"       { rune_cmd_run(rune_has_final());   exit(0); }
+    check cmd == "clean"     { rune_cmd_clean();                 exit(0); }
+    check cmd == "list"      { rune_cmd_list();                  exit(0); }
+    check cmd == "ls"        { rune_cmd_list();                  exit(0); }
+    check cmd == "version"   { rune_version();                   exit(0); }
+    check cmd == "--version" { rune_version();                   exit(0); }
+    check cmd == "help"      { rune_help();                      exit(0); }
+    check cmd == "--help"    { rune_help();                      exit(0); }
+    check cmd == "uninstall" { rune_cmd_uninstall(rune_has_yes()); exit(0); }
+
+    check cmd == "config"    { rune_cmd_config();                exit(0); }
+    check cmd == "doctor"    { rune_doctor();                    exit(0); }
+    check cmd == "dev" {
+        check argc < 3 { rune_dev_help(); exit(0); }
+        check rune_str_eq(args_get(2), "config") == 1 {
+            check argc >= 5 {
+                check rune_str_eq(args_get(3), "set") == 1 { rune_cmd_config_set(args_get(4), args_get(5)); exit(0); }
+            }
+            check argc >= 4 {
+                check rune_str_eq(args_get(3), "get") == 1 { rune_cmd_config_get(args_get(4)); exit(0); }
+            }
+            echo!("usage: rune dev config get <key> | rune dev config set <key> <value>");
+            exit(1);
+        }
+        check rune_str_eq(args_get(2), "log") == 1 { rune_dev_log(argc); exit(0); }
+        check rune_str_eq(args_get(2), "status") == 1 { rune_dev_status(); exit(0); }
+        check rune_str_eq(args_get(2), "diagnostics") == 1 {
+            check argc >= 4 {
+                check rune_str_eq(args_get(3), "on") == 1 { rune_cmd_config_set("diagnostics", "true"); echo!("diagnostics enabled"); exit(0); }
+                check rune_str_eq(args_get(3), "off") == 1 { rune_cmd_config_set("diagnostics", "false"); echo!("diagnostics disabled"); exit(0); }
+            }
+            echo!("usage: rune dev diagnostics on|off");
+            exit(1);
+        }
+        rune_dev_help();
+        exit(0);
+    }
+
+    check cmd == "add" || cmd == "remove" || cmd == "rm" || cmd == "update" || cmd == "upgrade" || cmd == "pin" || cmd == "unpin" || cmd == "audit" {
+        echo!(str_concat(str_concat("rune: '", cmd), "' needs the Rune Library, planned for a future release."));
+        exit(1);
+    }
+
+    echo!(str_concat(str_concat("error: unknown rune command '", cmd), "'"));
+    echo!("  run 'rune help' for usage.");
+    exit(1);
+}
