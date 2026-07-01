@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # install.sh - Torvik installer:
-#   curl -fsSL https://raw.githubusercontent.com/<org>/torvik/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/install.sh | sh
 set -e
 INSTALL_DIR="$HOME/.torvik"; BIN_DIR="$INSTALL_DIR/bin"; LIB_DIR="$INSTALL_DIR/lib"
 ORG="https://github.com/torvik-lang/torvik"
@@ -89,18 +89,20 @@ mkdir -p "$BIN_DIR" "$LIB_DIR" "$INSTALL_DIR/cache" "$INSTALL_DIR/runes"
 dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc"
 dl "$REL/rune-$OS-$ARCH"  "$BIN_DIR/rune"
 chmod +x "$BIN_DIR/torvc" "$BIN_DIR/rune"
-for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv torvik_runtime.c VERSION; do dl "$REL/$a" "$LIB_DIR/$a"; done
+for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW/src/$a" "$LIB_DIR/$a"; done
+dl "$RAW/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
+dl "$RAW/VERSION" "$LIB_DIR/VERSION"
 mkdir -p "$LIB_DIR/std"
-for a in math strings list; do dl "$REL/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
+for a in math strings list; do dl "$RAW/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
 
 # --- icons + .tv file type (Linux only; macOS/Windows association: v1.1.0) ---
 if [ "$OS" = "linux" ]; then
     echo "Registering the .tv file type and icons..."
     ICON_DIR="$INSTALL_DIR/icons"; mkdir -p "$ICON_DIR/png"
-    dl "$REL/torvik-mime.xml" "$ICON_DIR/torvik-mime.xml" 2>/dev/null || true
+    dl "$RAW/assets/linux/torvik-mime.xml" "$ICON_DIR/torvik-mime.xml" 2>/dev/null || true
     for s in 16 32 48 64 128 256; do
-        dl "$REL/torvik-file-$s.png" "$ICON_DIR/png/torvik-file-$s.png" 2>/dev/null || true
-        dl "$REL/torvik-icon-$s.png" "$ICON_DIR/png/torvik-icon-$s.png" 2>/dev/null || true
+        dl "$RAW/assets/png/torvik-file-$s.png" "$ICON_DIR/png/torvik-file-$s.png" 2>/dev/null || true
+        dl "$RAW/assets/png/torvik-icon-$s.png" "$ICON_DIR/png/torvik-icon-$s.png" 2>/dev/null || true
     done
     torvik_register_icons "$ICON_DIR" "$V"
 fi
