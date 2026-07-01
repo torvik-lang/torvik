@@ -16,7 +16,7 @@ section will be updated.
 **Please do not report security vulnerabilities through public GitHub issues,
 pull requests, or discussions.**
 
-Instead, report privately using GitHub's **[Private vulnerability reporting](https://github.com/torvik-lang/torvik/security/advisories/new)**
+Instead, report privately using GitHub's **[Private vulnerability reporting]**
 ("Report a vulnerability" under the repository's **Security** tab). If you can't
 use that, contact the maintainer at **torviklang@gmail.com**.
 
