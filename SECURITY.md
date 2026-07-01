@@ -18,7 +18,7 @@ pull requests, or discussions.**
 
 Instead, report privately using GitHub's **[Private vulnerability reporting](https://github.com/torvik-lang/torvik/security/advisories/new)**
 ("Report a vulnerability" under the repository's **Security** tab). If you can't
-use that, contact the maintainer at **<your-email-here>**.
+use that, contact the maintainer at **torviklang@gmail.com**.
 
 Please include as much of the following as you can:
 
