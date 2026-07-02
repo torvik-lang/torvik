@@ -590,10 +590,12 @@ void torvik_writefile(const char *path, const char *data) {
 
 /* ── 4. Environment ──────────────────────────────────────────────────────────── */
 
-/* readenv — returns heap string or NULL if not set */
+/* readenv — returns the variable's value, or "" when the variable is not set.
+   (v1.0.1 fix: this used to return NULL for an unset variable, which the
+   Torvik side cannot hold — any readenv() of an unset variable segfaulted.) */
 char *torvik_readenv(const char *name) {
     const char *v = getenv(name);
-    return v ? torvik_str_dup(v) : NULL;
+    return torvik_str_dup(v ? v : "");
 }
 
 /* ── 5. Math ─────────────────────────────────────────────────────────────────── */
@@ -1488,4 +1490,3 @@ char *torvik_str_concat(const char *a, const char *b) {
 int torvik_str_eq(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
-
