@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1] — 2026
+
+### Fixes
+
+- **`readenv` of an unset environment variable no longer crashes.** The runtime returned a
+  null pointer when the variable was not set, which segfaulted on first use of the result.
+  `readenv` now returns `""` when the variable is unset. Existing installations pick up the
+  fix by re-running the installer; all builds after that are fixed automatically.
+
 ## [1.0.0] — 2026
 
 First stable release of Torvik: a self-hosting, compiled, general-purpose language.
