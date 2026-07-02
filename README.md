@@ -66,6 +66,23 @@ with `rune --version`. Rune manages Torvik from there — `rune uninstall` remov
 
 ---
 
+## Update
+
+Already have Torvik? Re-run the same one-liner to update to the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/install.sh | sh
+```
+
+It refreshes `torvc`, `rune`, the runtime, and the standard library in `~/.torvik` — your
+projects, config, and PATH setup are untouched. Check what you're running with
+`rune version`.
+
+> A built-in `rune update` command is planned; until it lands, re-running the installer is
+> the supported update path.
+
+---
+
 ## Quick start
 
 ```bash
