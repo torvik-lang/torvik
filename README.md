@@ -6,7 +6,7 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey)]()
