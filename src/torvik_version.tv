@@ -25,11 +25,9 @@ df tv_match(line: str, key: str) -> str {
     return "";
 }
 df tv_content() -> str {
-    fixed drc: i64 = sys_run("test -e VERSION");
-    check drc == 0 { return readfile("VERSION"); }
+    check fs_exists("VERSION") == 1 { return readfile("VERSION"); }
     fixed inst: str = str_concat(sys_home_dir(), "/.torvik/lib/VERSION");
-    fixed irc: i64 = sys_run(str_concat("test -e ", inst));
-    check irc == 0 { return readfile(inst); }
+    check fs_exists(inst) == 1 { return readfile(inst); }
     return "";
 }
 df tv_get(key: str) -> str {
