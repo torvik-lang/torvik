@@ -72,12 +72,12 @@ The manifest is straightforward:
 ```
 [project]
 name        = "myapp"
-version     = "0.0.1"
+version     = "0.1.0"
 description = ""
 author      = ""
 
 [runes]
-# Dependencies (coming with the Rune Library; not yet supported)
+# Dependencies (coming with the Rune Library, a future version — timeline depends on registry infrastructure and sponsorship)
 ```
 
 ### Building and running
@@ -101,8 +101,45 @@ are fast. The build timer reports how long compilation took.
 | `rune list`      | Show project info (alias: `ls`)                         |
 | `rune clean`     | Remove the `build/` directory                           |
 | `rune version`   | Show tool and language versions                         |
+| `rune update`    | Update the toolchain to the latest release (or a pinned version) |
 | `rune uninstall` | Remove the Torvik toolchain (`~/.torvik`)               |
 | `rune help`      | Show usage                                              |
+
+### Managing toolchain versions
+
+`rune update` installs the latest Torvik release. You can also **pin a specific version** by
+passing it:
+
+```bash
+rune update            # latest release
+rune update v1.1.0     # exactly 1.1.0
+rune update v1.0       # the newest 1.0.x release
+rune update v1         # the newest 1.x release
+```
+
+The version accepts an optional leading `v` and one, two, or three components. A partial
+version (`v1`, `v1.0`) resolves to the newest matching release. If the version doesn't exist,
+`rune` reports it cleanly and leaves your current toolchain in place. Add `--yes` to skip the
+confirmation prompt.
+
+A bare `rune update` first checks whether a newer release exists. If you're already on the
+latest, it says so and does nothing — pass `--force` to reinstall anyway. If the latest is a
+new **major** version (e.g. you're on 1.x and 2.0.0 is out), `rune` warns that major versions
+may contain breaking changes and asks you to confirm before updating, so an update never
+silently jumps a major boundary. Pinning an exact version with `rune update vX.Y.Z` skips
+these checks and installs what you asked for.
+
+Projects can require a **minimum** Torvik version in their `torvik.rune` manifest:
+
+```
+[project]
+name   = "myapp"
+torvik = "1.1.0"     # rune build/run refuses an older toolchain
+```
+
+If the installed toolchain is older than a project requires, `rune build` and `rune run` stop
+with a clear message pointing you at `rune update`. `rune new` records the current version in
+new projects automatically; remove or lower the line to relax the requirement.
 
 ### Production builds
 
@@ -123,10 +160,37 @@ failed `vow` — is reported faithfully by `rune`.
 ## A note on dependencies
 
 The `[runes]` section of the manifest is reserved for external dependencies, which arrive
-with the Rune Library in a future release. In v1.0 a project is your own `.tv` sources under
+with the Rune Library in a future release. For now a project is your own `.tv` sources under
 `src/`, composed with [`apply`](GUIDE.md#modules-apply).
 
 ---
 
 *For the language itself, see [GUIDE.md](GUIDE.md); for built-in functions, see
 [STDLIB.md](STDLIB.md).*
+
+## Platforms
+
+Torvik runs on Linux and Windows (both x86-64). macOS is not yet supported (official builds planned for v1.2.0); until then, use Linux (a VM or container works). The compiler emits
+LLVM IR and links it with `clang`, so a program behaves identically on every platform — only
+the toolchain binaries and the installer differ.
+
+### Windows
+
+The Windows toolchain ships as `torvc.exe` and `rune.exe`. Install it from PowerShell:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex
+```
+
+This places the binaries under `%USERPROFILE%\.torvik\bin`, the runtime and standard
+library under `%USERPROFILE%\.torvik\lib`, and adds the `bin` directory to your user `PATH`.
+
+As the back-end, `torvc` needs a clang that includes the **MinGW-w64** C headers and
+libraries on `PATH` — plain LLVM alone does not include the C headers, and you'll get a
+`'stdio.h' file not found` error. Install one of: [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases)
+(simplest), MSYS2 (`pacman -S mingw-w64-clang-x86_64-toolchain`), or [WinLibs](https://winlibs.com)
+(UCRT build), and put its `bin` directory on `PATH`. `torvc` targets `x86_64-w64-windows-gnu`
+and writes its intermediate IR to `%TEMP%\.torvik`.
+
+Everything works the same as on Linux: `rune new`, `rune build`, `rune run`, `rune update`,
+`rune uninstall`. Compiled programs are `.exe` files.
