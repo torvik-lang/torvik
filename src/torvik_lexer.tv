@@ -64,6 +64,7 @@ fixed OP_TERNELSE:   i64 = 230;
 fixed OP_BOUND:      i64 = 231;
 fixed OP_KINDRED:    i64 = 232;
 fixed OP_WEAVE:      i64 = 233;
+fixed OP_DOTDOTPLUS: i64 = 234;
 fixed PUNCT_LPAREN:  i64 = 300;
 fixed PUNCT_RPAREN:  i64 = 301;
 fixed PUNCT_LBRACE:  i64 = 302;
@@ -134,6 +135,19 @@ df lex_source(source: str) -> list<i64> {
                 }
             }
         }
+        // Block comment: #- ... -#, nestable (a #- inside opens another level).
+        // Unbalanced forms are caught pre-lex by collect_source_errors.
+        check c == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 {
+            pos += 2;
+            set bdepth: i64 = 1;
+            whilst pos < slen && bdepth > 0 {
+                fixed bc: i64 = byte_at(source, pos);
+                check bc == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 { bdepth += 1; pos += 2; continue; }
+                check bc == 45 && pos + 1 < slen && byte_at(source, pos + 1) == 35 { bdepth -= 1; pos += 2; continue; }
+                pos += 1;
+            }
+            continue;
+        }
         check c == 34 || c == 39 {
             fixed q: i64 = c;
             pos += 1;
@@ -177,6 +191,9 @@ df lex_source(source: str) -> list<i64> {
         check c == 93  { push(kinds, PUNCT_RBRACKET); pos += 1; continue; }
         check c == 46 {
             check pos + 1 < slen && byte_at(source, pos + 1) == 46 {
+                check pos + 2 < slen && byte_at(source, pos + 2) == 43 {
+                    push(kinds, OP_DOTDOTPLUS); pos += 3; continue;
+                }
                 push(kinds, OP_DOTDOT); pos += 2; continue;
             }
             push(kinds, PUNCT_DOT); pos += 1; continue;
@@ -340,6 +357,19 @@ df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
             continue;
         }
 
+        // Skip block comments (#- ... -#, nestable) — in lockstep with lex_source
+        check c == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 {
+            pos += 2;
+            set bdepth: i64 = 1;
+            whilst pos < slen && bdepth > 0 {
+                fixed bcx: i64 = byte_at(source, pos);
+                check bcx == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 { bdepth += 1; pos += 2; continue; }
+                check bcx == 45 && pos + 1 < slen && byte_at(source, pos + 1) == 35 { bdepth -= 1; pos += 2; continue; }
+                pos += 1;
+            }
+            continue;
+        }
+
         // Found a string literal — decode escape sequences into real bytes
         // so the in-memory value matches the Rust lexer. llvm_escape re-encodes
         // control bytes for the LLVM constant downstream.
@@ -467,6 +497,19 @@ df extract_all_names(source: str) -> list<str> {
             continue;
         }
 
+        // Skip block comments (#- ... -#, nestable) — in lockstep with lex_source
+        check c == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 {
+            pos += 2;
+            set bdepth: i64 = 1;
+            whilst pos < slen && bdepth > 0 {
+                fixed bcn: i64 = byte_at(source, pos);
+                check bcn == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 { bdepth += 1; pos += 2; continue; }
+                check bcn == 45 && pos + 1 < slen && byte_at(source, pos + 1) == 35 { bdepth -= 1; pos += 2; continue; }
+                pos += 1;
+            }
+            continue;
+        }
+
         // String literal → extract and push
         check c == 34 || c == 39 {
             fixed q: i64 = c;
@@ -530,6 +573,18 @@ df extract_offsets(source: str) -> list<i64> {
                 }
             }
         }
+        // Block comment skip — in lockstep with lex_source (no token, no offset)
+        check c == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 {
+            pos += 2;
+            set bdepth: i64 = 1;
+            whilst pos < slen && bdepth > 0 {
+                fixed bco: i64 = byte_at(source, pos);
+                check bco == 35 && pos + 1 < slen && byte_at(source, pos + 1) == 45 { bdepth += 1; pos += 2; continue; }
+                check bco == 45 && pos + 1 < slen && byte_at(source, pos + 1) == 35 { bdepth -= 1; pos += 2; continue; }
+                pos += 1;
+            }
+            continue;
+        }
         check c == 34 || c == 39 {
             fixed q: i64 = c;
             pos += 1;
@@ -573,6 +628,9 @@ df extract_offsets(source: str) -> list<i64> {
         check c == 93  { push(offs, tok_start); pos += 1; continue; }
         check c == 46 {
             check pos + 1 < slen && byte_at(source, pos + 1) == 46 {
+                check pos + 2 < slen && byte_at(source, pos + 2) == 43 {
+                    push(offs, tok_start); pos += 3; continue;
+                }
                 push(offs, tok_start); pos += 2; continue;
             }
             push(offs, tok_start); pos += 1; continue;
