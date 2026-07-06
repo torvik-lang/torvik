@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # install.sh - Torvik installer:
-#   curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh
 set -e
 INSTALL_DIR="$HOME/.torvik"; BIN_DIR="$INSTALL_DIR/bin"; LIB_DIR="$INSTALL_DIR/lib"
 ORG="https://github.com/torvik-lang/torvik"
@@ -79,15 +79,80 @@ torvik_register_icons() {
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]'); ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) echo "error: unsupported arch $ARCH"; exit 1;; esac
-case "$OS" in linux|darwin) ;; mingw*|msys*|cygwin*) echo "error: Windows is not yet supported (planned for a later release)."; exit 1;; *) echo "error: unsupported OS $OS"; exit 1;; esac
-command -v clang >/dev/null 2>&1 || { echo "error: clang required (Linux: sudo apt install clang | Solus: sudo eopkg install clang | macOS: xcode-select --install)"; exit 1; }
-V="$(fetch "$RAW/VERSION" | grep -E '^[[:space:]]*torvik' | head -1 | sed 's/^[^=]*=[[:space:]]*//')"
-[ -n "$V" ] || V="1.0.0"
+case "$OS" in
+  linux) ;;
+  darwin)
+    echo "Torvik doesn't have official macOS builds yet — macOS support is planned for v1.2.0."
+    echo ""
+    echo "There's no prebuilt torvc/rune for macOS to install right now. If you'd like to try"
+    echo "it early, the toolchain is written to be macOS-compatible and can be built from source"
+    echo "(you'll need clang, via 'xcode-select --install'), though this is untested and unsupported:"
+    echo ""
+    echo "  git clone https://github.com/torvik-lang/torvik"
+    echo "  # then follow docs/GUIDE.md to bootstrap the compiler"
+    echo ""
+    echo "Otherwise, watch the repo for the v1.2.0 release, which brings tested macOS binaries and"
+    echo "a proper installer. You can also run Torvik today on Linux (including in a Linux VM/container)."
+    exit 1 ;;
+  mingw*|msys*|cygwin*)
+    echo "It looks like you're on Windows (running under $OS)."
+    echo "Use the Windows installer instead — from PowerShell, run:"
+    echo ""
+    echo "  iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex"
+    echo ""
+    echo "(That installs torvc.exe and rune.exe under %USERPROFILE%\\.torvik.)"
+    exit 1 ;;
+  *) echo "error: unsupported OS $OS"; exit 1 ;;
+esac
+command -v clang >/dev/null 2>&1 || { echo "error: clang required (Linux: sudo apt install clang | Solus: sudo eopkg install clang)"; exit 1; }
+
+# --- version selection --------------------------------------------------------
+# Default: the latest version, read from the repo's VERSION on the main branch.
+# Override: set TORVIK_VERSION to pin a release. It accepts a full tag (v1.0.1),
+# or a partial version (v1, v1.0) which resolves to the newest matching release
+# via the GitHub API. `rune update vX` sets this for you.
+API="https://api.github.com/repos/torvik-lang/torvik/releases"
+
+if [ -n "$TORVIK_VERSION" ]; then
+    REQ="$TORVIK_VERSION"
+    case "$REQ" in v*) : ;; *) REQ="v$REQ" ;; esac
+    # Fetch the release list once so we can tell "version not found" apart from
+    # "couldn't reach GitHub" (network down / API rate-limited).
+    _releases="$(fetch "$API" 2>/dev/null)"
+    if [ -z "$_releases" ]; then
+        echo "error: could not reach the GitHub release list (network issue or API rate limit)."
+        echo "  Check your connection and try again, or install the latest with a bare 'rune update'."
+        exit 1
+    fi
+    TAG="$(printf '%s\n' "$_releases" \
+      | grep -E '"tag_name"' \
+      | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
+      | awk -v r="$REQ" '$0==r || index($0, r".")==1' \
+      | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | sed 's/^/v/')"
+    if [ -z "$TAG" ]; then
+        echo "error: no Torvik release matches '$TORVIK_VERSION'."
+        echo "  See the available versions at https://github.com/torvik-lang/torvik/releases"
+        exit 1
+    fi
+    V="${TAG#v}"
+    echo "Installing the requested Torvik $TAG ($OS/$ARCH)..."
+else
+    V="$(fetch "$RAW/VERSION" | grep -E '^[[:space:]]*torvik' | head -1 | sed 's/^[^=]*=[[:space:]]*//')"
+    [ -n "$V" ] || V="1.0.0"
+    echo "Installing Torvik v$V ($OS/$ARCH)..."
+fi
 REL="$ORG/releases/download/v$V"
-echo "Installing Torvik v$V ($OS/$ARCH)..."
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$INSTALL_DIR/cache" "$INSTALL_DIR/runes"
-dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc"
-dl "$REL/rune-$OS-$ARCH"  "$BIN_DIR/rune"
+# Verify the binaries exist for this release before overwriting anything.
+if ! dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc.new" 2>/dev/null; then
+    echo "error: Torvik v$V has no $OS/$ARCH build (could not download torvc)."
+    echo "  Pick another version from https://github.com/torvik-lang/torvik/releases"
+    rm -f "$BIN_DIR/torvc.new"
+    exit 1
+fi
+dl "$REL/rune-$OS-$ARCH" "$BIN_DIR/rune.new" || { echo "error: could not download rune for v$V."; rm -f "$BIN_DIR/torvc.new" "$BIN_DIR/rune.new"; exit 1; }
+mv "$BIN_DIR/torvc.new" "$BIN_DIR/torvc"
+mv "$BIN_DIR/rune.new"  "$BIN_DIR/rune"
 chmod +x "$BIN_DIR/torvc" "$BIN_DIR/rune"
 for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW/src/$a" "$LIB_DIR/$a"; done
 dl "$RAW/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
