@@ -188,7 +188,7 @@ df main() -> void {
 
 ## Documentation
 
-Check out our [wiki page](https://github.com/torvik-lang/torvik/wiki) for more info regarding Torvik. You can also read docs in the source below.
+Check out our **[Wiki page](https://github.com/torvik-lang/torvik/wiki)** for more info regarding Torvik. You can also read docs in the source below.
 
 - **[The Torvik Guide](docs/GUIDE.md)** — full tutorial and language reference.
 - **[Tooling](docs/TOOLING.md)** — the `torvc` compiler and the `rune` project tool.
