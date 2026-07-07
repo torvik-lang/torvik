@@ -30,15 +30,70 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
-#include <unistd.h>
 #include <sys/stat.h>
-#include <dirent.h>
-#include <termios.h>
-#include <sys/time.h>
-#include <sys/utsname.h>
-#include <sys/sysinfo.h>
-#include <sys/wait.h>
 #include <errno.h>
+
+/* ── Platform layer ──────────────────────────────────────────────────────────
+   Torvik's runtime is one shared C file across Linux, macOS, and Windows. The
+   POSIX headers and the Win32 API cover the same ground with different names, so
+   the platform-divergent pieces (terminal raw mode, process id, wall-clock ms,
+   OS/arch/host info, memory stats, running a command, directory walk) each carry
+   a _WIN32 branch. Everything else is portable C and compiles unchanged. */
+#if defined(_WIN32)
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <windows.h>
+  #include <direct.h>
+  #include <io.h>
+  #include <conio.h>
+  #include <process.h>
+  /* MSVCRT names a few POSIX-ish calls with leading underscores. */
+  #define torvik_getcwd _getcwd
+  #define torvik_access _access
+  #define F_OK 0
+#else
+  #include <unistd.h>
+  #include <dirent.h>
+  #include <termios.h>
+  #include <sys/time.h>
+  #include <sys/utsname.h>
+  #include <sys/sysinfo.h>
+  #include <sys/wait.h>
+  #define torvik_getcwd getcwd
+  #define torvik_access access
+#endif
+
+/* getline() is POSIX; the mingw/MSVC CRT doesn't provide it. Supply a minimal,
+   compatible implementation on Windows: grows *lineptr as needed and returns the
+   number of bytes read (including the newline), or -1 at EOF. Semantics match
+   what torvik_read relies on. */
+#if defined(_WIN32)
+#include <sys/types.h>   /* ssize_t via mingw */
+static ssize_t torvik_getline_impl(char **lineptr, size_t *n, FILE *stream) {
+    if (!lineptr || !n || !stream) return -1;
+    size_t cap = *n;
+    char *buf = *lineptr;
+    if (!buf || cap == 0) { cap = 128; buf = (char *)malloc(cap); if (!buf) return -1; }
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(stream)) != EOF) {
+        if (len + 1 >= cap) {
+            size_t ncap = cap * 2;
+            char *nb = (char *)realloc(buf, ncap);
+            if (!nb) { *lineptr = buf; *n = cap; return -1; }
+            buf = nb; cap = ncap;
+        }
+        buf[len++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (len == 0 && c == EOF) { *lineptr = buf; *n = cap; return -1; }
+    buf[len] = '\0';
+    *lineptr = buf; *n = cap;
+    return (ssize_t)len;
+}
+#define getline torvik_getline_impl
+#endif
 
 /* ── String refcount header (memory Stage B1) ─────────────────────────────────
    EVERY string a Torvik program can hold is allocated with a 16-byte header:
@@ -144,15 +199,23 @@ void torvik_str_release(void *p) {
 #define TORVIK_I128_MAGIC 0x544F565649313238LL  /* "TORVI128" */
 typedef struct { int64_t magic; int64_t refcount; __int128 value; } TorvikI128Box;
 
-void *torvik_i128_box(__int128 v) {
+/* NOTE on the __int128 calling convention below: 128-bit integers are passed and
+   returned BY POINTER, never by value. The Win64 ABI passes/returns __int128
+   incompatibly with the way LLVM lowers a by-value i128 in the generated IR, which
+   corrupts the value on Windows. Passing a pointer to the 16-byte value works
+   identically on every target (System V and Win64 alike), so box/load/to_str/div/
+   mod all take __int128* in and write results through an out pointer. retain and
+   release already operate on the box pointer, so they are unchanged. */
+
+void *torvik_i128_box(__int128 *vp) {
     TorvikI128Box *b = (TorvikI128Box *)tv_malloc(sizeof(TorvikI128Box));
     b->magic = TORVIK_I128_MAGIC;
     b->refcount = 0;
-    b->value = v;
+    b->value = *vp;
     return (char *)b + 16;   /* -> value field */
 }
-__int128 torvik_i128_load(void *p) {
-    return *(__int128 *)p;
+void torvik_i128_load(void *p, __int128 *out) {
+    *out = *(__int128 *)p;
 }
 void *torvik_i128_retain(void *p) {
     if (!p) return p;
@@ -172,7 +235,8 @@ void torvik_i128_release(void *p) {
 }
 
 /* 128-bit -> decimal string (no libc format exists for __int128). */
-char *torvik_u128_to_str(unsigned __int128 v) {
+char *torvik_u128_to_str(unsigned __int128 *vp) {
+    unsigned __int128 v = *vp;
     char tmp[44]; int i = 44;
     if (v == 0) tmp[--i] = '0';
     while (v > 0) { tmp[--i] = (char)('0' + (int)(v % 10)); v /= 10; }
@@ -180,7 +244,8 @@ char *torvik_u128_to_str(unsigned __int128 v) {
     memcpy(out, tmp + i, (size_t)(44 - i));
     return out;
 }
-char *torvik_i128_to_str(__int128 v) {
+char *torvik_i128_to_str(__int128 *vp) {
+    __int128 v = *vp;
     char tmp[44]; int i = 44; int neg = 0;
     unsigned __int128 u;
     if (v < 0) { neg = 1; u = (unsigned __int128)(-(v + 1)) + 1; } else { u = (unsigned __int128)v; }
@@ -192,22 +257,23 @@ char *torvik_i128_to_str(__int128 v) {
     return out;
 }
 
-/* unsigned/signed 128-bit div + mod with zero-guard (mirrors torvik_div/mod). */
-__int128 torvik_i128_div(__int128 a, __int128 b) {
-    if (b == 0) torvik_panic("division by zero");
-    return a / b;
+/* unsigned/signed 128-bit div + mod with zero-guard (mirrors torvik_div/mod).
+   Operands and result all travel by pointer (see the convention note above). */
+void torvik_i128_div(__int128 *a, __int128 *b, __int128 *out) {
+    if (*b == 0) torvik_panic("division by zero");
+    *out = *a / *b;
 }
-__int128 torvik_i128_mod(__int128 a, __int128 b) {
-    if (b == 0) torvik_panic("modulo by zero");
-    return a % b;
+void torvik_i128_mod(__int128 *a, __int128 *b, __int128 *out) {
+    if (*b == 0) torvik_panic("modulo by zero");
+    *out = *a % *b;
 }
-__int128 torvik_u128_div(__int128 a, __int128 b) {
-    if (b == 0) torvik_panic("division by zero");
-    return (__int128)((unsigned __int128)a / (unsigned __int128)b);
+void torvik_u128_div(__int128 *a, __int128 *b, __int128 *out) {
+    if (*b == 0) torvik_panic("division by zero");
+    *out = (__int128)((unsigned __int128)*a / (unsigned __int128)*b);
 }
-__int128 torvik_u128_mod(__int128 a, __int128 b) {
-    if (b == 0) torvik_panic("modulo by zero");
-    return (__int128)((unsigned __int128)a % (unsigned __int128)b);
+void torvik_u128_mod(__int128 *a, __int128 *b, __int128 *out) {
+    if (*b == 0) torvik_panic("modulo by zero");
+    *out = (__int128)((unsigned __int128)*a % (unsigned __int128)*b);
 }
 
 /* Boundary copy-in for OS argv (Stage B2 wires this into the main wrapper):
@@ -289,6 +355,9 @@ int torvik_readbool(const char *prompt) {
 
 /* readkey() — single keypress, no Enter required */
 char torvik_readkey(void) {
+#if defined(_WIN32)
+    return (char)_getch();
+#else
     struct termios old, raw;
     tcgetattr(STDIN_FILENO, &old);
     raw = old;
@@ -299,6 +368,7 @@ char torvik_readkey(void) {
     char c = getchar();
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &old);
     return c;
+#endif
 }
 
 /* ── 2. String Operations ────────────────────────────────────────────────────── */
@@ -591,7 +661,7 @@ void torvik_writefile(const char *path, const char *data) {
 /* ── 4. Environment ──────────────────────────────────────────────────────────── */
 
 /* readenv — returns the variable's value, or "" when the variable is not set.
-   (v1.0.1 fix: this used to return NULL for an unset variable, which the
+   (v1.1.0 fix: this used to return NULL for an unset variable, which the
    Torvik side cannot hold — any readenv() of an unset variable segfaulted.) */
 char *torvik_readenv(const char *name) {
     const char *v = getenv(name);
@@ -618,7 +688,11 @@ int64_t torvik_randint(int64_t lo, int64_t hi) {
 /* Seed rand on first call */
 __attribute__((constructor))
 static void torvik_seed_rand(void) {
+#if defined(_WIN32)
+    srand((unsigned)time(NULL) ^ (unsigned)GetCurrentProcessId());
+#else
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
+#endif
 }
 
 /* ── 6. Time & Terminal ──────────────────────────────────────────────────────── */
@@ -626,10 +700,14 @@ static void torvik_seed_rand(void) {
 /* sleep(ms) — sleep for N milliseconds */
 void torvik_sleep(int64_t ms) {
     if (ms <= 0) return;
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
     struct timespec ts;
     ts.tv_sec  = ms / 1000;
     ts.tv_nsec = (ms % 1000) * 1000000L;
     nanosleep(&ts, NULL);
+#endif
 }
 
 /* wait(secs) — sleep for N seconds (fractional) */
@@ -652,9 +730,21 @@ int64_t torvik_time_now(void) {
 
 /* time_ms() — milliseconds since epoch */
 int64_t torvik_time_ms(void) {
+#if defined(_WIN32)
+    /* FILETIME is 100-ns ticks since 1601-01-01; shift the epoch to 1970 and
+       convert to milliseconds. 11644473600 seconds separate the two epochs. */
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    unsigned long long t = ((unsigned long long)ft.dwHighDateTime << 32)
+                         | (unsigned long long)ft.dwLowDateTime;
+    t /= 10000ULL;                      /* 100-ns ticks -> ms */
+    t -= 11644473600000ULL;             /* 1601 epoch -> 1970 epoch */
+    return (int64_t)t;
+#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000LL + (int64_t)tv.tv_usec / 1000LL;
+#endif
 }
 
 /* date_str() — "YYYY-MM-DD" */
@@ -695,10 +785,8 @@ void torvik_assert(int cond, const char *msg) {
     if (!cond) torvik_panic(msg);
 }
 
-char *torvik_typeof_str(void)   { return torvik_str_dup("str"); }
-char *torvik_typeof_i64(void)   { return torvik_str_dup("i64"); }
-char *torvik_typeof_f64(void)   { return torvik_str_dup("f64"); }
-char *torvik_typeof_bool(void)  { return torvik_str_dup("bool"); }
+/* typeof is resolved at COMPILE TIME (Torvik is statically typed) — the
+   compiler interns the type name directly, so no runtime helpers exist. */
 
 /* ── 8. Collections ──────────────────────────────────────────────────────────── */
 
@@ -802,6 +890,18 @@ long torvik_list_contains(TorvikList *l, int64_t value) {
     if (!l) return 0;
     for (int64_t i = 0; i < l->len; i++) {
         if ((int64_t)l->data[i] == value) return 1;
+    }
+    return 0;
+}
+
+/* Membership for list<str>: 1 if `s` CONTENT-equals any element (strcmp), else
+   0. Elements are char* riding the int64 data slots. NULL-safe on both sides.
+   (v1.1.0: `<|` on string lists matches by value, not identity.) */
+long torvik_list_contains_str(TorvikList *l, const char *s) {
+    if (!l || !s) return 0;
+    for (int64_t i = 0; i < l->len; i++) {
+        const char *e = (const char *)l->data[i];
+        if (e && strcmp(e, s) == 0) return 1;
     }
     return 0;
 }
@@ -1263,72 +1363,156 @@ char *torvik_sys_os_name(void) {
 }
 
 char *torvik_sys_os_version(void) {
+#if defined(_WIN32)
+    /* RtlGetVersion is the reliable route, but for a simple string GetVersionEx
+       is adequate; report "major.minor.build". */
+    OSVERSIONINFOA vi;
+    memset(&vi, 0, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+#if defined(__GNUC__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    if (GetVersionExA(&vi)) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%lu.%lu.%lu",
+                 (unsigned long)vi.dwMajorVersion,
+                 (unsigned long)vi.dwMinorVersion,
+                 (unsigned long)vi.dwBuildNumber);
+        return torvik_str_dup(buf);
+    }
+#if defined(__GNUC__)
+    #pragma GCC diagnostic pop
+#endif
+    return torvik_str_dup("unknown");
+#else
     struct utsname u;
     uname(&u);
     return torvik_str_dup(u.release);
+#endif
 }
 
 char *torvik_sys_arch(void) {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetNativeSystemInfo(&si);
+    switch (si.wProcessorArchitecture) {
+        case PROCESSOR_ARCHITECTURE_AMD64: return torvik_str_dup("x86_64");
+        case PROCESSOR_ARCHITECTURE_ARM64: return torvik_str_dup("arm64");
+        case PROCESSOR_ARCHITECTURE_INTEL: return torvik_str_dup("x86");
+        default:                           return torvik_str_dup("unknown");
+    }
+#else
     struct utsname u;
     uname(&u);
     return torvik_str_dup(u.machine);
+#endif
 }
 
 char *torvik_sys_hostname(void) {
+#if defined(_WIN32)
+    char buf[256];
+    DWORD n = (DWORD)sizeof(buf);
+    if (GetComputerNameA(buf, &n)) return torvik_str_dup(buf);
+    return torvik_str_dup("unknown");
+#else
     struct utsname u;
     uname(&u);
     return torvik_str_dup(u.nodename);
+#endif
 }
 
 char *torvik_sys_username(void) {
+#if defined(_WIN32)
+    const char *u = getenv("USERNAME");
+    return torvik_str_dup(u ? u : "unknown");
+#else
     const char *u = getenv("USER");
     if (!u) u = getenv("LOGNAME");
     return torvik_str_dup(u ? u : "unknown");
+#endif
 }
 
 char *torvik_sys_home_dir(void) {
+#if defined(_WIN32)
+    const char *h = getenv("USERPROFILE");
+    return torvik_str_dup(h ? h : "C:\\");
+#else
     const char *h = getenv("HOME");
     return torvik_str_dup(h ? h : "/");
+#endif
 }
 
 char *torvik_sys_cwd(void) {
     char buf[4096];
-    if (getcwd(buf, sizeof(buf))) return torvik_str_dup(buf);
+    if (torvik_getcwd(buf, sizeof(buf))) return torvik_str_dup(buf);
     return torvik_str_dup(".");
 }
 
 int64_t torvik_sys_cpu_count(void) {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors > 0 ? (int64_t)si.dwNumberOfProcessors : 1;
+#else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int64_t)n : 1;
+#endif
 }
 
 int64_t torvik_sys_mem_total(void) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) return (int64_t)ms.ullTotalPhys;
+    return 0;
+#else
     struct sysinfo si;
     if (sysinfo(&si) == 0) return (int64_t)si.totalram * si.mem_unit;
     return 0;
+#endif
 }
 
 int64_t torvik_sys_mem_free(void) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) return (int64_t)ms.ullAvailPhys;
+    return 0;
+#else
     struct sysinfo si;
     if (sysinfo(&si) == 0) return (int64_t)si.freeram * si.mem_unit;
     return 0;
+#endif
 }
 
 int64_t torvik_sys_pid(void) {
+#if defined(_WIN32)
+    return (int64_t)GetCurrentProcessId();
+#else
     return (int64_t)getpid();
+#endif
 }
 
 int64_t torvik_sys_run(const char *cmd) {
+#if defined(_WIN32)
+    /* On Windows system() returns the command's exit code directly (or -1 if the
+       command interpreter can't be started). No WEXITSTATUS wrapping needed. */
+    int rc = system(cmd);
+    if (rc == -1) return 127;
+    return (int64_t)rc;
+#else
     int rc = system(cmd);
     if (rc == -1) return 127;                              /* shell could not be launched */
     if (WIFEXITED(rc))   return (int64_t)WEXITSTATUS(rc);  /* normal exit: real 0-255 code */
     if (WIFSIGNALED(rc)) return (int64_t)(128 + WTERMSIG(rc)); /* killed by signal */
     return (int64_t)rc;
+#endif
 }
 
 /* fs_exists — 1 if path exists (replaces shell `test -e`) */
 int64_t torvik_fs_exists(const char *path) {
-    return access(path, F_OK) == 0 ? 1 : 0;
+    return torvik_access(path, F_OK) == 0 ? 1 : 0;
 }
 
 /* fs_mtime — modification time in seconds, or -1 if the path is missing */
@@ -1338,20 +1522,63 @@ int64_t torvik_fs_mtime(const char *path) {
     return (int64_t)st.st_mtime;
 }
 
+/* Create a single directory. On Windows _mkdir takes one argument; elsewhere
+   mkdir takes a mode. A path separator is '/' on POSIX and either '/' or '\\'
+   on Windows (the shell and APIs accept both). */
+static int torvik_mkdir_one(const char *p) {
+#if defined(_WIN32)
+    return _mkdir(p);
+#else
+    return mkdir(p, 0755);
+#endif
+}
+
+static int torvik_is_sep(char c) {
+#if defined(_WIN32)
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
 /* fs_mkdir — create a directory path (like `mkdir -p`) */
 void torvik_fs_mkdir(const char *path) {
     char tmp[4096];
     size_t n = strlen(path);
     if (n == 0 || n >= sizeof(tmp)) return;
     memcpy(tmp, path, n + 1);
-    if (tmp[n-1] == '/') tmp[n-1] = '\0';
+    if (torvik_is_sep(tmp[n-1])) tmp[n-1] = '\0';
     for (char *q = tmp + 1; *q; q++) {
-        if (*q == '/') { *q = '\0'; mkdir(tmp, 0755); *q = '/'; }
+        if (torvik_is_sep(*q)) { char sep = *q; *q = '\0'; torvik_mkdir_one(tmp); *q = sep; }
     }
-    mkdir(tmp, 0755);
+    torvik_mkdir_one(tmp);
 }
 
 /* fs_remove — recursively delete a file or directory (like `rm -rf`) */
+#if defined(_WIN32)
+void torvik_fs_remove(const char *path) {
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+        char pattern[4096];
+        snprintf(pattern, sizeof(pattern), "%s\\*", path);
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+                char child[4096];
+                snprintf(child, sizeof(child), "%s\\%s", path, fd.cFileName);
+                torvik_fs_remove(child);
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+        _rmdir(path);
+    } else {
+        remove(path);
+    }
+}
+#else
 void torvik_fs_remove(const char *path) {
     struct stat st;
     if (lstat(path, &st) != 0) return;
@@ -1372,6 +1599,7 @@ void torvik_fs_remove(const char *path) {
         unlink(path);
     }
 }
+#endif
 
 // Write a list<str> to a file, one element per line
 // This avoids O(N^2) string concatenation in join_ir
@@ -1389,8 +1617,8 @@ void torvik_write_ir(TorvikList *ir_list, const char *path, int64_t append) {
     fclose(f);
 }
 
-// Append a line to a file (with newline)
-void torvik_appendline(const char *data, const char *path) {
+// Append a line to a file (with newline). Arg order matches writefile: (path, data).
+void torvik_appendline(const char *path, const char *data) {
     if (!data || !path) return;
     FILE *f = fopen(path, "a");
     if (!f) return;

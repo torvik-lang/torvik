@@ -245,7 +245,7 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                         _gmsg = str_concat(_gmsg, int_to_str(_glo[0]));
                         _gmsg = str_concat(_gmsg, " to ");
                         _gmsg = str_concat(_gmsg, int_to_str(_ghi[0]));
-                        _gmsg = str_concat(_gmsg, ") — prefix the statement with 'unsafe' to wrap intentionally");
+                        _gmsg = str_concat(_gmsg, ") - prefix the statement with 'unsafe' to wrap intentionally");
                         push(err_pos, pos);
                         push(err_msg, _gmsg);
                         str_idx_s += 1; pos += 1;
@@ -312,7 +312,7 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                 // at first use — reject it with a located error instead.
                 check tok_peek(tokens, pos) == PUNCT_SEMI {
                     push(err_pos, pos);
-                    push(err_msg, "expected a value after '=' — a global must be initialized");
+                    push(err_msg, "expected a value after '=' - a global must be initialized");
                 }
                 whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
                     fixed sk: i64 = tok_peek(tokens, pos);

@@ -62,9 +62,39 @@ df main() -> void {
 
 df resolve_asset(devpath: str, name: str) -> str {
     fixed devfull: str = str_concat(devpath, name);
-    fixed rc: i64 = sys_run(str_concat("test -e ", devfull));
-    check rc == 0 { return devfull; }
+    check fs_exists(devfull) == 1 { return devfull; }
     return str_concat(str_concat(sys_home_dir(), "/.torvik/lib/"), name);
+}
+
+// The scratch directory where torvc writes the generated IR and the compiled
+// runtime object. On POSIX this is /tmp/.torvik; on Windows /tmp rarely exists,
+// so use %TEMP%\.torvik (falling back to the user profile). Created with the
+// native fs_mkdir (no shell), so it works identically on every platform.
+df torvik_build_dir() -> str {
+    check line_eq(sys_os_name(), "windows") == 1 {
+        fixed tmp: str = readenv("TEMP");
+        check len(tmp) > 0 { return str_concat(tmp, "\\.torvik"); }
+        return str_concat(sys_home_dir(), "\\.torvik");
+    }
+    return "/tmp/.torvik";
+}
+
+// Path join with the platform separator (Windows accepts '/', but native '\\'
+// keeps command lines clean for cmd.exe).
+df torvik_path_join(dir: str, leaf: str) -> str {
+    check line_eq(sys_os_name(), "windows") == 1 { return str_concat(dir, str_concat("\\", leaf)); }
+    return str_concat(dir, str_concat("/", leaf));
+}
+
+// clang is a required external dependency on every platform. `clang --version`
+// returns 0 when clang is on PATH and non-zero otherwise, and works in both a
+// POSIX shell and cmd.exe (unlike `command -v`, which is shell-only). Output is
+// silenced per-platform.
+df clang_present() -> i64 {
+    check line_eq(sys_os_name(), "windows") == 1 {
+        return sys_run("clang --version > NUL 2>&1");
+    }
+    return sys_run("clang --version > /dev/null 2>&1");
 }
 
 df ver_match(line: str, key: str) -> str {
@@ -155,6 +185,33 @@ df collect_source_errors(source: str, offs: list<i64>, msgs: list<str>) -> void 
             whilst pos < n && byte_at(source, pos) != 10 { pos += 1; }
             continue;
         }
+        // Block comment #- ... -# (nestable). Skip its body; report an opener
+        // that never balances. Checked before strings so a quote inside a
+        // comment can't start a phantom string literal.
+        check c == 35 && pos + 1 < n && byte_at(source, pos + 1) == 45 {
+            fixed bopen_at: i64 = pos;
+            pos += 2;
+            set bdepth: i64 = 1;
+            whilst pos < n && bdepth > 0 {
+                fixed bce: i64 = byte_at(source, pos);
+                check bce == 35 && pos + 1 < n && byte_at(source, pos + 1) == 45 { bdepth += 1; pos += 2; continue; }
+                check bce == 45 && pos + 1 < n && byte_at(source, pos + 1) == 35 { bdepth -= 1; pos += 2; continue; }
+                pos += 1;
+            }
+            check bdepth > 0 {
+                push(offs, bopen_at);
+                push(msgs, "unterminated block comment (missing closing -#)");
+            }
+            continue;
+        }
+        // A stray terminator with no matching opener. `#` is never valid in
+        // Torvik code, so `-#` outside a comment or string is always this error.
+        check c == 45 && pos + 1 < n && byte_at(source, pos + 1) == 35 {
+            push(offs, pos);
+            push(msgs, "found a block comment terminator '-#' with no opening '#-'");
+            pos += 2;
+            continue;
+        }
         check c == 34 || c == 39 {
             fixed q: i64 = c;
             fixed open_at: i64 = pos;
@@ -204,7 +261,7 @@ df collect_source_errors(source: str, offs: list<i64>, msgs: list<str>) -> void 
                 check name_end > name_start {
                     check q < n && byte_at(source, q) != 40 {
                         push(offs, name_end);
-                        push(msgs, "expected '(' after function name — a function needs a parameter list, e.g. df name() -> type { ... }");
+                        push(msgs, "expected '(' after function name - a function needs a parameter list, e.g. df name() -> type { ... }");
                     }
                 }
                 pos = q;
@@ -250,17 +307,16 @@ df is_name_char(c: i64) -> i64 {
 // `apply std...` is hard-refused when the project is built with no_std.
 df add_import(out: list<str>, base: str, item: str, no_std: i64) -> void {
     check no_std == 1 && line_eq(base, "std") == 1 {
-        echo!("torvc: `apply std` is disabled — torvik.rune sets std = no_std");
+        echo!("torvc: `apply std` is disabled - torvik.rune sets std = no_std");
         exit(1);
     }
     check len(item) > 0 {
         fixed subp: str = resolve_asset("./src/", str_concat(base, str_concat("/", str_concat(item, ".tv"))));
-        check sys_run(str_concat("test -e ", subp)) == 0 { push(out, subp); return; }
+        check fs_exists(subp) == 1 { push(out, subp); return; }
     }
     fixed _modp: str = resolve_asset("./src/", str_concat(base, ".tv"));
-    fixed _mex: i64 = sys_run(str_concat("test -e ", _modp));
-    check _mex == 0 { } fallback {
-        echo!(str_concat(str_concat("torvc: error: unknown module '", base), "' — no matching .tv file found in ./src or ~/.torvik/lib"));
+    check fs_exists(_modp) == 1 { } fallback {
+        echo!(str_concat(str_concat("torvc: error: unknown module '", base), "' - no matching .tv file found in ./src or ~/.torvik/lib"));
         exit(1);
     }
     push(out, _modp);
@@ -312,8 +368,7 @@ df resolve_import_paths(ln: str, no_std: i64, out: list<str>) -> void {
 // Returns 1 when the manifest sets `std = no_std`, disabling the standard library
 // project-wide; 0 when there is no manifest or std is enabled.
 df project_no_std() -> i64 {
-    fixed rc: i64 = sys_run("test -e torvik.rune");
-    check rc != 0 { return 0; }
+    check fs_exists("torvik.rune") == 0 { return 0; }
     fixed content: str = readfile("torvik.rune");
     fixed lines: list<str> = split(content, "\n");
     set i: i64 = 0;
@@ -358,13 +413,13 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     // A missing input file is a user error, not a toolchain fault — give a clean
     // message instead of letting readfile raise a runtime panic.
     check diag_path_exists(path) == 0 {
-        echo!(str_concat(str_concat("torvc: cannot open '", path), "' — no such file"));
+        echo!(str_concat(str_concat("torvc: cannot open '", path), "' - no such file"));
         exit(1);
     }
     fixed source: str = readfile(path);
     fixed _t_build0: i64 = time_ms();
     fixed slen: i64   = len(source);
-    check slen == 0 { echo!("torvc: file is empty or could not be read — nothing to compile"); exit(1); }
+    check slen == 0 { echo!("torvc: file is empty or could not be read - nothing to compile"); exit(1); }
     set err_offs: list<i64> = list_new();
     set err_msgs: list<str> = list_new();
     collect_source_errors(source, err_offs, err_msgs);
@@ -382,9 +437,9 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     // clang is a required external dependency; a missing clang is an environment
     // problem, not a Torvik bug. Detect it here so the TVC-5001/5002 internal codes
     // are reserved for genuine compiler/linker failures.
-    check sys_run("command -v clang > /dev/null 2>&1") != 0 {
-        echo!("torvc: clang not found in PATH — Torvik needs clang to compile.");
-        echo!("  install clang (your distribution's 'clang' package) and try again.");
+    check clang_present() != 0 {
+        echo!("torvc: clang not found in PATH - Torvik needs clang to compile.");
+        echo!("  install clang (your distribution's 'clang' package, or LLVM for Windows) and try again.");
         exit(1);
     }
 
@@ -401,8 +456,10 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     fixed ntok: i64 = len(tokens);
     check verbose == 1 { echo!(str_concat("   ", str_concat(int_to_str(ntok), " tokens"))); }
 
-    fixed ir_path: str = "/tmp/.torvik/torvik_compile.ll";
-    sys_run("mkdir -p /tmp/.torvik");
+    fixed build_dir: str = torvik_build_dir();
+    fs_mkdir(build_dir);
+    fixed ir_path: str = torvik_path_join(build_dir, "torvik_compile.ll");
+    fixed rt_obj:  str = torvik_path_join(build_dir, "torvik_runtime.o");
     codegen_tokens(tokens, combined, ir_path, path);
     // Safety net: codegen always writes IR for a well-formed program. A missing IR
     // file means codegen bailed without emitting — an internal fault distinct from
@@ -413,13 +470,46 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     check verbose == 1 { echo!(str_concat("   IR -> ", ir_path)); }
 
     fixed rt_src: str = resolve_asset("./runtime/", "torvik_runtime.c");
-    fixed rt_compile: str = str_concat(str_concat("clang -Wno-override-module -ffunction-sections -fdata-sections -c ", rt_src), " -o /tmp/.torvik/torvik_runtime.o");
+    // On Windows, target the GNU (mingw) toolchain explicitly. Without this,
+    // clang defaults to the MSVC target and needs Visual Studio's headers/libs;
+    // the GNU target uses the mingw-w64 headers and libs that ship with the
+    // recommended Windows toolchain (LLVM-MinGW / MSYS2). On Linux and macOS the
+    // native default target is correct, so no flag is added.
+    set tgt: str = "";
+    check line_eq(sys_os_name(), "windows") == 1 { tgt = " -target x86_64-w64-windows-gnu "; }
+    fixed rt_compile: str = str_concat(str_concat(str_concat(str_concat("clang", tgt), " -Wno-override-module -ffunction-sections -fdata-sections -c "), rt_src), str_concat(" -o ", rt_obj));
     fixed rt_result: i64 = sys_run(rt_compile);
-    check rt_result != 0 { internal_error("TVC-5001", "runtime-build", path, "bundled runtime C failed to compile (clang error)"); }
+    check rt_result != 0 {
+        // On Windows the usual cause is a clang install without the mingw-w64
+        // headers/libs (e.g. plain LLVM), so the GNU target can't find stdio.h.
+        // That's an environment problem, not a Torvik bug — guide the user rather
+        // than emitting the internal TVC-5001 "please report" code.
+        check line_eq(sys_os_name(), "windows") == 1 {
+            echo!("torvc: could not compile the bundled runtime.");
+            echo!("  On Windows, Torvik needs a clang that includes the MinGW-w64 C headers and");
+            echo!("  libraries (plain LLVM alone does not). Install one of these, then retry:");
+            echo!("    - LLVM-MinGW:  https://github.com/mstorsjo/llvm-mingw/releases");
+            echo!("    - MSYS2:       install msys2, then `pacman -S mingw-w64-clang-x86_64-toolchain`");
+            echo!("    - WinLibs:     https://winlibs.com  (UCRT build, add its bin to PATH)");
+            echo!("  Make sure the toolchain's bin directory is on your PATH (so clang finds its headers).");
+            exit(1);
+        }
+        internal_error("TVC-5001", "runtime-build", path, "bundled runtime C failed to compile (clang error)");
+    }
 
+    // Link flags differ by platform. Dead-section stripping uses --gc-sections on
+    // GNU/ELF (and lld on Windows) and Mach-O's -dead_strip on macOS; the release
+    // symbol-strip is -s on ELF. We keep the portable subset per platform.
     set optflags: str = "-O2";
-    check final == 1 { optflags = "-O3 -Wl,-s"; }
-    fixed cmd: str = str_concat(str_concat(str_concat("clang ", optflags), " -Wno-override-module -Wl,--gc-sections "), str_concat(ir_path, str_concat(" /tmp/.torvik/torvik_runtime.o -o ", out)));
+    set gcflag: str = " -Wl,--gc-sections ";
+    set stripflag: str = "";
+    check line_eq(sys_os_name(), "macos") == 1 {
+        gcflag = " -Wl,-dead_strip ";
+        check final == 1 { optflags = "-O3"; }
+    } fallback {
+        check final == 1 { optflags = "-O3"; stripflag = " -Wl,-s "; }
+    }
+    fixed cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("clang", tgt), " "), str_concat(optflags, " -Wno-override-module")), gcflag), stripflag), str_concat(ir_path, str_concat(" ", rt_obj))), str_concat(" -o ", out));
     fixed result: i64 = sys_run(cmd);
     check result == 0 {
         check verbose == 1 { echo!(str_concat("   BIN -> ", out)); }

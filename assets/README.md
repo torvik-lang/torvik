@@ -28,7 +28,7 @@ places the same red **T** on a document page with a `.tv` label.
 ### Linux
 
 You don't need to do anything by hand — **the installer registers the `.tv` file type and
-icons for you**. The one-line install (`curl -fsSL <…>/install.sh | sh`) registers the
+icons for you**. The one-line install (`curl -fsSL <…>/linux/install.sh | sh`) registers the
 `text/x-torvik` MIME type for `*.tv`, installs the file and app icons into the per-user
 `hicolor` icon theme, and refreshes the MIME and icon caches (no root needed). It's idempotent
 and versioned via the `icons` field in `VERSION`, so upgrades refresh automatically. After
@@ -57,14 +57,7 @@ gtk-update-icon-cache -f "$DATA/icons/hicolor"
 > Caja (MATE), and Nautilus. No action is required; it's cosmetic and isolated to that
 > file manager.
 
-### macOS
-
-`torvik.icns` and `torvik-file.icns` are ready to use. Full file-type association (declaring a
-UTI for `.tv` and binding `torvik-file.icns`, e.g. via an app bundle's `Info.plist` or a tool
-like `duti`) ships with the macOS packaging in **v1.1.0**.
 
 ### Windows
 
-`torvik.ico` and `torvik-file.ico` are ready to use. Full file-type association (`HKCR\.tv`
-plus a `DefaultIcon` entry pointing at `torvik-file.ico`) ships with the Windows installer in
-**v1.1.0**.
+Note: In **v1.1.0** icons have been disabled for Windows pending a fix in a later version. This is due to needing to add a compatiblity layer in order for the icons to be ported to the system.

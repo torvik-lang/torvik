@@ -6,10 +6,10 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
-[![Platform](https://img.shields.io/badge/platform-linux-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
 
 ```torvik
 df main() -> void {
@@ -42,44 +42,99 @@ there is no virtual machine and no garbage collector.
 
 ## Install
 
-Install the latest release with one command — it places `torvc` and `rune` in `~/.torvik`,
-fetches the runtime and standard library, and adds Torvik to your `PATH`:
+Install the latest release with one command — it places `torvc` and `rune` in your Torvik
+home, fetches the runtime and standard library, and adds Torvik to your `PATH`.
+
+**Linux:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh
 ```
 
-You also need `clang` installed — Torvik uses it as its linker and back-end
-(`sudo eopkg install clang` on Solus, `sudo apt install clang` on Debian/Ubuntu,
-`xcode-select --install` on macOS). Then restart your shell (or run `. ~/.bashrc`) and confirm
-with `rune --version`. Rune manages Torvik from there — `rune uninstall` removes it.
+**Windows** (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex
+```
+
+You also need `clang` installed — Torvik uses it as its linker and back-end:
+`sudo eopkg install clang` on Solus, `sudo apt install clang` on Debian/Ubuntu.
+On Windows you need a clang that bundles the MinGW-w64
+headers/libraries — [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases) (simplest),
+MSYS2 (`pacman -S mingw-w64-clang-x86_64-toolchain`), or [WinLibs](https://winlibs.com) — on
+`PATH` (plain LLVM alone lacks the C headers). Then open a new
+terminal (restart your shell or run `. ~/.bashrc` on Linux) and confirm with
+`rune --version`. Rune manages Torvik from there — `rune update` upgrades it and
+`rune uninstall` removes it.
+
+**macOS:** not yet supported. Official macOS builds (with a tested installer) are planned for
+**v1.2.0**. There's no prebuilt binary today, so the installer will stop with a note if run on
+macOS. The toolchain is written to be macOS-compatible and can be built from source by the
+adventurous (needs clang via `xcode-select --install`), but this is untested — if you want a
+supported setup now, run Torvik on Linux, including in a Linux VM or container.
 
 **Supported platforms:**
 
-| Platform            | Architecture | Status          |
-|---------------------|--------------|-----------------|
-| Linux               | x86_64       | Supported       |
-| macOS               | x86_64 / arm | Experimental    |
-| Windows             | —            | Planned (v1.1.0)|
+| Platform            | Architecture | Status                        |
+|---------------------|--------------|-------------------------------|
+| Linux               | x86_64       | Supported                     |
+| Windows             | x86_64       | Supported                     |
+| macOS               | x86_64 / arm | Not yet — planned for v1.2.0  |
 
 > Torvik is 64-bit only.
 
 ---
 
+## Sponsors
+
+Torvik is free, open-source software, built and maintained independently. If Torvik is
+useful to you, consider [sponsoring its development](https://buymeacoffee.com/torviklang)
+— several tiers include having your name or logo featured right here for each month you
+sponsor.
+
+### This month's sponsors
+
+*Your name or logo could be here — become a
+[monthly sponsor](https://buymeacoffee.com/torviklang) and help keep the forge burning.*
+
+## Contributors
+
+Torvik grows with its community. Contributors who land work in a given month are recognized
+here for that month — bug reports that lead to fixes count too.
+
+### This month's contributors
+
+*Your name could be here — check the open issues, or bring a fix of your own.*
+
+---
+
 ## Update
 
-Already have Torvik? Re-run the same one-liner to update to the latest release:
+Already have Torvik? Update the toolchain in place with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/install.sh | sh
+rune update
 ```
 
-It refreshes `torvc`, `rune`, the runtime, and the standard library in `~/.torvik` — your
-projects, config, and PATH setup are untouched. Check what you're running with
-`rune version`.
+This re-runs the official installer for your platform (Linux/macOS or Windows), refreshing
+`torvc`, `rune`, the runtime, and the standard library — your projects, config, and PATH
+setup are untouched. Re-run with `rune update --yes` to skip the confirmation. Check what
+you're running with `rune version`.
 
-> A built-in `rune update` command is planned; until it lands, re-running the installer is
-> the supported update path.
+To install a **specific version** instead of the latest, pass it:
+
+```sh
+rune update v1.1.0     # exactly 1.1.0
+rune update v1.0       # the newest 1.0.x release
+rune update v1         # the newest 1.x release
+```
+
+A project can also require a minimum Torvik version via a `torvik = "1.1.0"` line in its
+`torvik.rune`; `rune build`/`run` will tell you to update if your toolchain is too old. See
+the [Toolchain guide](docs/TOOLING.md) for details.
+
+You can also just re-run the install one-liner for your platform (above); it has the same
+effect.
 
 ---
 
@@ -132,6 +187,8 @@ df main() -> void {
 ---
 
 ## Documentation
+
+Check out our **[Wiki page](https://github.com/torvik-lang/torvik/wiki)** for more info regarding Torvik. You can also read docs in the source below.
 
 - **[The Torvik Guide](docs/GUIDE.md)** — full tutorial and language reference.
 - **[Tooling](docs/TOOLING.md)** — the `torvc` compiler and the `rune` project tool.

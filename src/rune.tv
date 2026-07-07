@@ -139,8 +139,42 @@ df rune_get_entry() -> str {
     return "";
 }
 
+// The compiled binary's extension and how it's invoked differ by platform. On
+// Windows executables end in .exe and are run by bare path (no "./" prefix);
+// POSIX has no extension and runs a relative path via "./".
+df rune_exe_ext() -> str {
+    check rune_str_eq(sys_os_name(), "windows") == 1 { return ".exe"; }
+    return "";
+}
+
+df rune_run_prefix() -> str {
+    check rune_str_eq(sys_os_name(), "windows") == 1 { return ""; }
+    return "./";
+}
+
+// Human-readable form of the Torvik install directory for messages/help. Windows
+// users see %USERPROFILE%\.torvik; everyone else sees ~/.torvik. (The actual
+// filesystem path is always sys_home_dir()/.torvik; this is display only.)
+df rune_home_display() -> str {
+    check rune_str_eq(sys_os_name(), "windows") == 1 { return "%USERPROFILE%\\.torvik"; }
+    return "~/.torvik";
+}
+
+// Build the command used to execute a compiled binary. On Windows, cmd.exe reads
+// a forward slash as the start of a switch, so `build/test.exe` is parsed as the
+// command `build` with a `/test.exe` flag ("'build' is not recognized"). Convert
+// the separators to backslashes and prefix with `.\` so it's unambiguously a path.
+// On POSIX, prefix with `./` as usual.
+df rune_run_path(out: str) -> str {
+    check rune_str_eq(sys_os_name(), "windows") == 1 {
+        fixed bs: str = replace(out, "/", "\\");
+        return str_concat(".\\", bs);
+    }
+    return str_concat("./", out);
+}
+
 df rune_find_torvc() -> str {
-    fixed local: str = str_concat(sys_home_dir(), "/.torvik/bin/torvc");
+    fixed local: str = str_concat(str_concat(sys_home_dir(), "/.torvik/bin/torvc"), rune_exe_ext());
     check rune_path_exists(local) == 1 { return local; }
     return "torvc";
 }
@@ -167,6 +201,19 @@ df rune_has_yes() -> i64 {
     return 0;
 }
 
+// True if --force appears among the arguments. Used by `rune update` to reinstall
+// even when the toolchain is already at the latest version.
+df rune_has_force() -> i64 {
+    fixed argc: i64 = args();
+    set i: i64 = 2;
+    whilst i < argc {
+        fixed a: str = args_get(i);
+        check a == "--force" { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
 df rune_cwd_name() -> str {
     fixed full: str = cwd();
     fixed n: i64 = len(full);
@@ -185,7 +232,16 @@ df rune_cwd_name() -> str {
 df rune_manifest(name: str) -> str {
     set m: str = "[project]\nname        = \"";
     m = str_concat(m, name);
-    m = str_concat(m, "\"\nversion     = \"0.0.1\"\ndescription = \"\"\nauthor      = \"\"\n\n[runes]\n# Dependencies (coming with the Rune Library; not yet supported)\n");
+    m = str_concat(m, "\"\nversion     = \"0.1.0\"\ndescription = \"\"\nauthor      = \"\"\n");
+    // Record the Torvik version this project was created with as its minimum
+    // requirement. `rune build`/`run` refuses to build with an older toolchain
+    // and tells the user how to update. Remove or lower the line to relax it.
+    // (Skipped if the installed version can't be determined.)
+    fixed tv: str = rune_ver_of("torvik");
+    check rune_str_eq(tv, "0.0.0") == 0 {
+        m = str_concat(m, str_concat(str_concat("torvik      = \"", tv), "\"\n"));
+    }
+    m = str_concat(m, "\n[runes]\n# Dependencies (coming with the Rune Library; not yet supported)\n");
     return m;
 }
 
@@ -204,7 +260,7 @@ df rune_cmd_new(name: str) -> void {
         exit(1);
     }
     check rune_index_of(name, "/") >= 0 {
-        echo!(str_concat(str_concat("error: project name '", name), "' can't contain '/' — use a plain name like 'myapp'"));
+        echo!(str_concat(str_concat("error: project name '", name), "' can't contain '/' - use a plain name like 'myapp'"));
         exit(1);
     }
     check rune_path_exists(name) == 1 {
@@ -257,10 +313,11 @@ df rune_require_entry() -> str {
 
 df rune_cmd_build(final: i64) -> void {
     fixed entry: str = rune_require_entry();
+    rune_check_project_version();
     fixed t_start: i64 = time_ms();
     fixed name: str = rune_get_name();
     rune_mkdir("build");
-    fixed out: str = str_concat("build/", name);
+    fixed out: str = str_concat(str_concat("build/", name), rune_exe_ext());
     fixed torvc: str = rune_find_torvc();
     set cmd: str = str_concat(str_concat(str_concat(str_concat(torvc, " "), entry), " -o "), out);
     cmd = str_concat(cmd, " -q");
@@ -287,9 +344,10 @@ df rune_needs_rebuild(out: str, srcpath: str) -> i64 {
 
 df rune_cmd_run(final: i64) -> void {
     fixed entry: str = rune_require_entry();
+    rune_check_project_version();
     fixed name: str = rune_get_name();
     rune_mkdir("build");
-    fixed out: str = str_concat("build/", name);
+    fixed out: str = str_concat(str_concat("build/", name), rune_exe_ext());
     fixed torvc: str = rune_find_torvc();
     set stale: i64 = rune_needs_rebuild(out, entry);
     check rune_str_eq(rune_config_get("cache"), "false") == 1 { stale = 1; }
@@ -300,7 +358,7 @@ df rune_cmd_run(final: i64) -> void {
         fixed rc: i64 = sys_run(cmd);
         check rc != 0 { exit(rc); }
     }
-    fixed prc: i64 = sys_run(str_concat("./", out));
+    fixed prc: i64 = sys_run(rune_run_path(out));
     exit(prc);
 }
 
@@ -328,24 +386,319 @@ df rune_cmd_list() -> void {
     fixed auth: str = rune_field(content, "author");
     check len(auth) > 0 { echo!(str_concat("Author:  ", auth)); }
     echo!("");
-    echo!("Dependencies arrive with the Rune Library (a future release).");
+    echo!("Dependencies arrive with the Rune Library - a future version of Torvik.");
+    echo!("(The registry needs real infrastructure to run, so its timeline will be");
+    echo!("announced separately. Follow the roadmap on GitHub for updates.)");
+}
+
+// Remove the Torvik PATH entry from one shell startup file: the line adding
+// ~/.torvik/bin to PATH, the "# Torvik" marker comment above it, and the blank
+// line the installer inserted before the marker. Rewrites the file only when
+// something was actually removed. Returns 1 if the file was modified.
+df rune_strip_path_entry(path: str) -> i64 {
+    check rune_path_exists(path) == 0 { return 0; }
+    fixed content: str = readfile(path);
+    check len(content) == 0 { return 0; }
+    fixed lines: list<str> = split(content, "\n");
+    set kept: list<str> = list_new();
+    set removed: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(lines) {
+        fixed ln: str = lines[i];
+        fixed t: str = rune_trim(ln);
+        set drop: i64 = 0;
+        check contains(t, ".torvik/bin") { drop = 1; }
+        check rune_str_eq(t, "# Torvik") == 1 {
+            drop = 1;
+            // The installer wrote "\n# Torvik\n<PATH line>" — collapse the blank
+            // line it left above the marker so no gap remains.
+            fixed nk: i64 = len(kept);
+            check nk > 0 {
+                check len(rune_trim(kept[nk - 1])) == 0 { list_remove(kept, nk - 1); }
+            }
+        }
+        check drop == 1 { removed = 1; } fallback { push(kept, ln); }
+        i += 1;
+    }
+    check removed == 0 { return 0; }
+    // split("a\nb\n") yields a trailing "" element, so joining with "\n"
+    // round-trips the file byte-for-byte (including its final newline).
+    set out: str = "";
+    set j: i64 = 0;
+    whilst j < len(kept) {
+        check j > 0 { out = str_concat(out, "\n"); }
+        out = str_concat(out, kept[j]);
+        j += 1;
+    }
+    writefile(path, out);
+    return 1;
+}
+
+// Strip the Torvik PATH entry from every shell startup file the installer may
+// have written to. Checks all candidates (not just $SHELL's) so an uninstall
+// cleans up even after the user switched shells since installing.
+df rune_clean_path_entries() -> void {
+    fixed home: str = sys_home_dir();
+    check rune_strip_path_entry(str_concat(home, "/.bashrc")) == 1 {
+        echo!("Removed the Torvik PATH entry from ~/.bashrc");
+    }
+    check rune_strip_path_entry(str_concat(home, "/.profile")) == 1 {
+        echo!("Removed the Torvik PATH entry from ~/.profile");
+    }
+    check rune_strip_path_entry(str_concat(home, "/.zshrc")) == 1 {
+        echo!("Removed the Torvik PATH entry from ~/.zshrc");
+    }
+    check rune_strip_path_entry(str_concat(home, "/.config/fish/config.fish")) == 1 {
+        echo!("Removed the Torvik PATH entry from ~/.config/fish/config.fish");
+    }
+}
+
+// Deregister the .tv file type and icons the installer registered (Linux,
+// freedesktop). Uses the canonical xdg tools when present, removes the manually
+// copied files otherwise, then refreshes the caches. Every step is best-effort:
+// on systems without these tools (or where nothing was registered) each command
+// simply no-ops, so this is safe to run unconditionally.
+df rune_data_dir() -> str {
+    fixed xdg: str = readenv("XDG_DATA_HOME");
+    check len(xdg) > 0 { return xdg; }
+    return str_concat(sys_home_dir(), "/.local/share");
+}
+
+df rune_deregister_icons() -> void {
+    // Desktop integration is freedesktop-specific (xdg-mime, hicolor icons), so it
+    // only applies on Linux. On Windows and macOS this is a no-op — file
+    // associations there are handled by the OS installer, not rune.
+    check rune_str_eq(sys_os_name(), "linux") == 0 { return; }
+    fixed data: str = rune_data_dir();
+    sys_run(fmt("xdg-mime uninstall --mode user \"{}/mime/packages/torvik-mime.xml\" > /dev/null 2>&1", data));
+    sys_run(fmt("rm -f \"{}/mime/packages/torvik-mime.xml\" > /dev/null 2>&1", data));
+    set sizes: list<str> = list_new();
+    push(sizes, "16"); push(sizes, "32"); push(sizes, "48");
+    push(sizes, "64"); push(sizes, "128"); push(sizes, "256");
+    set i: i64 = 0;
+    whilst i < len(sizes) {
+        fixed s: str = sizes[i];
+        sys_run(fmt("xdg-icon-resource uninstall --mode user --noupdate --context mimetypes --size {} text-x-torvik > /dev/null 2>&1", s));
+        sys_run(fmt("xdg-icon-resource uninstall --mode user --noupdate --context apps --size {} torvik > /dev/null 2>&1", s));
+        sys_run(fmt("rm -f \"{}/icons/hicolor/{}x{}/mimetypes/text-x-torvik.png\" > /dev/null 2>&1", data, s, s));
+        sys_run(fmt("rm -f \"{}/icons/hicolor/{}x{}/apps/torvik.png\" > /dev/null 2>&1", data, s, s));
+        i += 1;
+    }
+    sys_run("xdg-icon-resource forceupdate --mode user > /dev/null 2>&1");
+    sys_run(fmt("command -v update-mime-database > /dev/null 2>&1 && update-mime-database \"{}/mime\" > /dev/null 2>&1", data));
+    sys_run(fmt("command -v gtk-update-icon-cache > /dev/null 2>&1 && gtk-update-icon-cache -f \"{}/icons/hicolor\" > /dev/null 2>&1", data));
+}
+
+// ─── Toolchain self-update ──────────────────────────────────────────────────
+// `rune update` refreshes the Torvik TOOLCHAIN in place by re-running the
+// official installer for the current platform, which fetches the latest release
+// from GitHub and reinstalls torvc/rune/lib. (This is distinct from dependency
+// management — `rune add`/`remove` for project libraries — which arrives with
+// the Rune Library in a future version.) Requires a network fetch tool: curl or
+// wget on POSIX, PowerShell on Windows.
+// Return the version argument to `rune update`, if any — the first non-flag
+// token after the command (e.g. "v1.0.1" in `rune update v1.0.1`). Returns ""
+// when the user typed a bare `rune update`. Flags like --yes are skipped.
+df rune_update_version_arg() -> str {
+    fixed argc: i64 = args();
+    set i: i64 = 2;
+    whilst i < argc {
+        fixed a: str = args_get(i);
+        check starts(a, "--") { } fallback {
+            // args_get returns a borrowed OS-argv string; copy it into a proper
+            // headered string (via concat) before it flows through further calls.
+            return str_concat(a, "");
+        }
+        i += 1;
+    }
+    return "";
+}
+
+// Validate a toolchain version string. Accepts an optional leading 'v' and one,
+// two, or three dot-separated numeric components: v1, v1.0, v1.0.0, 1.1.0, etc.
+// Returns 1 if well-formed, 0 otherwise. (Resolution of a PARTIAL version like
+// v1 or v1.0 to a concrete release happens in the installer, which can see the
+// GitHub release list; rune only checks the SYNTAX here.)
+df rune_version_syntax_ok(v: str) -> i64 {
+    set s: str = v;
+    check starts(s, "v") || starts(s, "V") { s = substr(s, 1, len(s)); }
+    fixed n: i64 = len(s);
+    check n == 0 { return 0; }
+    set i: i64 = 0;
+    set parts: i64 = 1;
+    set digits_in_part: i64 = 0;
+    whilst i < n {
+        fixed c: i64 = byte_at(s, i);
+        check c == 46 {
+            // a dot: the previous part must have had at least one digit
+            check digits_in_part == 0 { return 0; }
+            parts += 1;
+            digits_in_part = 0;
+        } fallback {
+            check c >= 48 && c <= 57 { digits_in_part += 1; } fallback { return 0; }
+        }
+        i += 1;
+    }
+    // trailing part must have digits, and at most three parts (major.minor.patch)
+    check digits_in_part == 0 { return 0; }
+    check parts > 3 { return 0; }
+    return 1;
+}
+
+// Normalize to a canonical "vX[.Y[.Z]]" form for passing to the installer and
+// for display (always exactly one leading 'v', digits and dots preserved).
+df rune_version_canon(v: str) -> str {
+    set s: str = v;
+    check starts(s, "v") || starts(s, "V") { s = substr(s, 1, len(s)); }
+    return str_concat("v", s);
+}
+
+// Fetch the latest published Torvik version by reading VERSION from the main
+// branch on GitHub. Returns the version string (e.g. "1.1.0"), or "" if the
+// fetch fails (offline, curl/wget missing). Writes to a temp file and reads it
+// back, since rune shells out rather than capturing stdout directly.
+df rune_fetch_latest_version() -> str {
+    fixed url: str = "https://raw.githubusercontent.com/torvik-lang/torvik/main/VERSION";
+    fixed cache: str = str_concat(sys_home_dir(), "/.torvik/cache");
+    rune_mkdir(cache);
+    fixed tmp: str = str_concat(cache, "/latest_version.txt");
+    fixed win: i64 = rune_str_eq(sys_os_name(), "windows");
+    set rc: i64 = 1;
+    check win == 1 {
+        fixed ps: str = str_concat(str_concat("powershell -NoProfile -Command \"(iwr -useb ", url), str_concat(").Content | Out-File -Encoding ascii '", str_concat(tmp, "'\"")));
+        rc = sys_run(ps);
+    } fallback {
+        check rune_on_path("curl") == 1 {
+            rc = sys_run(str_concat(str_concat("curl -fsSL ", url), str_concat(" -o ", tmp)));
+        } fallback {
+            check rune_on_path("wget") == 1 {
+                rc = sys_run(str_concat(str_concat("wget -qO ", tmp), str_concat(" ", url)));
+            }
+        }
+    }
+    check rc != 0 { return ""; }
+    check fs_exists(tmp) == 0 { return ""; }
+    fixed content: str = readfile(tmp);
+    fixed v: str = rune_field(content, "torvik");
+    return v;
+}
+
+df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
+    // Copy the incoming version into a fresh headered string immediately: it may
+    // originate from a borrowed OS-argv pointer, and it flows through several
+    // helpers (syntax check, canonicalization) plus fmt below.
+    fixed pin: str = str_concat(pin_in, "");
+    fixed pinned: i64 = len(pin) > 0;
+    // Validate the requested version's SYNTAX up front, before any prompt or
+    // network call, so a typo like `rune update v1.x` fails fast and clearly.
+    check pinned == 1 {
+        check rune_version_syntax_ok(pin) == 0 {
+            echo!(fmt("rune: '{}' is not a valid version.", pin));
+            echo!("  Use a version like v1, v1.0, v1.1.0 - or run 'rune update' for the latest.");
+            exit(1);
+        }
+    }
+    fixed win: i64 = rune_str_eq(sys_os_name(), "windows");
+    fixed forced: i64 = rune_has_force();
+    fixed installed: str = rune_ver_of("torvik");
+
+    // For a bare `rune update` (no pinned version), check whether a newer release
+    // exists before doing anything. If already current, say so and stop — unless
+    // --force is given. This avoids a needless reinstall on every invocation.
+    check pinned == 0 {
+        fixed latest: str = rune_fetch_latest_version();
+        check len(latest) > 0 {
+            check rune_ver_ge(installed, latest) == 1 && forced == 0 {
+                echo!(fmt("You're already on the latest Torvik (v{}).", installed));
+                echo!("  Nothing to update. Use 'rune update --force' to reinstall anyway,");
+                echo!("  or 'rune update vX.Y.Z' to install a specific version.");
+                exit(0);
+            }
+            // A newer MAJOR version can contain breaking changes, so confirm first
+            // even when --yes wasn't passed — unless the user already confirmed.
+            check rune_ver_part(latest, 0) > rune_ver_part(installed, 0) && confirmed == 0 {
+                echo!(fmt("A new MAJOR version of Torvik is available: v{} (you have v{}).", latest, installed));
+                echo!("  Major versions may include breaking changes that affect your code.");
+                echo!("  Review the changelog before updating:");
+                echo!("    https://github.com/torvik-lang/torvik/blob/main/CHANGELOG.md");
+                echo!(fmt("  To update anyway:  rune update v{} --yes", latest));
+                echo!(fmt("  To stay on {}.x:    rune update v{} --yes", int_to_str(rune_ver_part(installed, 0)), int_to_str(rune_ver_part(installed, 0))));
+                exit(0);
+            }
+        }
+    }
+
+    fixed target: str = pinned == 1 ?> rune_version_canon(pin) !> "latest";
+    check confirmed == 0 {
+        check pinned == 1 {
+            echo!(fmt("This installs Torvik {} (torvc, rune, and the standard library),", target));
+            echo!("replacing your current toolchain. Your projects are not touched.");
+            echo!(fmt("Re-run to confirm:  rune update {} --yes", pin));
+        } fallback {
+            echo!("This updates the Torvik toolchain (torvc, rune, and the standard library)");
+            echo!("to the latest release by re-running the official installer.");
+            echo!("Your projects are not touched.");
+            echo!("Re-run to confirm:  rune update --yes");
+        }
+        exit(0);
+    }
+    check pinned == 1 {
+        echo!(fmt("Installing Torvik {}...", target));
+    } fallback {
+        echo!("Updating the Torvik toolchain to the latest release...");
+    }
+    // The pinned version is handed to the installer through TORVIK_VERSION; the
+    // installer resolves partial versions (v1, v1.0) against the GitHub release
+    // list and errors cleanly if the release doesn't exist.
+    check win == 1 {
+        set setver: str = "";
+        check pinned == 1 { setver = str_concat(str_concat("$env:TORVIK_VERSION='", target), "'; "); }
+        fixed pscmd: str = str_concat(str_concat("powershell -NoProfile -ExecutionPolicy Bypass -Command \"", setver), "iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex\"");
+        fixed rc: i64 = sys_run(pscmd);
+        check rc == 0 { echo!("Done. Run 'torvc version' to confirm."); exit(0); }
+        echo!("Install failed. If you pinned a version, check it exists at");
+        echo!("  https://github.com/torvik-lang/torvik/releases");
+        exit(rc);
+    }
+    // POSIX: set TORVIK_VERSION inline before the piped installer when pinning.
+    set setver: str = "";
+    check pinned == 1 { setver = str_concat(str_concat("TORVIK_VERSION=", target), " "); }
+    set rc: i64 = 1;
+    check rune_on_path("curl") == 1 {
+        rc = sys_run(str_concat(setver, "sh -c 'curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh'"));
+    } fallback {
+        check rune_on_path("wget") == 1 {
+            rc = sys_run(str_concat(setver, "sh -c 'wget -qO- https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh'"));
+        } fallback {
+            echo!("rune update needs curl or wget to fetch the installer. Install one and retry,");
+            echo!("or re-run the install command from the Torvik README.");
+            exit(1);
+        }
+    }
+    check rc == 0 { echo!("Done. Run 'torvc version' to confirm."); exit(0); }
+    echo!("Install failed. If you pinned a version, check it exists at");
+    echo!("  https://github.com/torvik-lang/torvik/releases");
+    exit(rc);
 }
 
 df rune_cmd_uninstall(confirmed: i64) -> void {
     fixed root: str = str_concat(sys_home_dir(), "/.torvik");
     check rune_path_exists(root) == 0 {
-        echo!("Torvik is not installed (~/.torvik not found).");
+        echo!(fmt("Torvik is not installed ({} not found).", rune_home_display()));
         exit(0);
     }
     check confirmed == 0 {
-        echo!("This removes the Torvik toolchain at ~/.torvik (torvc, rune, libs, config).");
+        echo!(fmt("This removes the Torvik toolchain at {} (torvc, rune, libs, config),", rune_home_display()));
+        echo!("the Torvik PATH entry from your shell startup files, and the .tv file-type");
+        echo!("and icon registration.");
         echo!("Re-run to confirm:  rune uninstall --yes");
         exit(0);
     }
     fs_remove(root);
-    echo!("Removed ~/.torvik.");
-    echo!("To finish, delete the Torvik bin line (the one adding ~/.torvik/bin to PATH)");
-    echo!("from your shell startup file, e.g. ~/.bashrc or ~/.profile.");
+    echo!(fmt("Removed {}.", rune_home_display()));
+    rune_clean_path_entries();
+    rune_deregister_icons();
+    echo!("Torvik has been uninstalled.");
 }
 
 // ─── Version / config (read) ────────────────────────────────────────────────
@@ -363,8 +716,66 @@ df rune_ver_of(key: str) -> str {
     return "0.0.0";
 }
 
+// Parse the Nth dotted component of a version string as an integer (missing
+// components read as 0, so "1.1" has patch 0). Ignores a leading 'v'.
+df rune_ver_part(v: str, idx: i64) -> i64 {
+    set s: str = v;
+    check starts(s, "v") || starts(s, "V") { s = substr(s, 1, len(s)); }
+    fixed n: i64 = len(s);
+    set part: i64 = 0;
+    set cur: i64 = 0;
+    set seen: i64 = 0;
+    set i: i64 = 0;
+    whilst i < n {
+        fixed c: i64 = byte_at(s, i);
+        check c == 46 {
+            check part == idx { return cur; }
+            part += 1; cur = 0; seen = 0;
+        } fallback {
+            check c >= 48 && c <= 57 { cur = cur * 10 + (c - 48); seen = 1; }
+        }
+        i += 1;
+    }
+    check part == idx { return cur; }
+    return 0;
+}
+
+// Compare two versions: returns 1 if a >= b, else 0. Compares major, then minor,
+// then patch. Used to check whether the installed toolchain meets a project's
+// minimum-version requirement.
+df rune_ver_ge(a: str, b: str) -> i64 {
+    fixed a0: i64 = rune_ver_part(a, 0); fixed b0: i64 = rune_ver_part(b, 0);
+    check a0 > b0 { return 1; } check a0 < b0 { return 0; }
+    fixed a1: i64 = rune_ver_part(a, 1); fixed b1: i64 = rune_ver_part(b, 1);
+    check a1 > b1 { return 1; } check a1 < b1 { return 0; }
+    fixed a2: i64 = rune_ver_part(a, 2); fixed b2: i64 = rune_ver_part(b, 2);
+    check a2 >= b2 { return 1; }
+    return 0;
+}
+
+// If the project's manifest declares a minimum Torvik version (`torvik = "1.1.0"`
+// in torvik.rune), verify the installed toolchain meets it. A too-old toolchain
+// is a clean error telling the user exactly what to run. A malformed version in
+// the manifest is also reported. No manifest / no field: nothing to check.
+df rune_check_project_version() -> void {
+    check rune_path_exists("torvik.rune") == 0 { return; }
+    fixed req: str = rune_field(readfile("torvik.rune"), "torvik");
+    check len(req) == 0 { return; }
+    check rune_version_syntax_ok(req) == 0 {
+        echo!(fmt("error: torvik.rune has an invalid 'torvik' version requirement: '{}'.", req));
+        echo!("  Use a version like  torvik = \"1.1.0\"");
+        exit(1);
+    }
+    fixed have: str = rune_ver_of("torvik");
+    check rune_ver_ge(have, req) == 0 {
+        echo!(fmt("error: this project requires Torvik {} or newer, but v{} is installed.", req, have));
+        echo!(fmt("  Update with:  rune update v{}", req));
+        exit(1);
+    }
+}
+
 df rune_version() -> void {
-    echo!(str_concat("rune v", str_concat(rune_ver_of("rune"), " — Torvik Package Manager")));
+    echo!(str_concat("rune v", str_concat(rune_ver_of("rune"), " - Torvik Package Manager")));
     echo!(str_concat("torvik v", rune_ver_of("torvik")));
 }
 
@@ -403,7 +814,7 @@ df rune_cfg_or(key: str, dflt: str) -> str {
 
 // Render the whole config file from three values — single source of file format.
 df rune_render_config(optimize: str, cache: str, registry: str, diagnostics: str) -> str {
-    set m: str = "# config.rune — Rune package manager settings (managed by Rune; not a project file).\n";
+    set m: str = "# config.rune - Rune package manager settings (managed by Rune; not a project file).\n";
     m = str_concat(m, "# 'cache' is live: it governs incremental rebuilds.\n");
     m = str_concat(m, "# 'diagnostics' is live: it governs the internal diagnostics log (see 'rune dev status').\n");
     m = str_concat(m, "# 'optimize' and 'registry' are reserved for the Rune Library release.\n");
@@ -454,6 +865,17 @@ df rune_cmd_config_set(key: str, value: str) -> void {
     }
 }
 
+// Cross-platform "is COMMAND on PATH?" — returns 1 if found. Uses `where` on
+// Windows (cmd.exe builtin) and `command -v` on POSIX shells, silencing output.
+df rune_on_path(cmd: str) -> i64 {
+    check rune_str_eq(sys_os_name(), "windows") == 1 {
+        check sys_run(fmt("where {} > NUL 2>&1", cmd)) == 0 { return 1; }
+        return 0;
+    }
+    check sys_run(fmt("command -v {} > /dev/null 2>&1", cmd)) == 0 { return 1; }
+    return 0;
+}
+
 df rune_doctor() -> void {
     fixed root: str = str_concat(sys_home_dir(), "/.torvik");
     echo!("Torvik doctor:");
@@ -482,12 +904,12 @@ df rune_doctor() -> void {
     } fallback {
         echo!("  [MISS] config.rune missing");
     }
-    check sys_run("command -v clang > /dev/null 2>&1") == 0 {
+    check rune_on_path("clang") == 1 {
         echo!("  [ok]   clang found on PATH");
     } fallback {
         echo!("  [MISS] clang not on PATH (required to link builds)");
     }
-    check sys_run("command -v torvc > /dev/null 2>&1") == 0 {
+    check rune_on_path("torvc") == 1 {
         echo!("  [ok]   torvc on PATH");
     } fallback {
         echo!("  [warn] torvc not on PATH (add ~/.torvik/bin to PATH)");
@@ -535,7 +957,7 @@ df rune_dev_status() -> void {
 }
 
 df rune_dev_help() -> void {
-    echo!("rune — developer commands (maintainers only; unlisted in 'rune help')");
+    echo!("rune - developer commands (maintainers only; unlisted in 'rune help')");
     echo!("");
     echo!("  rune config                 Show Rune's own settings (~/.torvik/config.rune)");
     echo!("  rune dev config get <key>   Print one config value");
@@ -553,7 +975,7 @@ df rune_dev_help() -> void {
 }
 
 df rune_help() -> void {
-    echo!("rune — Torvik Package Manager");
+    echo!("rune - Torvik Package Manager");
     echo!("");
     echo!("USAGE:");
     echo!("  rune new <name>     Create a new project in a new directory");
@@ -562,14 +984,17 @@ df rune_help() -> void {
     echo!("  rune run            Compile and run (incremental)");
     echo!("  rune list           Show project info  (alias: ls)");
     echo!("  rune clean          Remove the build/ directory");
-    echo!("  rune uninstall      Remove the Torvik toolchain (~/.torvik)");
+    echo!("  rune update [vX]    Update the toolchain (latest, or a pinned version like v1.1.0)");
+    echo!(fmt("  rune uninstall      Remove the Torvik toolchain ({})", rune_home_display()));
     echo!("  rune version        Show versions");
     echo!("  rune help           Show this help");
     echo!("");
     echo!("FLAGS:");
     echo!("  --final             Production build (-O3, stripped)");
+    echo!("  --yes               Skip the confirmation prompt (update, uninstall)");
+    echo!("  --force             Reinstall even if already on the latest version (update)");
     echo!("");
-    echo!("  (add, remove, update: planned for a future release with the Rune Library)");
+    echo!("  (add, remove: arrive with the Rune Library, a future version)");
 }
 
 // ─── Entry point ────────────────────────────────────────────────────────────
@@ -628,7 +1053,9 @@ df main() -> void {
         exit(0);
     }
 
-    check cmd == "add" || cmd == "remove" || cmd == "rm" || cmd == "update" || cmd == "upgrade" || cmd == "pin" || cmd == "unpin" || cmd == "audit" {
+    check cmd == "update"    { rune_cmd_update(rune_has_yes(), rune_update_version_arg());  exit(0); }
+
+    check cmd == "add" || cmd == "remove" || cmd == "rm" || cmd == "upgrade" || cmd == "pin" || cmd == "unpin" || cmd == "audit" {
         echo!(str_concat(str_concat("rune: '", cmd), "' needs the Rune Library, planned for a future release."));
         exit(1);
     }

@@ -89,13 +89,13 @@ set r: i64 = randint(1, 6); // a dice roll
 | `push(xs, x)` | — | Append `x` to the list |
 | `list_insert(xs, i, x)` | — | Insert `x` at index `i` |
 | `list_remove(xs, i)` | — | Remove the element at index `i` |
+| `list_pop(xs)` | element | Remove and return the last element |
 | `len(xs)` | `i64` | Number of elements |
 | `xs[i]` | element | Index access (operator, not a function) |
 
-> A `list_pop` (remove-and-return the last element) is planned for a later release — its
-> ownership transfer needs compile-time element-type information that lands post-v1.0. For now,
-> read `xs[len(xs) - 1]` (bind `len` to a variable first) and then `list_remove`. See
-> [ROADMAP.md](../ROADMAP.md).
+> `list_pop` returns the removed element, typed as the list's element type — `fixed v: str =
+> list_pop(words);`. Popping an empty list is a clean runtime panic. (Popping a `list<i128>`
+> is not yet wired; read the last element into an i128 variable and `list_remove` instead.)
 
 ```torvik
 set xs: list<i64> = list_new();
@@ -168,6 +168,7 @@ echo!("Hello, {name}!");
 | `readfile(path)` | `str` | Read a file's contents |
 | `try_readfile(path)` | — | Read a file, signalling failure rather than aborting |
 | `writefile(path, content)` | — | Write a string to a file |
+| `appendline(path, line)` | — | Append a line (with newline) to a file |
 | `fs_exists(path)` | `bool` | Whether a path exists |
 | `fs_mkdir(path)` | — | Create a directory |
 | `fs_mtime(path)` | `i64` | Modification time |
@@ -194,6 +195,16 @@ check fs_exists("/tmp/note.txt") {
 | `args_get(i)` | `str` | The `i`-th command-line argument (index 0 is the program) |
 | `sleep(ms)` | — | Pause for a number of milliseconds |
 | `clear_screen()` | — | Clear the terminal |
+| `sys_os_name()` | `str` | Operating system name (e.g. `linux`, `macos`) |
+| `sys_os_version()` | `str` | Kernel/OS release string |
+| `sys_arch()` | `str` | CPU architecture (e.g. `x86_64`, `aarch64`) |
+| `sys_hostname()` | `str` | The machine's hostname |
+| `sys_username()` | `str` | The current user's name |
+| `sys_cpu_count()` | `i64` | Number of online CPU cores |
+| `sys_mem_total()` | `i64` | Total system memory, in bytes |
+| `sys_mem_free()` | `i64` | Free system memory, in bytes |
+| `sys_pid()` | `i64` | The current process ID |
+| `typeof(x)` | `str` | The type of a variable or literal, as a string — resolved at **compile time** (e.g. `"i64"`, `"str"`, `"list<str>"`) |
 
 ```torvik
 set count: i64 = args();
@@ -202,7 +213,16 @@ check count > 1 {
     echo!("first argument: {first}");
 }
 fixed code: i64 = sys_run("ls -la");
+fixed osn: str = sys_os_name();
+fixed cores: i64 = sys_cpu_count();
+check osn == "linux" && cores >= 4 {
+    echo!("linux with {cores} cores");
+}
+set n: i64 = 5;
+check typeof(n) == "i64" { echo!("n is an i64"); }
 ```
+
+> `rand()` is seeded automatically at program start — there is no seed call to make.
 
 ---
 

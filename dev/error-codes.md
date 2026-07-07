@@ -71,3 +71,13 @@ manager). The leading digit of the number identifies the subsystem:
 New codes are added here as they are introduced. Codes are stable once assigned:
 a retired code is left documented rather than reused, so that an entry in an old
 log always resolves to the same meaning.
+
+## Located user-error channel (v1.1.0, maintainer note)
+
+Expression- and statement-level codegen sites report user errors by emitting a
+`  ; tv.uerr:POS:MESSAGE` marker into the function IR and CONTINUING codegen.
+`collect_user_errors` gathers the markers after codegen and renders them as standard
+located errors alongside parse/decl errors; the compile aborts before the IR reaches
+clang, so anything emitted after a marker is never built. When adding a new user-error
+site, call `emit_uerr(ir, TOKEN_POS, "message")` — do not use `echo!` + `exit(1)`, which
+can report only one error and cannot point at a line.

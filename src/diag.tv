@@ -67,10 +67,7 @@ df diag_log_path() -> str { return str_concat(diag_dir(), "/diagnostics.log"); }
 df diag_config_path() -> str { return str_concat(diag_dir(), "/config.rune"); }
 
 df diag_path_exists(path: str) -> i64 {
-    fixed cmd: str = str_concat(str_concat("test -e '", path), "'");
-    fixed r: i64 = sys_run(cmd);
-    check r == 0 { return 1; }
-    return 0;
+    return fs_exists(path);
 }
 
 df diag_read_or_empty(path: str) -> str {
@@ -180,7 +177,7 @@ df diag_prune(content: str, now: i64) -> str {
 // ── public surface ───────────────────────────────────────────────────────────
 df diag_record(code: str, phase: str, srcfile: str, message: str) -> void {
     fixed dir: str = diag_dir();
-    sys_run(str_concat(str_concat("mkdir -p '", dir), "'"));
+    fs_mkdir(dir);
     fixed path: str = diag_log_path();
     fixed now: i64 = time_now();
     fixed pruned: str = diag_prune(diag_read_or_empty(path), now);
@@ -194,7 +191,7 @@ df diag_record(code: str, phase: str, srcfile: str, message: str) -> void {
 // Report an internal fault: print a coded message, log it if enabled, exit 70.
 df internal_error(code: str, phase: str, srcfile: str, message: str) -> void {
     echo!(fmt("{} internal error {} [{}]: {}", diag_tool(code), code, phase, message));
-    echo!(fmt("  this is a bug in the Torvik toolchain — please report code {}.", code));
+    echo!(fmt("  this is a bug in the Torvik toolchain - please report code {}.", code));
     check diag_enabled() == 1 { diag_record(code, phase, srcfile, message); }
     exit(diag_exit_code());
 }
