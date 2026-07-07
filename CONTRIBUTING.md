@@ -42,5 +42,5 @@ We welcome contributions in the following areas:
 git clone https://github.com/torvik-lang/torvik.git
 cd torvik
 
-# Build: For building Torvik directly, contact us on Github and we will send you the necessary scripts for building it and the torvc binary.
+# Build: For building Torvik directly, contact us at torviklang@gmail.com and we will send you the necessary scripts for building it and the torvc binary if needed. 
 
