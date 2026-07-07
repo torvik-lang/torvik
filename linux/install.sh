@@ -142,6 +142,26 @@ else
     echo "Installing Torvik v$V ($OS/$ARCH)..."
 fi
 REL="$ORG/releases/download/v$V"
+
+# Non-blocking heads-up if replacing an older MAJOR install (see the note in
+# install.ps1). The `rune update` command does the real confirm-before-major-bump;
+# piping a script to sh consumes stdin, so we don't prompt here.
+_existing_vf="$LIB_DIR/VERSION"
+if [ -f "$_existing_vf" ]; then
+    _exver="$(grep -E '^[[:space:]]*torvik' "$_existing_vf" 2>/dev/null | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    if [ -n "$_exver" ]; then
+        _cur_major="${_exver%%.*}"
+        _new_major="${V%%.*}"
+        if [ "$_cur_major" != "$_new_major" ]; then
+            echo ""
+            echo "note: this replaces Torvik v$_exver with a new MAJOR version (v$V)."
+            echo "      Major versions may include breaking changes — see the changelog:"
+            echo "      https://github.com/torvik-lang/torvik/blob/main/CHANGELOG.md"
+            echo "      To stay on v$_cur_major.x instead, install a pinned version (e.g. rune update v$_cur_major)."
+            echo ""
+        fi
+    fi
+fi
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$INSTALL_DIR/cache" "$INSTALL_DIR/runes"
 # Verify the binaries exist for this release before overwriting anything.
 if ! dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc.new" 2>/dev/null; then
