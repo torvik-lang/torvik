@@ -55,6 +55,7 @@
 #else
   #include <unistd.h>
   #include <dirent.h>
+  #include <fcntl.h>
   #include <termios.h>
   #include <sys/time.h>
   #include <sys/utsname.h>
@@ -1559,6 +1560,14 @@ void torvik_fs_mkdir(const char *path) {
 void torvik_fs_remove(const char *path) {
     DWORD attr = GetFileAttributesA(path);
     if (attr == INVALID_FILE_ATTRIBUTES) return;
+    /* If this is a reparse point (symlink / junction), delete the link itself
+       and do NOT recurse through it — following it would let the deletion escape
+       into the target directory (the symlink-swap TOCTOU risk CodeQL flags). */
+    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+        if (attr & FILE_ATTRIBUTE_DIRECTORY) _rmdir(path);
+        else remove(path);
+        return;
+    }
     if (attr & FILE_ATTRIBUTE_DIRECTORY) {
         char pattern[4096];
         snprintf(pattern, sizeof(pattern), "%s\\*", path);
@@ -1579,25 +1588,68 @@ void torvik_fs_remove(const char *path) {
     }
 }
 #else
+/* TOCTOU-safe recursive delete.
+   The classic "lstat then opendir/rmdir on the same path" pattern has a race:
+   the path can be swapped between the check and the use (e.g. a directory
+   replaced by a symlink), so the operation lands somewhere unintended. We avoid
+   the race by never re-resolving a path from a string mid-operation. Instead we
+   recurse over directory FILE DESCRIPTORS: open a dir fd once with O_NOFOLLOW,
+   then use fstatat / unlinkat / openat *relative to that fd* with
+   AT_SYMLINK_NOFOLLOW. Each entry is resolved exactly once, relative to a fd we
+   already hold, so there is no check-then-reresolve window to race, and symlinks
+   are never traversed. */
+static void torvik_fs_remove_at(int dirfd, const char *name) {
+    struct stat st;
+    if (fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        /* Open the child directory without following a symlink, then recurse
+           over a fd obtained from that same open (no path re-resolution). */
+        int cfd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_DIRECTORY);
+        if (cfd >= 0) {
+            DIR *d = fdopendir(cfd);
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d)) != NULL) {
+                    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+                    torvik_fs_remove_at(cfd, e->d_name);
+                }
+                closedir(d);            /* also closes cfd */
+            } else {
+                close(cfd);
+            }
+        }
+        unlinkat(dirfd, name, AT_REMOVEDIR);
+    } else {
+        unlinkat(dirfd, name, 0);
+    }
+}
+
 void torvik_fs_remove(const char *path) {
+    /* Split the top-level path into parent + final component so the whole walk
+       runs through the fd-relative helper. Operate on a private copy. */
     struct stat st;
     if (lstat(path, &st) != 0) return;
-    if (S_ISDIR(st.st_mode)) {
-        DIR *d = opendir(path);
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d)) != NULL) {
-                if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-                char child[4096];
-                snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
-                torvik_fs_remove(child);
-            }
-            closedir(d);
-        }
-        rmdir(path);
-    } else {
-        unlink(path);
-    }
+
+    size_t n = strlen(path);
+    char tmp[4096];
+    if (n == 0 || n >= sizeof(tmp)) return;
+    memcpy(tmp, path, n + 1);
+    /* strip a trailing slash (but keep a lone "/") */
+    while (n > 1 && tmp[n-1] == '/') { tmp[--n] = '\0'; }
+
+    /* find the final path component */
+    char *slash = strrchr(tmp, '/');
+    const char *parent; const char *base;
+    if (slash == tmp) { parent = "/"; base = slash + 1; }   /* "/foo" */
+    else if (slash)   { *slash = '\0'; parent = tmp; base = slash + 1; }
+    else              { parent = "."; base = tmp; }         /* "foo" */
+
+    if (*base == '\0') return;   /* path was "/" or empty after trimming */
+
+    int pfd = open(parent, O_RDONLY | O_DIRECTORY);
+    if (pfd < 0) return;
+    torvik_fs_remove_at(pfd, base);
+    close(pfd);
 }
 #endif
 
