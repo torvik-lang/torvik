@@ -114,19 +114,77 @@ if ($env:TORVIK_VERSION) {
 }
 $Rel = "$Org/releases/download/v$V"
 
+# If an older install is present and this is a new MAJOR version, print a
+# non-blocking heads-up. We don't prompt here: piping this script into `iex`
+# consumes stdin, so an interactive prompt can't be answered reliably. The
+# `rune update` command does the real confirm-before-major-bump; anyone who
+# wants to stay on their current major line can install a pinned version
+# (e.g. set TORVIK_VERSION=v1, or run `rune update v1`).
+$ExistingVer = ''
+$existingVerFile = Join-Path $LibDir 'VERSION'
+if (Test-Path $existingVerFile) {
+    foreach ($line in (Get-Content $existingVerFile)) {
+        if ($line -match '^\s*torvik\s*=\s*(.+?)\s*$') { $ExistingVer = $Matches[1].Trim(); break }
+    }
+}
+if ($ExistingVer) {
+    $curMajor = ($ExistingVer -split '\.')[0]
+    $newMajor = ($V -split '\.')[0]
+    if ($newMajor -ne $curMajor) {
+        Write-Host ''
+        Write-Host "note: this replaces Torvik v$ExistingVer with a new MAJOR version (v$V)." -ForegroundColor Yellow
+        Write-Host '      Major versions may include breaking changes — see the changelog:'
+        Write-Host '      https://github.com/torvik-lang/torvik/blob/main/CHANGELOG.md'
+        Write-Host "      To stay on v$curMajor.x instead, install a pinned version (e.g. rune update v$curMajor)."
+        Write-Host ''
+    }
+}
+
 # --- create layout ----------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $BinDir,$LibDir,
     (Join-Path $InstallDir 'cache'),(Join-Path $InstallDir 'runes') | Out-Null
 
-# --- download the binaries (fail cleanly if this version has no Windows build) -
+# --- download the binaries --------------------------------------------------
+# rune.exe may be the very process running this update (via `rune update`), and
+# Windows won't let you overwrite a running executable — but it DOES allow
+# renaming one out of the way. So we download to temp files first, then for each
+# binary move any locked original aside (.old) before putting the new one in
+# place. torvc is downloaded the same way for consistency. A genuinely missing
+# build (e.g. a pinned version with no Windows asset) still fails clearly.
+$torvcTmp = Join-Path $BinDir 'torvc.exe.new'
+$runeTmp  = Join-Path $BinDir 'rune.exe.new'
 try {
-    Download "$Rel/torvc-$OS-$Arch.exe" (Join-Path $BinDir 'torvc.exe')
-    Download "$Rel/rune-$OS-$Arch.exe"  (Join-Path $BinDir 'rune.exe')
+    Download "$Rel/torvc-$OS-$Arch.exe" $torvcTmp
+    Download "$Rel/rune-$OS-$Arch.exe"  $runeTmp
 } catch {
-    Write-Host "error: Torvik v$V has no $OS/$Arch build (download failed)." -ForegroundColor Red
-    Write-Host '  Pick another version from https://github.com/torvik-lang/torvik/releases'
+    Write-Host "error: could not download the Torvik v$V binaries for $OS/$Arch." -ForegroundColor Red
+    Write-Host '  If you pinned a version, check it has a Windows build at'
+    Write-Host '  https://github.com/torvik-lang/torvik/releases'
+    Remove-Item -Force -ErrorAction SilentlyContinue $torvcTmp, $runeTmp
     exit 1
 }
+
+function Install-Binary([string]$New, [string]$Final) {
+    $old = "$Final.old"
+    Remove-Item -Force -ErrorAction SilentlyContinue $old
+    if (Test-Path $Final) {
+        try {
+            # Overwrite in place if we can (not running)...
+            Move-Item -Force $New $Final -ErrorAction Stop
+            return
+        } catch {
+            # ...otherwise the target is locked (running): rename it aside, which
+            # Windows permits even for a running exe, then drop the new one in.
+            Rename-Item -Path $Final -NewName ([System.IO.Path]::GetFileName($old)) -Force
+            Move-Item -Force $New $Final
+        }
+    } else {
+        Move-Item -Force $New $Final
+    }
+}
+
+Install-Binary $torvcTmp (Join-Path $BinDir 'torvc.exe')
+Install-Binary $runeTmp  (Join-Path $BinDir 'rune.exe')
 
 # --- runtime + standard library --------------------------------------------
 Download "$Raw/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
@@ -158,6 +216,11 @@ if ($userPath -notlike "*$BinDir*") {
 }
 
 Write-Host ''
+# Best-effort cleanup of a binary we had to rename aside because it was running
+# (a self-update via `rune update`). It's just the previous rune.exe; if it's
+# still locked this pass, it'll be removable next run.
+Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BinDir 'rune.exe.old'), (Join-Path $BinDir 'torvc.exe.old')
+
 Write-Host "Torvik v$V installed."
 Write-Host '>>> Open a NEW terminal (so PATH refreshes), then:  rune --version'
 Write-Host '    From here on, `rune update` upgrades Torvik and `rune uninstall` removes it.'
