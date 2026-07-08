@@ -1,5 +1,56 @@
 # Changelog
 
+## [1.1.2] — 2026-07
+
+Patch release: `rune update` robustness and a version-pinning fix. No language or
+compiler changes.
+
+### Fixes
+
+- **Pinned installs/downgrades now report the correct version.** When installing a
+  specific version (e.g. `rune update v1.1.0`), the binaries came from the pinned
+  release but the `VERSION` marker, runtime, and standard library were still
+  fetched from `main` — so `rune version` could report the wrong version after a
+  downgrade. The installer now pulls all version-specific content from the
+  matching release **tag**, so binaries and version marker always agree.
+- **`rune update` gives a clean message when GitHub rate-limits (HTTP 429).**
+  Previously a rate-limited download surfaced as a raw PowerShell/curl exception
+  dump. `rune update` now detects a 429 and prints a short, clear "try again in a
+  few minutes" message on both Windows and Linux.
+- **Windows: the leftover `rune.exe.old` from a self-update is cleaned up.** After
+  `rune update` renames the running `rune.exe` aside, the next `rune` invocation
+  removes the stale `.old` file automatically.
+
+
+## [1.1.1] — 2026-07
+
+Patch release: security hardening and Windows build reproducibility. No language
+changes.
+
+### Security
+
+- **`fs_remove` (recursive delete) is now symlink-safe.** The recursive directory
+  removal behind `rune clean` re-resolved each path between checking its type and
+  acting on it — a time-of-check/time-of-use (TOCTOU) pattern flagged by CodeQL.
+  On POSIX it now recurses over directory file descriptors using `openat` /
+  `fstatat` / `unlinkat` with `AT_SYMLINK_NOFOLLOW` and `O_NOFOLLOW`; on Windows
+  it skips reparse points (symlinks / junctions) rather than following them. A
+  symlink inside a deleted tree no longer causes anything outside the tree to be
+  removed.
+
+### Fixes
+
+- **Reproducible Windows builds.** `torvc` links with `--no-insert-timestamp` on
+  Windows, so identical source produces byte-identical `.exe` files. This also
+  fixes the Windows self-hosting fixpoint falsely reporting "binaries differ" when
+  the IR was identical (the only difference had been the PE header timestamp).
+- **`rune update` self-update on Windows** no longer fails with a misleading "no
+  build" error. Windows can't overwrite a running executable, and `rune update` is
+  `rune.exe` updating itself; the installer now downloads to temp files and
+  renames the running binary aside before swapping in the new one.
+- Remaining em-dashes in the Windows installer/maintainer scripts (which garbled
+  in the default console codepage) are replaced with ASCII hyphens.
+
 ## [1.1.0] — 2026-07
 
 ### Language
