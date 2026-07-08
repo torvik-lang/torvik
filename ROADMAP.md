@@ -1,10 +1,23 @@
 # Torvik Roadmap
 
 
-## v1.1.0 — current release
+## v1.1.2 — current release
 
-Everything in this section has landed. The items below were the v1.0 rough edges that v1.1.0
-smooths over, plus the new capabilities the release adds.
+Patch release on top of v1.1.1. `rune update` robustness (clean HTTP 429 handling, a
+version-pinning fix so pinned installs report the correct version, and automatic cleanup of
+the Windows self-update `.old` file). No language or compiler changes.
+
+## v1.1.1
+
+Security and reliability patch: `fs_remove` is now symlink-safe (TOCTOU hardening flagged by
+CodeQL), Windows builds are reproducible (byte-identical `.exe` from identical source), and the
+Windows `rune update` self-update no longer trips over the lock on a running executable.
+
+## v1.1.0
+
+The feature release these patches build on. Everything in this section has landed — the items
+below were the v1.0 rough edges that v1.1.0 smooths over, plus the new capabilities the release
+adds.
 
 ### v1.0 limitations fixed in v1.1.0
 
