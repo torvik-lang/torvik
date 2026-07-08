@@ -1,4 +1,4 @@
-// rune.tv — Torvik Package Manager, written in Torvik
+// rune.tv - Torvik Package Manager, written in Torvik
 //
 // User commands: new, init, build, run, clean, list/ls, version, help, uninstall.
 // Developer commands (unlisted in help): config, dev (config get/set), doctor.
@@ -126,7 +126,7 @@ df rune_get_name() -> str {
     fixed content: str = readfile("torvik.rune");
     fixed n: str = rune_field(content, "name");
     check len(n) > 0 { return n; }
-    // A manifest that exists but has no name is malformed — surface it rather than
+    // A manifest that exists but has no name is malformed - surface it rather than
     // silently building something called "output".
     echo!("error: torvik.rune is missing a 'name' field.");
     echo!("  add a line like:  name = \"myapp\"");
@@ -410,7 +410,7 @@ df rune_strip_path_entry(path: str) -> i64 {
         check contains(t, ".torvik/bin") { drop = 1; }
         check rune_str_eq(t, "# Torvik") == 1 {
             drop = 1;
-            // The installer wrote "\n# Torvik\n<PATH line>" — collapse the blank
+            // The installer wrote "\n# Torvik\n<PATH line>" - collapse the blank
             // line it left above the marker so no gap remains.
             fixed nk: i64 = len(kept);
             check nk > 0 {
@@ -466,7 +466,7 @@ df rune_data_dir() -> str {
 
 df rune_deregister_icons() -> void {
     // Desktop integration is freedesktop-specific (xdg-mime, hicolor icons), so it
-    // only applies on Linux. On Windows and macOS this is a no-op — file
+    // only applies on Linux. On Windows and macOS this is a no-op - file
     // associations there are handled by the OS installer, not rune.
     check rune_str_eq(sys_os_name(), "linux") == 0 { return; }
     fixed data: str = rune_data_dir();
@@ -493,10 +493,10 @@ df rune_deregister_icons() -> void {
 // `rune update` refreshes the Torvik TOOLCHAIN in place by re-running the
 // official installer for the current platform, which fetches the latest release
 // from GitHub and reinstalls torvc/rune/lib. (This is distinct from dependency
-// management — `rune add`/`remove` for project libraries — which arrives with
+// management - `rune add`/`remove` for project libraries - which arrives with
 // the Rune Library in a future version.) Requires a network fetch tool: curl or
 // wget on POSIX, PowerShell on Windows.
-// Return the version argument to `rune update`, if any — the first non-flag
+// Return the version argument to `rune update`, if any - the first non-flag
 // token after the command (e.g. "v1.0.1" in `rune update v1.0.1`). Returns ""
 // when the user typed a bare `rune update`. Flags like --yes are skipped.
 df rune_update_version_arg() -> str {
@@ -603,7 +603,7 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
     fixed installed: str = rune_ver_of("torvik");
 
     // For a bare `rune update` (no pinned version), check whether a newer release
-    // exists before doing anything. If already current, say so and stop — unless
+    // exists before doing anything. If already current, say so and stop - unless
     // --force is given. This avoids a needless reinstall on every invocation.
     check pinned == 0 {
         fixed latest: str = rune_fetch_latest_version();
@@ -615,7 +615,7 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
                 exit(0);
             }
             // A newer MAJOR version can contain breaking changes, so confirm first
-            // even when --yes wasn't passed — unless the user already confirmed.
+            // even when --yes wasn't passed - unless the user already confirmed.
             check rune_ver_part(latest, 0) > rune_ver_part(installed, 0) && confirmed == 0 {
                 echo!(fmt("A new MAJOR version of Torvik is available: v{} (you have v{}).", latest, installed));
                 echo!("  Major versions may include breaking changes that affect your code.");
@@ -653,7 +653,13 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
     check win == 1 {
         set setver: str = "";
         check pinned == 1 { setver = str_concat(str_concat("$env:TORVIK_VERSION='", target), "'; "); }
-        fixed pscmd: str = str_concat(str_concat("powershell -NoProfile -ExecutionPolicy Bypass -Command \"", setver), "iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex\"");
+        // Fetch the installer into a variable first (inside try/catch) so a rate
+        // limit (HTTP 429) or network error on the fetch itself surfaces as a
+        // clean message instead of a raw PowerShell exception dump. Only run the
+        // script if the fetch succeeded. Inner strings use single quotes to avoid
+        // nested double-quote escaping inside -Command.
+        fixed guarded: str = str_concat(setver, "try { $s = (iwr -useb 'https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1').Content } catch { if ($_.Exception.Response.StatusCode.value__ -eq 429) { Write-Host 'error: GitHub is rate-limiting downloads right now (HTTP 429 Too Many Requests).' -ForegroundColor Red; Write-Host '  This is temporary - wait a few minutes and run rune update again.' -ForegroundColor Red } else { Write-Host 'error: could not download the installer (network or GitHub error). Try again shortly.' -ForegroundColor Red }; exit 1 }; Invoke-Expression $s");
+        fixed pscmd: str = str_concat(str_concat("powershell -NoProfile -ExecutionPolicy Bypass -Command \"", guarded), "\"");
         fixed rc: i64 = sys_run(pscmd);
         check rc == 0 { echo!("Done. Run 'torvc version' to confirm."); exit(0); }
         echo!("Install failed. If you pinned a version, check it exists at");
@@ -664,11 +670,24 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
     set setver: str = "";
     check pinned == 1 { setver = str_concat(str_concat("TORVIK_VERSION=", target), " "); }
     set rc: i64 = 1;
+    // Probe the installer URL first so a rate limit (HTTP 429) or other HTTP
+    // error produces a clean, specific message instead of a silent failure.
+    fixed url: str = "https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh";
     check rune_on_path("curl") == 1 {
-        rc = sys_run(str_concat(setver, "sh -c 'curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh'"));
+        fixed probe_tmp: str = str_concat(sys_home_dir(), "/.torvik/.httpcode");
+        sys_run(str_concat(str_concat("sh -c 'curl -s -o /dev/null -w \"%{{http_code}}\" ", url), str_concat(" > ", str_concat(probe_tmp, " 2>/dev/null'"))));
+        set http: str = "";
+        check fs_exists(probe_tmp) == 1 { http = trim(readfile(probe_tmp)); }
+        sys_run(str_concat("rm -f ", probe_tmp));
+        check http == "429" {
+            echo!("error: GitHub is rate-limiting downloads right now (HTTP 429 Too Many Requests).");
+            echo!("  This is temporary - wait a few minutes and run rune update again.");
+            exit(1);
+        }
+        rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'curl -fsSL ", url), " | sh'")));
     } fallback {
         check rune_on_path("wget") == 1 {
-            rc = sys_run(str_concat(setver, "sh -c 'wget -qO- https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh | sh'"));
+            rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'wget -qO- ", url), " | sh'")));
         } fallback {
             echo!("rune update needs curl or wget to fetch the installer. Install one and retry,");
             echo!("or re-run the install command from the Torvik README.");
@@ -812,7 +831,7 @@ df rune_cfg_or(key: str, dflt: str) -> str {
     return dflt;
 }
 
-// Render the whole config file from three values — single source of file format.
+// Render the whole config file from three values - single source of file format.
 df rune_render_config(optimize: str, cache: str, registry: str, diagnostics: str) -> str {
     set m: str = "# config.rune - Rune package manager settings (managed by Rune; not a project file).\n";
     m = str_concat(m, "# 'cache' is live: it governs incremental rebuilds.\n");
@@ -838,7 +857,7 @@ df rune_cmd_config_get(key: str) -> void {
     echo!(rune_config_get(key));
 }
 
-// Rewrites config.rune entirely via writefile — no shell, no quoting.
+// Rewrites config.rune entirely via writefile - no shell, no quoting.
 df rune_cmd_config_set(key: str, value: str) -> void {
     check rune_known_key(key) == 0 {
         echo!(str_concat(str_concat("rune: unknown config key '", key), "' (known: optimize, cache, registry)"));
@@ -865,7 +884,7 @@ df rune_cmd_config_set(key: str, value: str) -> void {
     }
 }
 
-// Cross-platform "is COMMAND on PATH?" — returns 1 if found. Uses `where` on
+// Cross-platform "is COMMAND on PATH?" - returns 1 if found. Uses `where` on
 // Windows (cmd.exe builtin) and `command -v` on POSIX shells, silencing output.
 df rune_on_path(cmd: str) -> i64 {
     check rune_str_eq(sys_os_name(), "windows") == 1 {
@@ -1000,6 +1019,16 @@ df rune_help() -> void {
 // ─── Entry point ────────────────────────────────────────────────────────────
 
 df main() -> void {
+    // On Windows, `rune update` can't overwrite the running rune.exe, so the
+    // installer renames the old one aside to rune.exe.old and swaps in the new
+    // one. By the time rune runs again that old process is gone, so clean up any
+    // leftover .old binaries here (silent, best-effort; POSIX has no such file).
+    check sys_os_name() == "windows" {
+        fixed bindir: str = str_concat(sys_home_dir(), "\\.torvik\\bin");
+        sys_run(str_concat(str_concat("cmd /c del /q \"", bindir), "\\rune.exe.old\" >nul 2>&1"));
+        sys_run(str_concat(str_concat("cmd /c del /q \"", bindir), "\\torvc.exe.old\" >nul 2>&1"));
+    }
+
     fixed argc: i64 = args();
     check argc < 2 { rune_help(); exit(0); }
     fixed cmd: str = args_get(1);
