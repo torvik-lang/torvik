@@ -21,7 +21,7 @@ torvik_register_icons() {
     _stamp="$HOME/.torvik/.icons-version"
     if [ "${TORVIK_FORCE_ICONS:-0}" != "1" ] && [ -f "$_stamp" ] && \
        [ "$(cat "$_stamp" 2>/dev/null)" = "$_ver" ]; then
-        echo "  .tv icons already current (v$_ver) — skipping"; return 0
+        echo "  .tv icons already current (v$_ver) - skipping"; return 0
     fi
     _mime=""
     if   [ -f "$_adir/linux/torvik-mime.xml" ]; then _mime="$_adir/linux/torvik-mime.xml"
@@ -82,7 +82,7 @@ case "$ARCH" in x86_64|amd64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) ech
 case "$OS" in
   linux) ;;
   darwin)
-    echo "Torvik doesn't have official macOS builds yet — macOS support is planned for v1.2.0."
+    echo "Torvik doesn't have official macOS builds yet - macOS support is planned for v1.2.0."
     echo ""
     echo "There's no prebuilt torvc/rune for macOS to install right now. If you'd like to try"
     echo "it early, the toolchain is written to be macOS-compatible and can be built from source"
@@ -96,7 +96,7 @@ case "$OS" in
     exit 1 ;;
   mingw*|msys*|cygwin*)
     echo "It looks like you're on Windows (running under $OS)."
-    echo "Use the Windows installer instead — from PowerShell, run:"
+    echo "Use the Windows installer instead - from PowerShell, run:"
     echo ""
     echo "  iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex"
     echo ""
@@ -142,6 +142,14 @@ else
     echo "Installing Torvik v$V ($OS/$ARCH)..."
 fi
 REL="$ORG/releases/download/v$V"
+# Raw-content base for source/runtime/VERSION/stdlib/assets. When a specific
+# version is pinned, pull these from that version's TAG so everything matches the
+# binaries; a bare (latest) install tracks main.
+if [ -n "$TORVIK_VERSION" ]; then
+    RAW_REF="https://raw.githubusercontent.com/torvik-lang/torvik/v$V"
+else
+    RAW_REF="$RAW"
+fi
 
 # Non-blocking heads-up if replacing an older MAJOR install (see the note in
 # install.ps1). The `rune update` command does the real confirm-before-major-bump;
@@ -155,7 +163,7 @@ if [ -f "$_existing_vf" ]; then
         if [ "$_cur_major" != "$_new_major" ]; then
             echo ""
             echo "note: this replaces Torvik v$_exver with a new MAJOR version (v$V)."
-            echo "      Major versions may include breaking changes — see the changelog:"
+            echo "      Major versions may include breaking changes - see the changelog:"
             echo "      https://github.com/torvik-lang/torvik/blob/main/CHANGELOG.md"
             echo "      To stay on v$_cur_major.x instead, install a pinned version (e.g. rune update v$_cur_major)."
             echo ""
@@ -174,20 +182,20 @@ dl "$REL/rune-$OS-$ARCH" "$BIN_DIR/rune.new" || { echo "error: could not downloa
 mv "$BIN_DIR/torvc.new" "$BIN_DIR/torvc"
 mv "$BIN_DIR/rune.new"  "$BIN_DIR/rune"
 chmod +x "$BIN_DIR/torvc" "$BIN_DIR/rune"
-for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW/src/$a" "$LIB_DIR/$a"; done
-dl "$RAW/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
-dl "$RAW/VERSION" "$LIB_DIR/VERSION"
+for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW_REF/src/$a" "$LIB_DIR/$a"; done
+dl "$RAW_REF/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
+dl "$RAW_REF/VERSION" "$LIB_DIR/VERSION"
 mkdir -p "$LIB_DIR/std"
-for a in math strings list; do dl "$RAW/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
+for a in math strings list; do dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
 
 # --- icons + .tv file type (Linux only; macOS/Windows association: v1.1.0) ---
 if [ "$OS" = "linux" ]; then
     echo "Registering the .tv file type and icons..."
     ICON_DIR="$INSTALL_DIR/icons"; mkdir -p "$ICON_DIR/png"
-    dl "$RAW/assets/linux/torvik-mime.xml" "$ICON_DIR/torvik-mime.xml" 2>/dev/null || true
+    dl "$RAW_REF/assets/linux/torvik-mime.xml" "$ICON_DIR/torvik-mime.xml" 2>/dev/null || true
     for s in 16 32 48 64 128 256; do
-        dl "$RAW/assets/png/torvik-file-$s.png" "$ICON_DIR/png/torvik-file-$s.png" 2>/dev/null || true
-        dl "$RAW/assets/png/torvik-icon-$s.png" "$ICON_DIR/png/torvik-icon-$s.png" 2>/dev/null || true
+        dl "$RAW_REF/assets/png/torvik-file-$s.png" "$ICON_DIR/png/torvik-file-$s.png" 2>/dev/null || true
+        dl "$RAW_REF/assets/png/torvik-icon-$s.png" "$ICON_DIR/png/torvik-icon-$s.png" 2>/dev/null || true
     done
     torvik_register_icons "$ICON_DIR" "$V"
 fi
