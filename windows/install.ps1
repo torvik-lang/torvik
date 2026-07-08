@@ -9,7 +9,7 @@
   %USERPROFILE%\.torvik\bin to your user PATH. Mirrors the Linux install.sh.
 
   Requires: LLVM/clang on PATH (torvc calls clang to link the final .exe).
-    winget install LLVM.LLVM     — or grab it from https://releases.llvm.org
+    winget install LLVM.LLVM     - or grab it from https://releases.llvm.org
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -31,13 +31,13 @@ Write-Host 'Torvik installer (Windows)'
 # --- clang + toolchain check ------------------------------------------------
 # torvc needs clang AND a MinGW-w64 sysroot (headers + libs). Plain LLVM alone
 # does not include the C headers, so we do a real test compile of a tiny program
-# with the GNU target — the same target torvc uses — to catch a broken toolchain
+# with the GNU target - the same target torvc uses - to catch a broken toolchain
 # now, with a clear fix, rather than at first build.
 $clang = Get-Command clang -ErrorAction SilentlyContinue
 if (-not $clang) {
     Write-Host ''
     Write-Host 'error: clang is required (torvc uses it to compile and link).' -ForegroundColor Red
-    Write-Host '  Install a clang that includes the MinGW-w64 headers/libraries — pick one:'
+    Write-Host '  Install a clang that includes the MinGW-w64 headers/libraries - pick one:'
     Write-Host '    - LLVM-MinGW:  https://github.com/mstorsjo/llvm-mingw/releases  (simplest, self-contained)'
     Write-Host '    - MSYS2:       install msys2, then: pacman -S mingw-w64-clang-x86_64-toolchain'
     Write-Host '    - WinLibs:     https://winlibs.com  (UCRT build)'
@@ -66,7 +66,7 @@ if (-not $toolchainOk) {
 
 # --- resolve version --------------------------------------------------------
 # Default: latest, from the repo's VERSION on main. Override: set the
-# TORVIK_VERSION environment variable to pin a release — a full tag (v1.0.1) or a
+# TORVIK_VERSION environment variable to pin a release - a full tag (v1.0.1) or a
 # partial version (v1, v1.0) that resolves to the newest matching release via the
 # GitHub API. `rune update vX` sets this for you.
 $Arch = 'x86_64'
@@ -113,6 +113,12 @@ if ($env:TORVIK_VERSION) {
     Write-Host "Installing Torvik v$V ($OS/$Arch)..."
 }
 $Rel = "$Org/releases/download/v$V"
+# Raw-content base for VERSION / runtime / stdlib. When a specific version is
+# installed we pull these from that version's TAG (not main), so the VERSION
+# marker, runtime, and stdlib all match the binaries we just downloaded. A bare
+# (latest) install tracks main.
+$RawRef = "https://raw.githubusercontent.com/torvik-lang/torvik/v$V"
+if (-not $env:TORVIK_VERSION) { $RawRef = $Raw }
 
 # If an older install is present and this is a new MAJOR version, print a
 # non-blocking heads-up. We don't prompt here: piping this script into `iex`
@@ -133,7 +139,7 @@ if ($ExistingVer) {
     if ($newMajor -ne $curMajor) {
         Write-Host ''
         Write-Host "note: this replaces Torvik v$ExistingVer with a new MAJOR version (v$V)." -ForegroundColor Yellow
-        Write-Host '      Major versions may include breaking changes — see the changelog:'
+        Write-Host '      Major versions may include breaking changes - see the changelog:'
         Write-Host '      https://github.com/torvik-lang/torvik/blob/main/CHANGELOG.md'
         Write-Host "      To stay on v$curMajor.x instead, install a pinned version (e.g. rune update v$curMajor)."
         Write-Host ''
@@ -146,7 +152,7 @@ New-Item -ItemType Directory -Force -Path $BinDir,$LibDir,
 
 # --- download the binaries --------------------------------------------------
 # rune.exe may be the very process running this update (via `rune update`), and
-# Windows won't let you overwrite a running executable — but it DOES allow
+# Windows won't let you overwrite a running executable - but it DOES allow
 # renaming one out of the way. So we download to temp files first, then for each
 # binary move any locked original aside (.old) before putting the new one in
 # place. torvc is downloaded the same way for consistency. A genuinely missing
@@ -187,12 +193,12 @@ Install-Binary $torvcTmp (Join-Path $BinDir 'torvc.exe')
 Install-Binary $runeTmp  (Join-Path $BinDir 'rune.exe')
 
 # --- runtime + standard library --------------------------------------------
-Download "$Raw/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
-Download "$Raw/VERSION"                   (Join-Path $LibDir 'VERSION')
+Download "$RawRef/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
+Download "$RawRef/VERSION"                   (Join-Path $LibDir 'VERSION')
 $stdDir = Join-Path $LibDir 'std'
 New-Item -ItemType Directory -Force -Path $stdDir | Out-Null
 foreach ($a in @('math','strings','list')) {
-    try { Download "$Raw/src/std/$a.tv" (Join-Path $stdDir "$a.tv") } catch { }
+    try { Download "$RawRef/src/std/$a.tv" (Join-Path $stdDir "$a.tv") } catch { }
 }
 
 # --- default config ---------------------------------------------------------
