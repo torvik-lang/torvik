@@ -670,12 +670,12 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
     set setver: str = "";
     check pinned == 1 { setver = str_concat(str_concat("TORVIK_VERSION=", target), " "); }
     set rc: i64 = 1;
-    // Probe the installer URL first so a rate limit (HTTP 429) or other HTTP
-    // error produces a clean, specific message instead of a silent failure.
-    fixed url: str = "https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh";
+    fixed lurl: str = "https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/install.sh";
     check rune_on_path("curl") == 1 {
+        // Probe the HTTP status first so a rate limit (429) or other HTTP error
+        // gives a clean, specific message instead of a silent failure.
         fixed probe_tmp: str = str_concat(sys_home_dir(), "/.torvik/.httpcode");
-        sys_run(str_concat(str_concat("sh -c 'curl -s -o /dev/null -w \"%{{http_code}}\" ", url), str_concat(" > ", str_concat(probe_tmp, " 2>/dev/null'"))));
+        sys_run(str_concat(str_concat("sh -c 'curl -s -o /dev/null -w \"%{{http_code}}\" ", lurl), str_concat(" > ", str_concat(probe_tmp, " 2>/dev/null'"))));
         set http: str = "";
         check fs_exists(probe_tmp) == 1 { http = trim(readfile(probe_tmp)); }
         sys_run(str_concat("rm -f ", probe_tmp));
@@ -684,10 +684,10 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
             echo!("  This is temporary - wait a few minutes and run rune update again.");
             exit(1);
         }
-        rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'curl -fsSL ", url), " | sh'")));
+        rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'curl -fsSL ", lurl), " | sh'")));
     } fallback {
         check rune_on_path("wget") == 1 {
-            rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'wget -qO- ", url), " | sh'")));
+            rc = sys_run(str_concat(setver, str_concat(str_concat("sh -c 'wget -qO- ", lurl), " | sh'")));
         } fallback {
             echo!("rune update needs curl or wget to fetch the installer. Install one and retry,");
             echo!("or re-run the install command from the Torvik README.");
