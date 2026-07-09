@@ -19,7 +19,8 @@ torvc hello.tv -o hello     # compile hello.tv to ./hello
 ./hello
 ```
 
-If you omit `-o`, the output name is derived from the source file.
+If you omit `-o`, the output name is derived from the source file: `torvc app.tv` writes
+`./app` (`app.exe` on Windows) in the current directory.
 
 On success, `torvc` prints a confirmation with the compile time, for example
 `Compiled successfully! (0.18s)`. Use `-q` to silence it.
