@@ -195,6 +195,12 @@ Install-Binary $runeTmp  (Join-Path $BinDir 'rune.exe')
 # --- runtime + standard library --------------------------------------------
 Download "$RawRef/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
 Download "$RawRef/VERSION"                   (Join-Path $LibDir 'VERSION')
+# v1.1.3: also install the compiler library sources and the std umbrella module,
+# matching the Linux installer. std.tv in particular was missing, which broke
+# `apply std;` on every Windows install.
+foreach ($a in @('torvik_lexer.tv','torvik_parser.tv','torvik_codegen.tv','diag.tv','std.tv')) {
+    try { Download "$RawRef/src/$a" (Join-Path $LibDir $a) } catch { }
+}
 $stdDir = Join-Path $LibDir 'std'
 New-Item -ItemType Directory -Force -Path $stdDir | Out-Null
 foreach ($a in @('math','strings','list')) {
