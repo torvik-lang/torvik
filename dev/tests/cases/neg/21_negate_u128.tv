@@ -1,0 +1,4 @@
+df main() -> void {
+    set u: u128 = 5;
+    echo!(-u);
+}

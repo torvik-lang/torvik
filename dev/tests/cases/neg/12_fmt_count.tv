@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed s: str = fmt("{} and {}", 1);
+    echo!(s);
+}

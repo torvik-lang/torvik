@@ -1,0 +1,5 @@
+apply no_such_module_xyz;
+
+df main() -> void {
+    echo!("x");
+}

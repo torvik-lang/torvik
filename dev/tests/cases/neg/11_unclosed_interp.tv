@@ -1,0 +1,4 @@
+df main() -> void {
+    set x: i64 = 1;
+    echo!("value {x");
+}

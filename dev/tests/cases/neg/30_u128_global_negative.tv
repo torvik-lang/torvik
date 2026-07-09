@@ -1,0 +1,2 @@
+set bad: u128 = -5;
+df main() -> void { echo!(bad); }
