@@ -270,6 +270,16 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
             check line_eq(decl_type, "u16") == 1 { is_literal = 0; }
             check line_eq(decl_type, "i32") == 1 { is_literal = 0; }
             check line_eq(decl_type, "u32") == 1 { is_literal = 0; }
+            // v1.1.3: u64 too - the constant path recorded the global as i64
+            // (annotation discarded), so `echo!(g)` printed a full-range u64
+            // literal as a negative signed value. The startup-init path keeps
+            // the annotation and the unsigned print/compare/divide semantics.
+            check line_eq(decl_type, "u64") == 1 { is_literal = 0; }
+            // v1.1.3: 128-bit globals too - the constant path can't express a
+            // heap-boxed i128/u128 (and mis-recorded the type), so literals
+            // beyond the u64 range were unsupported at global scope.
+            check line_eq(decl_type, "i128") == 1 { is_literal = 0; }
+            check line_eq(decl_type, "u128") == 1 { is_literal = 0; }
 
             check is_literal == 1 {
                 set val_str: str = "";
