@@ -1,0 +1,3 @@
+df main() -> void {
+    echo!("v={ghost + 1}");
+}

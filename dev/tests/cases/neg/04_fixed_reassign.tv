@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed name: str = "a";
+    name = "b";
+}

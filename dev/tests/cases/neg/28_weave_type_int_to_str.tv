@@ -1,0 +1,5 @@
+df shout(s: str) -> str { return str_concat(s, "!"); }
+df main() -> void {
+    set v: i64 = 5;
+    echo!(v ~> shout);
+}

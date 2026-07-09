@@ -1,0 +1,4 @@
+df main() -> void {
+    set s: str = "x";
+    echo!(-s);
+}
