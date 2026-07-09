@@ -357,7 +357,15 @@ int torvik_readbool(const char *prompt) {
 /* readkey() — single keypress, no Enter required */
 char torvik_readkey(void) {
 #if defined(_WIN32)
-    return (char)_getch();
+    /* v1.1.3: _getch() reads the CONSOLE device, so with redirected stdin
+       (pipes, files, test harnesses) it blocked waiting for a real keypress
+       and ignored the piped input entirely. Use the console only when stdin
+       IS the console; otherwise read the redirected stream. */
+    if (_isatty(_fileno(stdin))) {
+        return (char)_getch();
+    }
+    int c = getchar();
+    return (char)(c == EOF ? 0 : c);
 #else
     struct termios old, raw;
     tcgetattr(STDIN_FILENO, &old);
@@ -887,7 +895,7 @@ int64_t torvik_list_len(TorvikList *l) { return l->len; }
    else 0. v1.0.0 scope: i64/identity comparison (ints, and ptr-identity on
    object lists). String-VALUE membership is a post-1.0 refinement.
    NOTE: distinct from torvik_contains (string substring) to avoid name clash. */
-long torvik_list_contains(TorvikList *l, int64_t value) {
+int64_t torvik_list_contains(TorvikList *l, int64_t value) {  /* v1.1.3: i64 return to match the declared IR ABI (long is 32-bit on Win64) */
     if (!l) return 0;
     for (int64_t i = 0; i < l->len; i++) {
         if ((int64_t)l->data[i] == value) return 1;
@@ -898,7 +906,7 @@ long torvik_list_contains(TorvikList *l, int64_t value) {
 /* Membership for list<str>: 1 if `s` CONTENT-equals any element (strcmp), else
    0. Elements are char* riding the int64 data slots. NULL-safe on both sides.
    (v1.1.0: `<|` on string lists matches by value, not identity.) */
-long torvik_list_contains_str(TorvikList *l, const char *s) {
+int64_t torvik_list_contains_str(TorvikList *l, const char *s) {  /* v1.1.3: i64 return, see above */
     if (!l || !s) return 0;
     for (int64_t i = 0; i < l->len; i++) {
         const char *e = (const char *)l->data[i];
@@ -1694,6 +1702,16 @@ char *torvik_char_str(const char *s, int64_t i) {
     return buf;
 }
 
+/* byte_str — a byte code as a fresh 1-char (headered) string. Non-printable
+   values are kept verbatim (callers decide); negative/EOF yields "".
+   v1.1.3: backs readkey()'s documented 1-char-string return. */
+char *torvik_byte_str(int64_t b) {
+    if (b < 0 || b > 255) return torvik_str_alloc(0);
+    char *buf = torvik_str_alloc(1);
+    buf[0] = (char)(unsigned char)b;
+    return buf;
+}
+
 char *torvik_substr(const char *s, int64_t start, int64_t end) {
     /* Security: clamp the range into [0, strlen(s)] so out-of-range or negative
        indices can never read past the buffer (a heap over-read / info leak).
@@ -1711,7 +1729,9 @@ char *torvik_substr(const char *s, int64_t start, int64_t end) {
 
 char *torvik_int_to_str(int64_t n) {
     char *buf = torvik_str_alloc(31);
-    snprintf(buf, 32, "%ld", (long)n);
+    /* v1.1.3: %lld, not %ld - `long` is 32-bit on Win64 (LLP64), so large i64
+       values printed truncated on Windows (a silent wrong answer). */
+    snprintf(buf, 32, "%lld", (long long)n);
     return buf;
 }
 
@@ -1748,7 +1768,7 @@ char *torvik_list_to_str(TorvikList *l) {
             TV_LS_APPEND(e ? e : "");
         } else {
             char nb[32];
-            snprintf(nb, sizeof(nb), "%ld", (long)(int64_t)(intptr_t)l->data[i]);
+            snprintf(nb, sizeof(nb), "%lld", (long long)(int64_t)(intptr_t)l->data[i]); /* v1.1.3: LLP64-safe */
             TV_LS_APPEND(nb);
         }
     }
