@@ -28,6 +28,8 @@ it is reported as a clean compile error, never a crash.
 | `trim(s)` | `str` | Remove leading and trailing whitespace |
 | `triml(s)` | `str` | Remove leading whitespace |
 | `trimr(s)` | `str` | Remove trailing whitespace |
+| `upper(s)` | `str` | Uppercase copy of `s` (also usable as a weave stage: `s ~> upper`) |
+| `lower(s)` | `str` | Lowercase copy of `s` (also usable as a weave stage: `s ~> lower`) |
 | `replace(s, old, new)` | `str` | Replace occurrences of `old` with `new` |
 | `contains(s, sub)` | `bool` | Whether `s` contains `sub` |
 | `starts(s, prefix)` | `bool` | Whether `s` starts with `prefix` |
@@ -145,12 +147,13 @@ These read from standard input.
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `read()` | `str` | Read input |
+| `read()` / `read(prompt)` | `str` | Read input; the optional prompt is printed first |
 | `readln()` | `str` | Read a line |
-| `readint()` | `i64` | Read and parse an integer |
-| `readfloat()` | `f64` | Read and parse a float |
-| `readbool()` | `bool` | Read and parse a boolean |
-| `readkey()` | `str` | Read a single keypress |
+| `readint()` / `readint(prompt)` | `i64` | Read and parse an integer (re-prompts until valid) |
+| `readfloat()` / `readfloat(prompt)` | `f64` | Read and parse a float (re-prompts until valid) |
+| `readbool()` / `readbool(prompt)` | `bool` | Read and parse a boolean (re-prompts until valid) |
+| `readkey()` | `i64` | Read a single keypress as its raw byte code (no Enter needed); pairs with `byte_at` |
+| `readkey_str()` | `str` | Read a single keypress as a 1-char string (no Enter needed); pairs with `char_at` |
 | `readenv(name)` | `str` | Read an environment variable |
 
 ```torvik
