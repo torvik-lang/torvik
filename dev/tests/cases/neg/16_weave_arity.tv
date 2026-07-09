@@ -1,4 +1,0 @@
-df addn(x: i64, n: i64) -> i64 { return x + n; }
-df main() -> void {
-    echo!(5 ~> addn);
-}

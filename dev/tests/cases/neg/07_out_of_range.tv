@@ -1,3 +1,0 @@
-df main() -> void {
-    set b: i8 = 200;
-}

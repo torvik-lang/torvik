@@ -1,4 +1,0 @@
-df main() -> void {
-    set xs = list_new();
-    echo!(len(xs));
-}

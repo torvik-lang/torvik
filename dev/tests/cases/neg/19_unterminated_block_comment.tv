@@ -1,4 +1,0 @@
-df main() -> void {
-    #- never closed
-    echo!("x");
-}

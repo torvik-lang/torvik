@@ -1,3 +1,0 @@
-df main() -> void {
-    set f: f64 = 5;
-}

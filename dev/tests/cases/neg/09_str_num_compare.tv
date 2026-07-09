@@ -1,4 +1,0 @@
-df main() -> void {
-    set n: i64 = 5;
-    check n == "text" { echo!("x"); }
-}

@@ -1,4 +1,0 @@
-df f() -> str { return 5; }
-df main() -> void {
-    echo!(f());
-}

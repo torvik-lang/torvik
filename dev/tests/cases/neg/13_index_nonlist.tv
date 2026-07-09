@@ -1,4 +1,0 @@
-df main() -> void {
-    set x: i64 = 5;
-    echo!(x[0]);
-}

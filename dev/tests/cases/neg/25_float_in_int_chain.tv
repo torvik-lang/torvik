@@ -1,4 +1,0 @@
-df main() -> void {
-    set n: i64 = 5;
-    echo!(n + 2.5);
-}
