@@ -1,0 +1,18 @@
+df add(a: i64, b: i64) -> i64 { return a + b; }
+df greet(name: str) -> void { echo!("Hello, {name}!"); }
+df factorial(n: i64) -> i64 {
+    check n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+df calls_later() -> i64 { return later(); }
+df later() -> i64 { return 77; }
+df joinstr(a: str, b: str) -> str { return str_concat(a, b); }
+df fmix(x: f64, n: i64) -> f64 { return x * 2.0; }
+df main() -> void {
+    echo!(add(2, 3));
+    greet("Astrid");
+    echo!(factorial(6));
+    echo!(calls_later());
+    echo!(joinstr("ab", "cd"));
+    echo!(fmix(1.5, 3));
+}

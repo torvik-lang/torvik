@@ -1,0 +1,41 @@
+df main() -> void {
+    set xs: list<i64> = list_new();
+    push(xs, 10); push(xs, 20);
+    echo!(xs[0]);
+    echo!(len(xs));
+    list_insert(xs, 1, 15);
+    echo!(xs[0]); echo!(xs[1]); echo!(xs[2]);
+    list_remove(xs, 0);
+    echo!(xs[0]); echo!(len(xs));
+    fixed last: i64 = list_pop(xs);
+    echo!(last); echo!(len(xs));
+    set names = list_new();
+    push(names, "odin");
+    echo!(names[0]);
+    set inf_i = list_new();
+    push(inf_i, 42);
+    echo!(inf_i[0] + 1);
+    set inf_b = list_new();
+    push(inf_b, true);
+    echo!(inf_b[0]);
+    set inf_f = list_new();
+    push(inf_f, 2.5);
+    echo!(inf_f[0]);
+    set ss: list<str> = list_new();
+    push(ss, "alpha"); push(ss, "beta");
+    fixed popped: str = list_pop(ss);
+    echo!(popped);
+    check xs[0] > 10 { echo!("elem cmp ok"); }
+    set fl: list<f64> = list_new();
+    push(fl, 1.5); push(fl, 2.25);
+    echo!(fl[0]);
+    echo!(fl[0] + fl[1]);
+    check fl[1] > fl[0] { echo!("f64 cmp ok"); }
+    list_insert(fl, 1, 9.5);
+    echo!(fl[1]);
+    fixed fpop: f64 = list_pop(fl);
+    echo!(fpop);
+    set sums: i64 = 0;
+    each v in xs { sums += v; }
+    echo!(sums);
+}

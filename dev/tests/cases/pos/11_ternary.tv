@@ -1,0 +1,27 @@
+df fact(n: i64) -> i64 {
+    return n <= 1 ?> 1 !> n * fact(n - 1);
+}
+df main() -> void {
+    set n: i64 = 7;
+    fixed parity: str = n % 2 == 0 ?> "even" !> "odd";
+    echo!(parity);
+    echo!(n > 0 ?> "positive" !> "non-positive");
+    fixed sign: str = n > 0 ?> "positive" !> n < 0 ?> "negative" !> "zero";
+    echo!(sign);
+    set d: i64 = 0;
+    echo!(d != 0 ?> 100 / d !> 0);
+    echo!(fact(5));
+    set c: bool = true;
+    echo!((c ?> 10 !> 20) * 3);
+    set x: i64 = 0;
+    x = c ?> 1 !> 2;
+    echo!(x);
+    set total: i64 = 0;
+    each i in 0..3 { total += i > 0 ?> i !> 0; }
+    echo!(total);
+    set xs: list<i64> = list_new();
+    push(xs, 0);
+    xs[0] = c ?> 9 !> 8;
+    echo!(xs[0]);
+    check (c ?> 1 !> 0) == 1 { echo!("paren tern cond ok"); }
+}

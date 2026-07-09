@@ -1,0 +1,7 @@
+df main() -> void {
+    set code: i64 = sys_run("exit 3");
+    echo!(code);
+    set ok: i64 = sys_run("exit 0");
+    echo!(ok);
+    exit(5);
+}

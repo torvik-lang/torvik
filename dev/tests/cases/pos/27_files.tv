@@ -1,0 +1,18 @@
+df main() -> void {
+    fixed dir: str = "tvtest_files_dir";
+    check fs_exists(dir) { fs_remove(dir); }
+    fs_mkdir(dir);
+    echo!(fs_exists(dir));
+    fixed path: str = "tvtest_files_dir/note.txt";
+    writefile(path, "skal");
+    echo!(fs_exists(path));
+    echo!(readfile(path));
+    appendline(path, "line2");
+    fixed content: str = readfile(path);
+    echo!(contains(content, "line2"));
+    set mt: i64 = fs_mtime(path);
+    check mt > 0 { echo!("mtime ok"); }
+    fs_remove(dir);
+    echo!(fs_exists(dir));
+    echo!(fs_exists(path));
+}

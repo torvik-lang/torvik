@@ -1,0 +1,37 @@
+df main() -> void {
+    set i: i64 = 0;
+    whilst i < 3 { echo!(i); i += 1; }
+    each j in 0..5 { echo(j); echo(" "); }
+    echo!("");
+    set sum: i64 = 0;
+    each k in 1..5 { sum += k; }
+    echo!(sum);
+    set sum2: i64 = 0;
+    each k2 in 0..+5 { sum2 += k2; }
+    echo!(sum2);
+    each b in 0..10 { check b == 3 { break; } echo(b); }
+    echo!("");
+    each c in 0..5 { check c == 2 { continue; } echo(c); }
+    echo!("");
+    set w: i64 = 0;
+    whilst w < 10 { w += 1; check w == 4 { break; } }
+    echo!(w);
+    set words: list<str> = list_new();
+    push(words, "for"); push(words, "the"); push(words, "horde");
+    each wd in words { echo!(wd); }
+    set nums: list<i64> = list_new();
+    push(nums, 10); push(nums, 20);
+    set t2: i64 = 0;
+    each nx in nums { t2 += nx; }
+    echo!(t2);
+    set fs: list<f64> = list_new();
+    push(fs, 1.5); push(fs, 2.5);
+    set ft: f64 = 0.0;
+    each fx in fs { ft = ft + fx; }
+    echo!(ft);
+    set xs2: list<i64> = list_new();
+    push(xs2, 10); push(xs2, 20); push(xs2, 30);
+    set total: i64 = 0;
+    each ix in 0..len(xs2) { total += xs2[ix]; }
+    echo!(total);
+}

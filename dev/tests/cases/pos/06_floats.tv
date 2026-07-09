@@ -1,0 +1,20 @@
+df fdbl(x: f64) -> f64 { return x * 2.0; }
+df main() -> void {
+    fixed pi: f64 = 3.14159;
+    echo!(pi);
+    echo!(2.0);
+    set a: f64 = 1.5;
+    set b: f64 = 2.5;
+    echo!(a + b);
+    echo!(b - a);
+    echo!(a * b);
+    echo!(b / a);
+    check a < b { echo!("lt ok"); }
+    check b >= a { echo!("ge ok"); }
+    set n: f64 = -1.25;
+    echo!(n);
+    echo!(a - -b);
+    echo!(a + -0.5);
+    echo!(fdbl(a));
+    echo!(a * -fdbl(1.0));
+}

@@ -1,0 +1,31 @@
+df pass128(x: i128) -> i128 {
+    return x + 1;
+}
+df main() -> void {
+    set big: i128 = 100000000000000000000;
+    set u: u128 = 200000000000000000000;
+    echo!(big);
+    echo!(u);
+    set s: i128 = big + big;
+    echo!(s);
+    set d: i128 = s / 3;
+    echo!(d);
+    set m: i128 = s % 7;
+    echo!(m);
+    check big > 5 { echo!("gt ok"); }
+    check big == 100000000000000000000 { echo!("eq ok"); }
+    set r: i128 = pass128(big);
+    echo!(r);
+    set neg: i128 = -big;
+    echo!(neg);
+    set xs: list<i128> = list_new();
+    push(xs, 100000000000000000000);
+    push(xs, 5);
+    echo!(xs[0]);
+    echo!(len(xs));
+    set el: i128 = xs[0] + xs[1];
+    echo!(el);
+    check xs[0] > 99 { echo!("elem cmp ok"); }
+    list_insert(xs, 1, 7);
+    echo!(xs[1]);
+}

@@ -1,0 +1,6 @@
+apply helpers32;
+
+df main() -> void {
+    echo!(helper_add(2, 3));
+    echo!(helper_name());
+}

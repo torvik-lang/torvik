@@ -1,0 +1,4 @@
+df main() -> void {
+    vow(1 + 1 == 2, "math broke");
+    echo!("invariant held");
+}

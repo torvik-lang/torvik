@@ -1,0 +1,29 @@
+df main() -> void {
+    set n: i64 = toint("42");
+    echo!(n);
+    echo!(n + 1);
+    set f: f64 = tofloat("2.5");
+    echo!(f);
+    echo!(tostr(99));
+    echo!(int_to_str(123));
+    echo!(float_to_str(1.5));
+    echo!(tostr(true));
+    set neg: i64 = toint("-7");
+    echo!(neg);
+    echo!(abs(0 - 9));
+    echo!(abs(-9));
+    echo!(min(2, 8));
+    echo!(max(2, 8));
+    set r: i64 = randint(1, 6);
+    check r >= 1 && r <= 6 { echo!("randint in range"); }
+    set rf: f64 = rand();
+    check rf >= 0.0 { check rf < 1.0 { echo!("rand in range"); } }
+    echo!(typeof(n));
+    echo!(typeof(f));
+    echo!(typeof("x"));
+    set bs: bool = true;
+    echo!(typeof(bs));
+    set ls: list<str> = list_new();
+    echo!(typeof(ls));
+    check typeof(n) == "i64" { echo!("typeof cmp ok"); }
+}

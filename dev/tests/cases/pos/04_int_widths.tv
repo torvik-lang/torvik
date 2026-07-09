@@ -1,0 +1,20 @@
+df main() -> void {
+    set a8: i8 = -128;   set b8: i8 = 127;
+    set a16: i16 = -32768; set b16: i16 = 32767;
+    set a32: i32 = -2147483648; set b32: i32 = 2147483647;
+    set a64: i64 = -9223372036854775807;
+    set u8v: u8 = 255;
+    set u16v: u16 = 65535;
+    set u32v: u32 = 4294967295;
+    set u64v: u64 = 18446744073709551615;
+    echo!(a8); echo!(b8);
+    echo!(a16); echo!(b16);
+    echo!(a32); echo!(b32);
+    echo!(a64);
+    echo!(u8v); echo!(u16v); echo!(u32v); echo!(u64v);
+    unsafe set w: i8 = 200;
+    echo!(w);
+    set v: i8 = 1;
+    unsafe v = 300;
+    echo!(v);
+}

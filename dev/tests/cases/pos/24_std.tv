@@ -1,0 +1,24 @@
+apply std;
+
+df main() -> void {
+    echo!(pow(2, 10));
+    echo!(gcd(48, 36));
+    echo!(lcm(4, 6));
+    echo!(clamp(15, 0, 10));
+    echo!(clamp(-3, 0, 10));
+    echo!(clamp(5, 0, 10));
+    echo!(factorial(5));
+    echo!(is_even(4));
+    echo!(is_odd(4));
+    echo!(join(split("a,b,c", ","), "-"));
+    echo!(repeat_str("ab", 3));
+    echo!(pad_left("7", 3, "0"));
+    echo!(pad_right("7", 3, "x"));
+    echo!(str_eq("a", "a"));
+    echo!(str_eq("a", "b"));
+    set xs: list<i64> = range(1, 5);
+    echo!(len(xs));
+    echo!(sum(xs));
+    echo!(list_max(xs));
+    echo!(list_min(xs));
+}

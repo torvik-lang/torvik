@@ -1,0 +1,24 @@
+df classify(n: i64) -> str {
+    check n > 0 { return "positive"; } fallback { return "non-positive"; }
+}
+df clamp_label(n: i64) -> str {
+    guard n >= 0 fallback { return "negative"; }
+    guard n < 100 fallback { return "too big"; }
+    return "in range";
+}
+df both_pos(a: i64, b: i64) -> str {
+    guard (a > 0 && b > 0) fallback { return "no"; }
+    return "yes";
+}
+df main() -> void {
+    echo!(classify(5));
+    echo!(classify(-5));
+    echo!(clamp_label(-1));
+    echo!(clamp_label(150));
+    echo!(clamp_label(50));
+    echo!(both_pos(1, 1));
+    echo!(both_pos(1, -1));
+    set age: i64 = 15;
+    check age >= 13 && age < 20 { echo!("teenager"); }
+    check age > 100 { echo!("no"); } fallback { check age > 10 { echo!("nested"); } }
+}

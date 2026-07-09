@@ -1,0 +1,9 @@
+df main() -> void {
+    unsafe set b: i8 = 200;
+    echo!(b);
+    set v: i8 = 1;
+    unsafe v = 300;
+    echo!(v);
+    unsafe fixed c: u8 = 300;
+    echo!(c);
+}

@@ -1,0 +1,19 @@
+df pick() -> i64 { return 20; }
+df main() -> void {
+    set ids: list<i64> = list_new();
+    push(ids, 10); push(ids, 20); push(ids, 30);
+    set needle: i64 = 20;
+    check needle <| ids { echo!("present"); }
+    check 20 <| ids { echo!("lit present"); }
+    check pick() <| ids { echo!("call present"); }
+    set missing: i64 = 99;
+    check missing <| ids { echo!("no"); } fallback { echo!("absent"); }
+    set names: list<str> = list_new();
+    push(names, "odin"); push(names, "thor");
+    check "thor" <| names { echo!("str content ok"); }
+    set built: str = str_concat("th", "or");
+    check built <| names { echo!("built content ok"); }
+    check "loki" <| names { echo!("no"); } fallback { echo!("loki absent"); }
+    set flag: bool = 10 <| ids;
+    echo!(flag);
+}

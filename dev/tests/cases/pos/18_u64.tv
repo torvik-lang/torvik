@@ -1,0 +1,18 @@
+df getu() -> u64 { return 18000000000000000000; }
+df main() -> void {
+    set u: u64 = 18000000000000000000;
+    echo!(u);
+    echo!(u / 2);
+    echo!(u % 7);
+    set two: i64 = 2;
+    echo!(2 + u / two);
+    check 5 < u { echo!("u64 rhs cmp ok"); }
+    check u > 5 { echo!("u64 lead cmp ok"); }
+    set us: list<u64> = list_new();
+    push(us, 18000000000000000000);
+    echo!(us[0]);
+    echo!(us[0] / 2);
+    echo!(getu() / 4);
+    set u2: u64 = u >> 1;
+    echo!(u2);
+}

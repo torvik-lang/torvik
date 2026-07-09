@@ -1,0 +1,11 @@
+df main() -> void {
+    echo!("Hello from Torvik!");
+    echo("no newline... ");
+    echo!("and the rest.");
+    echo!("count:", 3);
+    echo!("a", "b", "c");
+    echo!(42);
+    echo!(true);
+    echo!(false);
+    echo!(2.5);
+}
