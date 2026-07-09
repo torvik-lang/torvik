@@ -126,7 +126,9 @@ full set of arithmetic and comparison operators.
 
 > A leading `-` negates a value: `-5`, or `set n: i64 = -x;`. It also works as a chain
 > operand, including a binary minus immediately followed by a unary minus — `a - -b`,
-> `a + -5`, `a * -f(x)` — in both integer and float expressions.
+> `a + -5`, `a * -f(x)` — in both integer and float expressions. A leading `-` binds to
+> exactly **one** value: `-m + 2` is `(-m) + 2`, not `-(m + 2)`. The same applies to the
+> bitwise NOT prefix `~` (integers only): `~0` is `-1`, and `~m & 7` is `(~m) & 7`.
 
 ### Floating point
 
@@ -583,6 +585,10 @@ echo!(v ~> addn(3) ~> addn(10));         // 18
 Weave results are typed, so a trailing comparison folds by content:
 `check s ~> trim == "done" { ... }`. Arity is checked counting the inserted value — a clean
 compile error tells you exactly how many arguments a stage still needs.
+
+The woven value's type is also checked against each stage's first parameter when both
+are known: weaving an `i64` into a function whose first parameter is `str` (or the
+reverse) is a clean compile error rather than run-time misbehavior.
 
 ### Membership — `<|`
 

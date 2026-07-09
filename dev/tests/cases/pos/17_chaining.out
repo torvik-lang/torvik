@@ -1,0 +1,17 @@
+2
+prefix ok
+lit lead ok
+mixed fold ok
+12
+10
+elem ne ok
+elem eq ok
+sorted
+gt str
+le str
+call cmp ok
+trim cmp ok
+8
+paren chain ok
+ab
+true

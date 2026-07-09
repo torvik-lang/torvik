@@ -1,0 +1,5 @@
+df main() -> void {
+    set balance: i64 = 0 - 5;
+    vow(balance >= 0, "balance must never be negative");
+    echo!("never reached");
+}

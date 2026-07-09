@@ -1,0 +1,5 @@
+df main() -> void {
+    set names: list<str> = list_new();
+    push(names, "a");
+    check 5 <| names { echo!("x"); }
+}

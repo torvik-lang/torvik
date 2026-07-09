@@ -1,0 +1,24 @@
+df main() -> void {
+    fixed greeting: str = "hello";
+    fixed letter: str = 'A';
+    echo!(letter);
+    echo!(byte_at(letter, 0));
+    echo!(char_at(greeting, 1));
+    echo!(len(greeting));
+    echo!(str_concat("Hello, ", "Torvik"));
+    echo!(substr("hello", 0, 4));
+    echo!(trim("  pad  "));
+    echo!(triml("  pad  "));
+    echo!(trimr("  pad  "));
+    echo!(replace("a.b.c", ".", "/"));
+    echo!(contains("hello", "ell"));
+    echo!(contains("hello", "zzz"));
+    echo!(starts("hello", "he"));
+    echo!(ends("hello", "lo"));
+    set parts: list<str> = split("x,y,z", ",");
+    echo!(len(parts));
+    echo!(parts[0]);
+    echo!(parts[2]);
+    echo!(upper("abc"));
+    echo!(lower("ABC"));
+}

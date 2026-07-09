@@ -1,0 +1,6 @@
+fixed limit: i64 = 10;
+
+df main() -> void {
+    limit = 20;
+    echo!(limit);
+}

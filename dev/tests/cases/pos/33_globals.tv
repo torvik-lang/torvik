@@ -1,0 +1,27 @@
+set g_flag: bool = true;
+set g_count: i64 = 42;
+set g_name: str = "torvik";
+set g_big: u64 = 18000000000000000000;
+set g_rate: f64 = 2.5;
+set g_calc: i64 = 6 * 7;
+fixed g_pin: i64 = 7;
+
+df bump() -> void {
+    g_count += 1;
+}
+
+df main() -> void {
+    echo!(g_flag);
+    check g_flag { echo!("flag cond ok"); }
+    echo!(g_count);
+    bump();
+    echo!(g_count);
+    echo!(g_name);
+    echo!(g_big);
+    echo!(g_big / 2);
+    echo!(g_rate);
+    echo!(g_calc);
+    echo!(g_flag ?> "on" !> "off");
+    echo!(g_pin);
+    echo!(g_pin * 2);
+}

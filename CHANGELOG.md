@@ -1,5 +1,121 @@
 # Changelog
 
+## [1.1.3] — 2026-07
+
+Stability release: a full compiler-wide sweep for silent wrong answers, silent
+no-ops, and compile-then-crash holes, driven by a new 72-case end-to-end test
+suite (included under `/dev`). No new language features beyond making documented
+behavior real.
+
+### Silent wrong answers fixed
+
+- **Leading unary minus precedence.** `-m + 2` compiled as `-(m + 2)` (gave `-7`
+  for m=5 instead of `-3`). A leading `-` now consumes exactly one value, in every
+  position (echo, declarations, conditions, chains). Negation is also type-aware:
+  `-x` on `f64` and `i128` now works (previously invalid IR or a segfault), and
+  negating a `str`, `list`, `bool`, or `u128` is a clean error.
+- **`fixed` is now enforced.** Reassigning a `fixed` binding (plain or compound,
+  any type) previously compiled and mutated silently; it is now the compile error
+  the guide always documented. Enforcement covers both function locals and
+  top-level globals — a `fixed` global reassigned from any function is the same
+  clean error.
+  Enabling this surfaced 131 latent `fixed`-then-mutated local bindings inside
+  torvc, rune, and the compiler's own passes — all converted to `set` (behavior
+  identical, intent now truthful).
+- **Return-type checking.** `df f() -> str { return 5; }` compiled and crashed at
+  run time (and `-> i64 { return "x"; }` printed a pointer). A definite kind
+  mismatch between the returned value and the declared return type is now a
+  located compile error.
+- **Weave arity on bare stages.** `5 ~> addn` where `addn` takes two arguments
+  compiled and called it with one (garbage second argument). Bare stages now get
+  the same arity check as the `x ~> f(a, b)` form.
+- **`list<u64>` element leading an expression** used signed division/modulo
+  (`us[0] / 2` on a full-range value went negative). Element leads now select
+  unsigned ops, matching u64 variables and call results.
+- **Bool printing.** `echo!(true)` printed `1` (variables printed `true`);
+  `tostr(true)` returned `"1"`; `fs_exists(p)` echoed `1/0`. All bool values now
+  print `true`/`false` consistently.
+- **Global `u64` literals** lost their annotation (recorded as `i64`), so a
+  full-range global printed as a negative signed value. They now initialize
+  through the same startup path as other sized integers.
+- **Weave stages are type-checked.** A definite mismatch between the woven
+  value and a stage's first parameter (`5 ~> shout` where `shout` takes `str`,
+  or a `str` woven into an integer stage) is now a clean compile error -
+  previously it compiled and crashed or produced garbage at run time.
+- **`int_to_str` (and whole-list printing) truncated large values on Windows.**
+  The formatter used `%ld` with a `long` cast; `long` is 32-bit on Win64, so
+  `-9223372036854775807` printed as `1` and `u32` max as `-1`. Linux was
+  unaffected (`long` is 64-bit there). Now `%lld` throughout, and the
+  membership helpers' return types now match their declared i64 ABI.
+
+### Crashes fixed
+
+- **Integer-returning weave inside `echo!()`** segfaulted — including the
+  guide's own `echo!(v ~> addn(3) ~> addn(10))` example. Weave results now carry
+  their full return type (int widths, u64, f64, bool, 128-bit) end to end.
+- **`list<bool>` element reads** (`bs[0]`, annotated or inferred) segfaulted.
+- **`set c: bool = true;`** could silently drop the store (the declaration's
+  store dispatch had no branch for a bool-tagged literal), leaving the variable
+  uninitialized — ternaries on such variables picked arbitrary branches.
+- **`bag<T>` declarations skipped reference counting entirely** — the kind
+  check used exact equality (`== "bag"`) where lists and tables use a prefix
+  match, so a parameterized `bag<str>` annotation never matched. The freshly
+  created bag was released at end-of-statement and every later `bag_add` /
+  `bag_has` was a use-after-free: glibc happened to tolerate the dangling
+  reads on Linux, while the Windows heap access-violated (0xC0000005).
+  Confirmed and re-verified with AddressSanitizer.
+- **`readkey()` ignored redirected stdin on Windows.** `_getch()` reads the
+  console device, so with piped input (files, test harnesses, `cmd <input`)
+  it blocked waiting for a physical keypress. It now uses the console only
+  when stdin *is* the console, and reads the redirected stream otherwise.
+
+### Silent no-ops fixed
+
+- **`torvc file.tv` without `-o`** printed "Compiled successfully!" but wrote the
+  binary to `~/tv_out` instead of the documented derived name. The output is now
+  `./file` (`file.exe` on Windows), derived from the source name.
+
+### Windows install fixed
+
+- **`apply std;` failed on every Windows install** ("unknown module 'std'"):
+  both the public installer (`install.ps1`) and the maintainer setup script
+  copied the `std/` submodules but never the umbrella `src/std.tv`, so
+  `apply std::math;` worked while `apply std;` did not. Both scripts now
+  install the same library set as their Linux counterparts.
+
+### Documented-but-missing implemented
+
+- **`~` (bitwise NOT)** — in the operator table since v1.0, previously a parse
+  error. Now implemented for integers, with the same one-value prefix binding as
+  unary minus.
+- **`upper(s)` / `lower(s)` as ordinary calls** — previously they existed only as
+  weave stages; a direct call was "undefined function".
+- **Global `i128`/`u128` literals** now work at any magnitude — including
+  `u128` max and `i128` min — heap-boxed at startup exactly like local
+  declarations, with clean range errors. Expression initializers for 128-bit
+  globals remain a single-literal limitation (a clean error explains the
+  workaround).
+- **Console builtins per STDLIB.md:** `read()`, `readint()`, `readfloat()`, and
+  `readbool()` now work with zero arguments (an optional prompt argument is still
+  accepted). `readkey()` keeps its i64 byte-code return unchanged — STDLIB.md
+  previously misdocumented it as `str` (that form never compiled in any release,
+  so no working code is affected); the docs now describe the real i64 return,
+  and the new additive `readkey_str()` returns the keypress as a 1-char string
+  for code that wants the documented-style form. Not a breaking change.
+
+### Known limitations (documented)
+
+- 128-bit globals accept a single literal initializer; expressions in a
+  128-bit global initializer are a clean compile error (compute in a
+  function instead).
+
+### Internal
+
+- New runtime helper `torvik_byte_str` (backs `readkey_str`), registered in the
+  ARC temp-cleanup pass. Full 78-case suite is ASAN-clean on Linux;
+  three-generation self-hosting fixpoint verified (gen2 == gen3,
+  byte-identical) and confirmed independently on Windows.
+
 ## [1.1.2] — 2026-07
 
 Patch release: `rune update` robustness and a version-pinning fix. No language or

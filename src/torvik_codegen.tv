@@ -604,6 +604,57 @@ df lookup_var_type(name: str, var_names: list<str>, var_types: list<str>) -> str
     return "";
 }
 
+// v1.1.3: is `nm` a `fixed` binding in the CURRENT function? Declarations
+// record an `@fixed@NAME` marker; the backward scan stops at the "@fn@"
+// sentinel pushed at each function's start, so another function's fixed
+// local with the same name never false-positives against this function's
+// param or `set` local.
+df lookup_fixed_marker(nm: str, var_names: list<str>, var_types: list<str>) -> i64 {
+    fixed key: str = str_concat("@fixed@", nm);
+    set i: i64 = len(var_names) - 1;
+    whilst i >= 0 {
+        check line_eq(var_names[i], "@fn@") == 1 { return 0; }
+        check line_eq(var_names[i], key) == 1 {
+            check line_eq(var_types[i], "1") == 1 { return 1; }
+            return 0;
+        }
+        i -= 1;
+    }
+    return 0;
+}
+
+// v1.1.3: collect the names of top-level `fixed` GLOBALS by scanning the token
+// stream at brace depth 0. The parser's global lists don't record the declaring
+// keyword, so this one O(N) pass recovers mutability without changing the parse
+// signature. The allnames cursor advances on TOK_IDENT and TOK_STRING, exactly
+// as the statement scanners do.
+df collect_fixed_globals(tokens: list<i64>, allnames: list<str>, out: list<str>) -> void {
+    fixed ntok: i64 = len(tokens);
+    set pos: i64 = 0;
+    set an: i64 = 0;
+    set depth: i64 = 0;
+    whilst pos < ntok {
+        fixed tk: i64 = tok_peek(tokens, pos);
+        check tk == PUNCT_LBRACE { depth += 1; }
+        check tk == PUNCT_RBRACE { depth -= 1; }
+        check depth == 0 && tk == KW_FIXED && tok_peek(tokens, pos + 1) == TOK_IDENT {
+            check an < len(allnames) { push(out, allnames[an]); }
+        }
+        check tk == TOK_IDENT || tk == TOK_STRING { an += 1; }
+        pos += 1;
+    }
+}
+
+// Membership test over the collected fixed-global names.
+df fixed_global_seen(names: list<str>, nm: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(names) {
+        check line_eq(names[i], nm) == 1 { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
 // Does declaring `nm` with type `newty` conflict with an existing declaration
 // of the SAME name and a DIFFERENT type in the CURRENT function? Both would
 // share one %nm_slot, so mixing types corrupts storage (an i64 stored where a
@@ -814,11 +865,11 @@ df fold_chain6(tokens: list<i64>, strings: list<str>, allnames: list<str>, chcur
             check tok_peek(tokens, p + 1) == OP_MINUS { noff = 1; }
             fixed nxp: i64 = tok_peek(tokens, p + 1 + noff);
             fixed nx2: i64 = tok_peek(tokens, p + 2 + noff);
-            fixed ni: i64 = 0; check nxp == TOK_INT { ni = 1; }
-            fixed nxv: i64 = 0; check nxp == TOK_IDENT && nx2 != PUNCT_LPAREN && nx2 != PUNCT_LBRACKET { nxv = 1; }
-            fixed nxcall: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LPAREN { nxcall = 1; }
-            fixed nxidx: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LBRACKET { nxidx = 1; }
-            fixed nxpar: i64 = 0; check nxp == PUNCT_LPAREN { nxpar = 1; }
+            set ni: i64 = 0; check nxp == TOK_INT { ni = 1; }
+            set nxv: i64 = 0; check nxp == TOK_IDENT && nx2 != PUNCT_LPAREN && nx2 != PUNCT_LBRACKET { nxv = 1; }
+            set nxcall: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LPAREN { nxcall = 1; }
+            set nxidx: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LBRACKET { nxidx = 1; }
+            set nxpar: i64 = 0; check nxp == PUNCT_LPAREN { nxpar = 1; }
             check ni == 0 && nxv == 0 && nxcall == 0 && nxidx == 0 && nxpar == 0 { more = 0; } fallback {
                 set operand_i: str = "0";
                 set simple: i64 = 1;
@@ -853,8 +904,8 @@ df fold_chain6(tokens: list<i64>, strings: list<str>, allnames: list<str>, chcur
                     check len(ctr) > 1 { ctr[1] = 1; }
                     set ev: list<str> = list_new(); set ep: list<i64> = list_new(); set es: list<i64> = list_new(); set ea: list<i64> = list_new(); set ety: list<str> = list_new();
                     compile_expr(tokens, strings, allnames, p + 1 + noff, s, an, ir, ctr, gvals, gnames, ev, ep, es, ea, ety, var_names, var_types);
-                    fixed evv: str = "0"; check len(ev) > 0 { evv = ev[0]; }
-                    fixed evty: str = "ptr"; check len(ety) > 0 { evty = ety[0]; }
+                    set evv: str = "0"; check len(ev) > 0 { evv = ev[0]; }
+                    set evty: str = "ptr"; check len(ety) > 0 { evty = ety[0]; }
                     // It DOES fold a trailing comparison after a call/index. If that
                     // happened (operand came back i1), the user wrote something like
                     // `a + f(x) > b`, whose precedence is ambiguous to this folder.
@@ -1092,9 +1143,9 @@ df chain_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>, init_i
         set rv: list<str> = list_new(); set rp: list<i64> = list_new(); set rs: list<i64> = list_new(); set ra: list<i64> = list_new(); set rty: list<str> = list_new();
         compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv, rp, rs, ra, rty, var_names, var_types);
         check len(rp) > 0 { p = rp[0]; } check len(rs) > 0 { s = rs[0]; } check len(ra) > 0 { an = ra[0]; }
-        fixed rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
-        fixed rhsty: str = "ptr"; check len(rty) > 0 { rhsty = rty[0]; }
-        fixed rhsi: str = rhs; check rhsty != "i64" { rhsi = coerce_i64(rhs, ir, ctr); }
+        set rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
+        set rhsty: str = "ptr"; check len(rty) > 0 { rhsty = rty[0]; }
+        set rhsi: str = rhs; check rhsty != "i64" { rhsi = coerce_i64(rhs, ir, ctr); }
         // v1.1.0: unsigned ordering when EITHER side is u64.
         check line_eq(rhsty, "u64") == 1 { uns3 = 1; }
         fixed cmp: str = make_tmp(ctr);
@@ -1165,12 +1216,12 @@ df fold_float_chain(tokens: list<i64>, strings: list<str>, allnames: list<str>, 
             check tok_peek(tokens, p + 1) == OP_MINUS { noff = 1; }
             fixed nxp: i64 = tok_peek(tokens, p + 1 + noff);
             fixed nx2: i64 = tok_peek(tokens, p + 2 + noff);
-            fixed ni: i64 = 0; check nxp == TOK_INT { ni = 1; }
-            fixed nf: i64 = 0; check nxp == TOK_FLOAT { nf = 1; }
-            fixed nxv: i64 = 0; check nxp == TOK_IDENT && nx2 != PUNCT_LPAREN && nx2 != PUNCT_LBRACKET { nxv = 1; }
-            fixed nxcall: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LPAREN { nxcall = 1; }
-            fixed nxidx: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LBRACKET { nxidx = 1; }
-            fixed nxpar: i64 = 0; check nxp == PUNCT_LPAREN { nxpar = 1; }
+            set ni: i64 = 0; check nxp == TOK_INT { ni = 1; }
+            set nf: i64 = 0; check nxp == TOK_FLOAT { nf = 1; }
+            set nxv: i64 = 0; check nxp == TOK_IDENT && nx2 != PUNCT_LPAREN && nx2 != PUNCT_LBRACKET { nxv = 1; }
+            set nxcall: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LPAREN { nxcall = 1; }
+            set nxidx: i64 = 0; check nxp == TOK_IDENT && nx2 == PUNCT_LBRACKET { nxidx = 1; }
+            set nxpar: i64 = 0; check nxp == PUNCT_LPAREN { nxpar = 1; }
             check ni == 0 && nf == 0 && nxv == 0 && nxcall == 0 && nxidx == 0 && nxpar == 0 { more = 0; } fallback {
                 set operand_f: str = "0.0";
                 set simple: i64 = 1;
@@ -1206,8 +1257,8 @@ df fold_float_chain(tokens: list<i64>, strings: list<str>, allnames: list<str>, 
                     check len(ctr) > 1 { ctr[1] = 1; }
                     set ev: list<str> = list_new(); set ep: list<i64> = list_new(); set es: list<i64> = list_new(); set ea: list<i64> = list_new(); set ety: list<str> = list_new();
                     compile_expr(tokens, strings, allnames, p + 1 + noff, s, an, ir, ctr, gvals, gnames, ev, ep, es, ea, ety, var_names, var_types);
-                    fixed evv: str = "0"; check len(ev) > 0 { evv = ev[0]; }
-                    fixed evty: str = "ptr"; check len(ety) > 0 { evty = ety[0]; }
+                    set evv: str = "0"; check len(ev) > 0 { evv = ev[0]; }
+                    set evty: str = "ptr"; check len(ety) > 0 { evty = ety[0]; }
                     operand_f = as_double(evv, evty, ir, ctr);
                     check len(es) > 0 { s = es[0]; }
                     check len(ea) > 0 { an = ea[0]; }
@@ -1255,8 +1306,8 @@ df chain_tail_f(tokens: list<i64>, strings: list<str>, allnames: list<str>, init
         set rv: list<str> = list_new(); set rp: list<i64> = list_new(); set rs: list<i64> = list_new(); set ra: list<i64> = list_new(); set rty: list<str> = list_new();
         compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv, rp, rs, ra, rty, var_names, var_types);
         check len(rp) > 0 { p = rp[0]; } check len(rs) > 0 { s = rs[0]; } check len(ra) > 0 { an = ra[0]; }
-        fixed rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
-        fixed rhsty: str = "ptr"; check len(rty) > 0 { rhsty = rty[0]; }
+        set rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
+        set rhsty: str = "ptr"; check len(rty) > 0 { rhsty = rty[0]; }
         fixed rhsf: str = as_double(rhs, rhsty, ir, ctr);
         fixed cmp: str = make_tmp(ctr);
         check cop == OP_EQEQ   { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp), " = fcmp oeq double "), cur), str_concat(", ", rhsf))); }
@@ -1284,6 +1335,11 @@ df needs_interp(sv: str) -> i64 {
                 fixed d: i64 = byte_at(sv, i + 1);
                 check d == 123 { return 1; }
                 check (d >= 65 && d <= 90) || (d >= 97 && d <= 122) || d == 95 { return 1; }
+                // v1.1.3: an expression span may also open with a digit, a
+                // unary minus, or a parenthesis ({2 + 3}, {-x}, {(a + b)}).
+                // Previously these were treated as literal text - a SILENT
+                // no-interpolation for a documented "full expression" form.
+                check (d >= 48 && d <= 57) || d == 45 || d == 40 { return 1; }
             }
         }
         check c == 125 {
@@ -1312,6 +1368,10 @@ df emit_interp(sv: str, p: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>,
             check i + 1 < n { d = byte_at(sv, i + 1); }
             set is_id: i64 = 0;
             check (d >= 65 && d <= 90) || (d >= 97 && d <= 122) || d == 95 { is_id = 1; }
+            // v1.1.3: digit / unary-minus / parenthesis also open an expression
+            // span, matching needs_interp (they can never be bare identifiers,
+            // so they always take the expression path below).
+            check (d >= 48 && d <= 57) || d == 45 || d == 40 { is_id = 1; }
             check is_id == 0 { lit = str_concat(lit, "{"); i += 1; continue; }
             // scan up to the matching '}', tracking nested () [] so a '}' inside
             // (e.g. a call arg) doesn't close the span early. Collect the raw text.
@@ -1338,7 +1398,7 @@ df emit_interp(sv: str, p: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>,
             fixed slen: i64 = len(span);
             whilst bi < slen {
                 fixed bc: i64 = byte_at(span, bi);
-                fixed okc: i64 = 0;
+                set okc: i64 = 0;
                 check (bc >= 65 && bc <= 90) || (bc >= 97 && bc <= 122) || bc == 95 { okc = 1; }
                 check bc >= 48 && bc <= 57 && bi > 0 { okc = 1; }
                 check okc == 0 { is_bare = 0; }
@@ -1377,8 +1437,8 @@ df emit_interp(sv: str, p: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>,
                 fixed enames: list<str> = extract_all_names(span);
                 set spv: list<str> = list_new(); set spp: list<i64> = list_new(); set sps: list<i64> = list_new(); set spa: list<i64> = list_new(); set spty: list<str> = list_new();
                 compile_value(etoks, estrs, enames, 0, 0, 0, ir, ctr, gvals, gnames, spv, spp, sps, spa, spty, var_names, var_types);
-                fixed spval: str = "null"; check len(spv) > 0 { spval = spv[0]; }
-                fixed spt: str = "ptr"; check len(spty) > 0 { spt = spty[0]; }
+                set spval: str = "null"; check len(spv) > 0 { spval = spv[0]; }
+                set spt: str = "ptr"; check len(spty) > 0 { spt = spty[0]; }
                 fixed sps2: str = echo_stringify(spval, spt, spt, ir, ctr);
                 fixed tc4: str = make_tmp(ctr);
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tc4), " = call ptr @torvik_str_concat(ptr "), str_concat(result, ", ptr ")), str_concat(sps2, ")")));
@@ -1469,8 +1529,8 @@ df compile_cmp_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>, 
     set rv: list<str> = list_new(); set rp: list<i64> = list_new(); set rs: list<i64> = list_new(); set ra: list<i64> = list_new(); set rty: list<str> = list_new();
     compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv, rp, rs, ra, rty, var_names, var_types);
     check len(rp) > 0 { p = rp[0]; } check len(rs) > 0 { s = rs[0]; } check len(ra) > 0 { an = ra[0]; }
-    fixed rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
-    fixed rhs_ty: str = "ptr"; check len(rty) > 0 { rhs_ty = rty[0]; }
+    set rhs: str = "0"; check len(rv) > 0 { rhs = rv[0]; }
+    set rhs_ty: str = "ptr"; check len(rty) > 0 { rhs_ty = rty[0]; }
 
     set lhs_str: i64 = 0; check starts(lhs_ty, "str") { lhs_str = 1; }
     set rhs_str: i64 = 0;
@@ -1562,7 +1622,7 @@ df finish_str_result(tokens: list<i64>, strings: list<str>, allnames: list<str>,
         return;
     }
     check suppress_chain == 0 && fnop == OP_WEAVE {
-        compile_weave_tail(tokens, strings, allnames, val, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+        compile_weave_tail(tokens, strings, allnames, val, "str", p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
         return;
     }
     push(out_val, val); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "str");
@@ -1595,7 +1655,7 @@ df compile_bound_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
     check len(rpb) > 0 { p = rpb[0]; }
     check len(rsb) > 0 { s = rsb[0]; }
     check len(rsb_ai) > 0 { an = rsb_ai[0]; }
-    fixed bcoll: str = "null"; check len(rvb) > 0 { bcoll = rvb[0]; }
+    set bcoll: str = "null"; check len(rvb) > 0 { bcoll = rvb[0]; }
     set use_str: i64 = 0;
     check line_eq(relem, "str") == 1 { use_str = 1; }
     check len(relem) == 0 { check lhs_is_str == 1 { use_str = 1; } }
@@ -1624,10 +1684,29 @@ df compile_bound_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
 // g(f(LHS)). p_in points AT the first `~>`. Tracks the result type through the
 // weave (the str builtins and fnret:str user functions yield "str") so a
 // trailing comparison folds with content semantics: `s ~> trim == "x"`.
-df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>, lhs_val: str, p_in: i64, s_in: i64, an_in: i64, suppress_chain: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>, out_val: list<str>, out_pos: list<i64>, out_si: list<i64>, out_ani: list<i64>, out_ty: list<str>, var_names: list<str>, var_types: list<str>) -> void {
+// v1.1.3: kind check for the value entering a weave stage. An unknown incoming
+// type ("ptr"/"") skips the check; a definite str-vs-numeric mismatch is a
+// clean compile error instead of a run-time crash or garbage (`5 ~> shout`
+// where shout takes str previously segfaulted).
+df weave_stage_type_check(win_ty: str, want_ty: str, wbf: str, ir: list<str>, wbf_pos: i64) -> void {
+    check line_eq(win_ty, "ptr") == 1 || len(win_ty) == 0 { return; }
+    set ik: str = ty_kind(win_ty);
+    check line_eq(win_ty, "i1") == 1 || line_eq(win_ty, "bool") == 1 { ik = "num"; }
+    set wk: str = ty_kind(want_ty);
+    check line_eq(want_ty, "i1") == 1 || line_eq(want_ty, "bool") == 1 { wk = "num"; }
+    check line_eq(ik, "other") == 1 || line_eq(wk, "other") == 1 { return; }
+    check line_eq(ik, wk) == 0 {
+        emit_uerr(ir, wbf_pos, fmt("weave stage '{}' takes {} here, but the woven value is {} - keep the woven value's type matched to the stage's first parameter.", wbf, want_ty, win_ty));
+    }
+}
+
+df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>, lhs_val: str, lead_ty: str, p_in: i64, s_in: i64, an_in: i64, suppress_chain: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>, out_val: list<str>, out_pos: list<i64>, out_si: list<i64>, out_ani: list<i64>, out_ty: list<str>, var_names: list<str>, var_types: list<str>) -> void {
     set p: i64 = p_in; set s: i64 = s_in; set an: i64 = an_in;
     set wbv: str = lhs_val;
     set wb_ty: str = "ptr";
+    // The type of the value ENTERING the current stage: the caller-supplied
+    // lead type for stage one, then each stage's return type for the next.
+    set win_ty: str = lead_ty;
     set wbg: i64 = 1;
     whilst wbg == 1 {
         check tok_peek(tokens, p) != OP_WEAVE { wbg = 0; } fallback {
@@ -1666,8 +1745,9 @@ df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
                         // straight to fmt (the fmt/index bug fixed in this version).
                         fixed wra0: str = wargs[0];
                         fixed wra1: str = wargs[1];
+                        weave_stage_type_check(win_ty, "str", wbf, ir, wbf_pos);  // v1.1.3
                         emit(ir, fmt("  {} = call ptr @torvik_replace(ptr {}, ptr {}, ptr {})", wrr, wbv, wra0, wra1));
-                        wbv = wrr; wb_ty = "str"; whandled = 1;
+                        wbv = wrr; wb_ty = "str"; win_ty = "str"; whandled = 1;
                     }
                     check whandled == 0 && wbf == "substr" {
                         check len(wargs) >= 2 { } fallback {
@@ -1678,6 +1758,7 @@ df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
                         set wsb: str = wargs[1];
                         check line_eq(wargs_ty[1], "i64") == 1 { } fallback { wsb = coerce_i64(wargs[1], ir, ctr); }
                         fixed wsr: str = make_tmp(ctr);
+                        weave_stage_type_check(win_ty, "str", wbf, ir, wbf_pos);  // v1.1.3
                         emit(ir, fmt("  {} = call ptr @torvik_substr(ptr {}, i64 {}, i64 {})", wsr, wbv, wsa, wsb));
                         wbv = wsr; wb_ty = "str"; whandled = 1;
                     }
@@ -1698,12 +1779,17 @@ df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
                         check wf_have != len(wf_ptypes) {
                             emit_uerr(ir, wbf_pos, fmt("function '{}' expects {} argument(s), and a weave inserts the woven value as the first - so `x ~> {}(...)` needs {} more.", wbf, len(wf_ptypes), wbf, len(wf_ptypes) - 1));
                         }
+                        // v1.1.3: the woven value's kind must match the stage's
+                        // first parameter when both are definite.
+                        check len(wf_ptypes) > 0 {
+                            weave_stage_type_check(win_ty, wf_ptypes[0], wbf, ir, wbf_pos);
+                        }
                         set wcall: str = str_concat("ptr ", wbv);
                         set wgi: i64 = 0;
                         whilst wgi < len(wargs) {
                             wcall = str_concat(wcall, ", ");
                             fixed wga_ty: str = wargs_ty[wgi];
-                            check wga_ty == "i1" || wga_ty == "i64" {
+                            check wga_ty == "i1" || wga_ty == "i64" || wga_ty == "bool" {
                                 wcall = str_concat(wcall, str_concat("i64 ", wargs[wgi]));
                             }
                             check wga_ty == "f64" {
@@ -1721,8 +1807,13 @@ df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
                         fixed wur: str = make_tmp(ctr);
                         emit(ir, str_concat(str_concat(str_concat(str_concat("  ", wur), " = call ptr @"), wbf), str_concat("(", str_concat(wcall, ")"))));
                         wbv = wur;
+                        // v1.1.3: carry the stage's FULL return type (not just
+                        // str-or-ptr) so the tail below can type the result -
+                        // previously an integer-returning weave inside echo!()
+                        // was stringified as a str pointer and crashed.
                         wb_ty = "ptr";
-                        check line_eq(_wfa, "fnret:str") == 1 { wb_ty = "str"; }
+                        check starts(_wfa, "fnret:") { wb_ty = substr(_wfa, 6, len(_wfa)); }
+                        win_ty = wb_ty;
                     }
                 } fallback {
                     set wbsym: str = wbf;
@@ -1738,25 +1829,81 @@ df compile_weave_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>
                         check _wisfn { } fallback {
                             emit(ir, str_concat(str_concat(str_concat("  ; tv.undeffn:", wbf), ":"), int_to_str(wbf_pos)));
                         }
+                        // v1.1.3: arity is checked on the BARE stage form too -
+                        // `5 ~> addn` where addn takes two arguments previously
+                        // compiled and called addn with one, leaving the second
+                        // parameter as garbage (a silent wrong answer).
+                        check _wisfn {
+                            fixed _wbp: list<str> = split_words(lookup_var_type(str_concat("@p@", wbf), var_names, var_types));
+                            check len(_wbp) != 1 {
+                                emit_uerr(ir, wbf_pos, fmt("function '{wbf}' expects more than the woven value - a bare weave stage passes exactly one argument. Write the missing ones explicitly: `x ~> {wbf}(...)`."));
+                            }
+                            // v1.1.3: the woven value's kind must match the
+                            // stage's (single) parameter when both are definite.
+                            check len(_wbp) > 0 {
+                                weave_stage_type_check(win_ty, _wbp[0], wbf, ir, wbf_pos);
+                            }
+                        }
+                        // v1.1.3: carry the stage's FULL return type (see the
+                        // argument form above) so the tail can type the result.
                         wb_ty = "ptr";
-                        check line_eq(_wft, "fnret:str") == 1 { wb_ty = "str"; }
+                        check starts(_wft, "fnret:") { wb_ty = substr(_wft, 6, len(_wft)); }
                     } fallback {
+                        // Builtin bare stages (trim/upper/lower/...) all take str.
+                        weave_stage_type_check(win_ty, "str", wbf, ir, wbf_pos);
                         wb_ty = "str";
                     }
                     fixed wbr: str = make_tmp(ctr);
                     emit(ir, str_concat(str_concat(str_concat(str_concat("  ", wbr), " = call ptr @"), wbsym), str_concat("(ptr ", str_concat(wbv, ")"))));
                     wbv = wbr;
+                    win_ty = wb_ty;
                 }
             } fallback { wbg = 0; }
         }
     }
+    // v1.1.3: materialize the final stage's TYPED value. User-function calls
+    // return a uniform ptr; recover the declared return type so echo, chains,
+    // declarations, and comparisons all see a first-class typed result.
+    // (Previously only str was recovered; an integer-returning weave inside
+    // echo!() was printed as a string pointer - a crash.)
+    set wres: str = wbv;
+    set wres_ty: str = wb_ty;
+    set w_u64: i64 = 0;
+    check line_eq(wb_ty, "u64") == 1 { w_u64 = 1; }
+    check int_width(wb_ty) > 0 && line_eq(wb_ty, "i128") == 0 && line_eq(wb_ty, "u128") == 0 {
+        wres = coerce_i64(wbv, ir, ctr);
+    }
+    check line_eq(wb_ty, "f64") == 1 {
+        fixed wfb: str = coerce_i64(wbv, ir, ctr);
+        fixed wfd: str = make_tmp(ctr);
+        emit(ir, str_concat(str_concat(str_concat("  ", wfd), " = bitcast i64 "), str_concat(wfb, " to double")));
+        wres = wfd;
+    }
+    check line_eq(wb_ty, "bool") == 1 {
+        fixed wbi: str = coerce_i64(wbv, ir, ctr);
+        fixed wbb: str = make_tmp(ctr);
+        emit(ir, str_concat(str_concat(str_concat("  ", wbb), " = icmp ne i64 "), str_concat(wbi, ", 0")));
+        wres = wbb; wres_ty = "i1";
+    }
     fixed wnop: i64 = tok_peek(tokens, p);
     check suppress_chain == 0 && is_cmp_op(wnop) == 1 {
         set wcl: str = "ptr"; check line_eq(wb_ty, "str") == 1 { wcl = "str"; }
+        set wch: i64 = 0;
+        check int_width(wb_ty) > 0 || line_eq(wb_ty, "f64") == 1 { wch = 1; wcl = "i64"; }
+        check line_eq(wb_ty, "f64") == 1 {
+            // compare in the float domain: recover both sides via cmp on i64
+            // bits is wrong; keep the simple path - bind-first for float weave
+            // comparisons stays documented. Fall back to the ptr class.
+            wch = 0; wcl = "ptr";
+        }
+        check wch == 1 {
+            compile_cmp_tail(tokens, strings, allnames, wres, "i64", 1, w_u64, wnop, p + 1, s, an, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+            return;
+        }
         compile_cmp_tail(tokens, strings, allnames, wbv, wcl, 0, 0, wnop, p + 1, s, an, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
         return;
     }
-    push(out_val, wbv); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, wb_ty);
+    push(out_val, wres); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, wres_ty);
 }
 
 df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos: i64, si: i64, ani: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>, out_val: list<str>, out_pos: list<i64>, out_si: list<i64>, out_ani: list<i64>, out_ty: list<str>, var_names: list<str>, var_types: list<str>) -> void {
@@ -1781,8 +1928,8 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         check len(up2) > 0 { p = up2[0]; }
         check len(us) > 0 { s = us[0]; }
         check len(us_ai) > 0 { an = us_ai[0]; }
-        fixed uval: str = "0"; check len(uv) > 0 { uval = uv[0]; }
-        fixed uvty: str = "ptr"; check len(uty) > 0 { uvty = uty[0]; }
+        set uval: str = "0"; check len(uv) > 0 { uval = uv[0]; }
+        set uvty: str = "ptr"; check len(uty) > 0 { uvty = uty[0]; }
         set uvi: str = uval;
         check uvty == "i1" {
             fixed uzx: str = make_tmp(ctr);
@@ -1796,24 +1943,177 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         push(out_val, ures); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return;
     }
     check t == OP_MINUS {
+        // v1.1.3: a LEADING unary minus consumes exactly ONE primary (unary
+        // minus binds tighter than every binary operator), negates it
+        // TYPE-AWARE, then lets the ordinary chain fold whatever follows with
+        // the negated value as the lead. Previously this handler compiled the
+        // ENTIRE following expression and negated the result (`-5 + 2` gave
+        // -7, not -3 - a silent wrong answer), and it coerced every operand
+        // to i64 (an f64 operand hit ptrtoint-on-double = invalid IR; an
+        // i128/u128 box or str had its POINTER negated = garbage/segfault).
+        fixed neg_pos: i64 = p;
+        // Plain-VARIABLE operand: negate the single variable directly, then let
+        // the ordinary chain fold the tail with the negated value as the lead.
+        // The generic one-primary recursion below can't serve this shape: a
+        // bare-variable lead folds its own following chain regardless of the
+        // suppression flag (that leniency is what `"a" + n * 2` relies on), so
+        // recursing on `-m + 2` would wrongly compute -(m + 2).
+        check tok_peek(tokens, p + 1) == TOK_IDENT && tok_peek(tokens, p + 2) != PUNCT_LPAREN && tok_peek(tokens, p + 2) != PUNCT_LBRACKET {
+            fixed nvn: str = allnames[an];
+            check slot_defined(ir, nvn) == 0 {
+                emit(ir, str_concat(str_concat(str_concat("  ; tv.undefvar:", nvn), ":"), int_to_str(p + 1)));
+            }
+            an += 1;
+            p += 2;                          // consume '-' and the identifier
+            fixed after_nv: i64 = tok_peek(tokens, p);
+            fixed nvld: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat(str_concat("  ", nvld), " = load ptr, ptr %"), nvn), "_slot, align 8"));
+            fixed nvdt: str = lookup_var_type(nvn, var_names, var_types);
+            check line_eq(nvdt, "f64") == 1 {
+                fixed nfb: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", nfb), " = ptrtoint ptr "), str_concat(nvld, " to i64")));
+                fixed nfd: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", nfd), " = bitcast i64 "), str_concat(nfb, " to double")));
+                fixed nfr: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", nfr), " = fsub double 0.0, "), nfd));
+                check suppress_chain == 0 {
+                    chain_tail_f(tokens, strings, allnames, nfr, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty);
+                    return;
+                }
+                push(out_val, nfr); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return;
+            }
+            check line_eq(nvdt, "i128") == 1 {
+                fixed nvv: str = i128_load_ir(nvld, ir, ctr);
+                fixed nvr: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", nvr), " = sub i128 0, "), nvv));
+                fixed nvb: str = i128_box_ir(nvr, ir, ctr);
+                push(out_val, nvb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i128"); return;
+            }
+            check line_eq(nvdt, "u128") == 1 {
+                emit_uerr(ir, neg_pos, "can't negate a u128 value - an unsigned type has no negative values. Use i128 if the value can be negative.");
+                push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+            }
+            check starts(nvdt, "str") || starts(nvdt, "list") || line_eq(nvdt, "table") == 1 || line_eq(nvdt, "bag") == 1 {
+                emit_uerr(ir, neg_pos, fmt("can't negate a value of type {nvdt} - unary '-' applies to numeric values only."));
+                push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+            }
+            fixed nvvi: str = coerce_i64(nvld, ir, ctr);
+            fixed nvres: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", nvres), " = sub i64 0, "), nvvi));
+            check suppress_chain == 0 && (chain_tier6(after_nv) > 0 || is_cmp_op(after_nv) == 1) {
+                set nvuns: i64 = 0;
+                check line_eq(nvdt, "u64") == 1 { nvuns = 1; }
+                chain_tail(tokens, strings, allnames, nvres, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, nvuns);
+                return;
+            }
+            push(out_val, nvres); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        }
+        check len(ctr) > 1 { ctr[1] = 1; }
         set nv: list<str> = list_new(); set np2: list<i64> = list_new(); set ns: list<i64> = list_new(); set ns_ai: list<i64> = list_new(); set nty: list<str> = list_new();
         compile_expr(tokens, strings, allnames, p + 1, s, an, ir, ctr, gvals, gnames, nv, np2, ns, ns_ai, nty, var_names, var_types);
         check len(np2) > 0 { p = np2[0]; }
         check len(ns) > 0 { s = ns[0]; }
         check len(ns_ai) > 0 { an = ns_ai[0]; }
-        fixed nval: str = "0"; check len(nv) > 0 { nval = nv[0]; }
-        fixed nvty: str = "ptr"; check len(nty) > 0 { nvty = nty[0]; }
-        set nvi: str = nval;
-        check nvty == "i1" {
-            fixed nzx: str = make_tmp(ctr);
-            emit(ir, str_concat(str_concat(str_concat("  ", nzx), " = zext i1 "), str_concat(nval, " to i64")));
-            nvi = nzx;
-        } fallback {
-            check nvty != "i64" { nvi = coerce_i64(nval, ir, ctr); }
+        set nval: str = "0"; check len(nv) > 0 { nval = nv[0]; }
+        set nvty: str = "ptr"; check len(nty) > 0 { nvty = nty[0]; }
+        fixed after_neg: i64 = tok_peek(tokens, p);
+        // Float operand: fsub double, then the f64 chain folds the tail.
+        check line_eq(nvty, "f64") == 1 {
+            fixed nfres: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", nfres), " = fsub double 0.0, "), nval));
+            check suppress_chain == 0 {
+                chain_tail_f(tokens, strings, allnames, nfres, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty);
+                return;
+            }
+            push(out_val, nfres); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return;
         }
+        // 128-bit operand: unbox, negate in native i128, re-box. Negating a
+        // u128 is a clean error (an unsigned value has no negative).
+        check line_eq(nvty, "i128") == 1 {
+            fixed n128v: str = i128_load_ir(nval, ir, ctr);
+            fixed n128r: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", n128r), " = sub i128 0, "), n128v));
+            fixed n128b: str = i128_box_ir(n128r, ir, ctr);
+            push(out_val, n128b); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i128"); return;
+        }
+        check line_eq(nvty, "u128") == 1 {
+            emit_uerr(ir, neg_pos, "can't negate a u128 value - an unsigned type has no negative values. Use i128 if the value can be negative.");
+            push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        }
+        // Non-numeric operands: a clean error instead of negating a pointer.
+        check line_eq(nvty, "str") == 1 || starts(nvty, "list") || line_eq(nvty, "table") == 1 || line_eq(nvty, "bag") == 1 {
+            emit_uerr(ir, neg_pos, fmt("can't negate a value of type {nvty} - unary '-' applies to numeric values only."));
+            push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        }
+        check line_eq(nvty, "i1") == 1 {
+            emit_uerr(ir, neg_pos, "can't negate a bool with '-' - use '!' to negate a boolean.");
+            push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return;
+        }
+        // Integer operand (i64 SSA, or the uniform ptr an integer variable
+        // decays to): negate in i64, then the integer chain folds the tail.
+        set nvi: str = nval;
+        check line_eq(nvty, "i64") == 1 { } fallback { nvi = coerce_i64(nval, ir, ctr); }
         fixed nres: str = make_tmp(ctr);
         emit(ir, str_concat(str_concat(str_concat("  ", nres), " = sub i64 0, "), nvi));
+        check suppress_chain == 0 && (chain_tier6(after_neg) > 0 || is_cmp_op(after_neg) == 1) {
+            chain_tail(tokens, strings, allnames, nres, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+            return;
+        }
         push(out_val, nres); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+    }
+    // v1.1.3: leading unary `~` (bitwise NOT). Documented in the operator
+    // table since v1.0 but previously unhandled - `echo!(~0)` was a parse
+    // error. Integer domain only; consumes exactly ONE primary (a plain
+    // variable directly, anything else via the suppressed recursion), then
+    // the ordinary chain folds the tail with the NOT-ed value as the lead.
+    check t == OP_TILDE {
+        fixed not_pos: i64 = p;
+        check tok_peek(tokens, p + 1) == TOK_IDENT && tok_peek(tokens, p + 2) != PUNCT_LPAREN && tok_peek(tokens, p + 2) != PUNCT_LBRACKET {
+            fixed tvn: str = allnames[an];
+            check slot_defined(ir, tvn) == 0 {
+                emit(ir, str_concat(str_concat(str_concat("  ; tv.undefvar:", tvn), ":"), int_to_str(p + 1)));
+            }
+            an += 1;
+            p += 2;
+            fixed after_tv: i64 = tok_peek(tokens, p);
+            fixed tvdt: str = lookup_var_type(tvn, var_names, var_types);
+            check line_eq(tvdt, "f64") == 1 || line_eq(tvdt, "i128") == 1 || line_eq(tvdt, "u128") == 1 || starts(tvdt, "str") || starts(tvdt, "list") || line_eq(tvdt, "table") == 1 || line_eq(tvdt, "bag") == 1 || line_eq(tvdt, "bool") == 1 {
+                emit_uerr(ir, not_pos, fmt("bitwise '~' applies to integer values only - can't apply it to a value of type {tvdt}."));
+                push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+            }
+            fixed tvld: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tvld), " = load ptr, ptr %"), tvn), "_slot, align 8"));
+            fixed tvi: str = coerce_i64(tvld, ir, ctr);
+            fixed tvres: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", tvres), " = xor i64 "), str_concat(tvi, ", -1")));
+            check suppress_chain == 0 && (chain_tier6(after_tv) > 0 || is_cmp_op(after_tv) == 1) {
+                chain_tail(tokens, strings, allnames, tvres, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+                return;
+            }
+            push(out_val, tvres); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        }
+        check len(ctr) > 1 { ctr[1] = 1; }
+        set tv2: list<str> = list_new(); set tp2: list<i64> = list_new(); set ts2: list<i64> = list_new(); set ta2: list<i64> = list_new(); set tty2: list<str> = list_new();
+        compile_expr(tokens, strings, allnames, p + 1, s, an, ir, ctr, gvals, gnames, tv2, tp2, ts2, ta2, tty2, var_names, var_types);
+        check len(tp2) > 0 { p = tp2[0]; }
+        check len(ts2) > 0 { s = ts2[0]; }
+        check len(ta2) > 0 { an = ta2[0]; }
+        set tval: str = "0"; check len(tv2) > 0 { tval = tv2[0]; }
+        set tvty: str = "ptr"; check len(tty2) > 0 { tvty = tty2[0]; }
+        fixed after_t2: i64 = tok_peek(tokens, p);
+        check line_eq(tvty, "f64") == 1 || line_eq(tvty, "i128") == 1 || line_eq(tvty, "u128") == 1 || line_eq(tvty, "str") == 1 || starts(tvty, "list") || line_eq(tvty, "i1") == 1 || line_eq(tvty, "bool") == 1 {
+            emit_uerr(ir, not_pos, fmt("bitwise '~' applies to integer values only - can't apply it to a value of type {tvty}."));
+            push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        }
+        set t2i: str = tval;
+        check line_eq(tvty, "i64") == 1 { } fallback { t2i = coerce_i64(tval, ir, ctr); }
+        fixed t2res: str = make_tmp(ctr);
+        emit(ir, str_concat(str_concat(str_concat("  ", t2res), " = xor i64 "), str_concat(t2i, ", -1")));
+        check suppress_chain == 0 && (chain_tier6(after_t2) > 0 || is_cmp_op(after_t2) == 1) {
+            chain_tail(tokens, strings, allnames, t2res, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+            return;
+        }
+        push(out_val, t2res); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
     }
 
     // String literal — advance an to keep allnames in sync (strings are in allnames too)
@@ -1851,7 +2151,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             return;
         }
         check suppress_chain == 0 && tok_peek(tokens, p + 1) == OP_WEAVE {
-            compile_weave_tail(tokens, strings, allnames, val, p + 1, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+            compile_weave_tail(tokens, strings, allnames, val, "str", p + 1, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
             return;
         }
         push(out_val, val); push(out_pos, p + 1); push(out_si, s); push(out_ani, an); push(out_ty, vty); return;
@@ -1878,7 +2178,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         check suppress_chain == 0 && after_int == OP_WEAVE {
             fixed ilw: str = make_tmp(ctr);
             emit(ir, str_concat(str_concat(str_concat("  ", ilw), " = inttoptr i64 "), str_concat(tmp, " to ptr")));
-            compile_weave_tail(tokens, strings, allnames, ilw, p + 1, s + 1, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+            compile_weave_tail(tokens, strings, allnames, ilw, "i64", p + 1, s + 1, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
             return;
         }
         push(out_val, tmp); push(out_pos, p + 1); push(out_si, s + 1); push(out_ani, an); push(out_ty, "i64"); return;
@@ -1899,12 +2199,15 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
     check t == KW_TRUE {
         fixed tmp_t: str = make_tmp(ctr);
         emit(ir, str_concat(str_concat("  ", tmp_t), " = add i64 0, 1"));
-        push(out_val, tmp_t); push(out_pos, p + 1); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        // v1.1.3: tagged "bool" (the SSA value stays i64 0/1) so `echo!(true)`
+        // prints `true`, matching bool variables - previously the "i64" tag
+        // made a bare literal print as `1`.
+        push(out_val, tmp_t); push(out_pos, p + 1); push(out_si, s); push(out_ani, an); push(out_ty, "bool"); return;
     }
     check t == KW_FALSE {
         fixed tmp_f: str = make_tmp(ctr);
         emit(ir, str_concat(str_concat("  ", tmp_f), " = add i64 0, 0"));
-        push(out_val, tmp_f); push(out_pos, p + 1); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+        push(out_val, tmp_f); push(out_pos, p + 1); push(out_si, s); push(out_ani, an); push(out_ty, "bool"); return;
     }
 
     // Parenthesized expression: ( EXPR ) with && / || support inside
@@ -2043,7 +2346,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
             }
             check nm == "int_to_str" && len(args) >= 1 {
-                fixed its_arg_ty: str = "ptr";
+                set its_arg_ty: str = "ptr";
                 check len(args_ty) > 0 { its_arg_ty = args_ty[0]; }
                 set its_val: str = args[0];
                 check its_arg_ty != "i64" { its_val = coerce_i64(args[0], ir, ctr); }
@@ -2066,7 +2369,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     }
                 }
                 fixed len_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(len_nop) == 1 { p += 1; set rv_ln: list<str> = list_new(); set rp_ln: list<i64> = list_new(); set rs_ln: list<i64> = list_new(); set rs_ln_ai: list<i64> = list_new(); set rs_ln_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_ln, rp_ln, rs_ln, rs_ln_ai, rs_ln_ty, var_names, var_types); check len(rp_ln) > 0 { p = rp_ln[0]; } check len(rs_ln) > 0 { s = rs_ln[0]; } check len(rs_ln_ai) > 0 { an = rs_ln_ai[0]; } fixed rhs_ln: str = "0"; check len(rv_ln) > 0 { rhs_ln = rv_ln[0]; } fixed rhs_ln_ty: str = "ptr"; check len(rs_ln_ty) > 0 { rhs_ln_ty = rs_ln_ty[0]; } fixed rv_ln_i: str = rhs_ln; check rhs_ln_ty != "i64" { rv_ln_i = coerce_i64(rhs_ln, ir, ctr); } fixed cmp_ln: str = make_tmp(ctr); check len_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp eq  i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp ne  i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp slt i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sgt i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sle i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sge i64 "), tmp), str_concat(", ", rv_ln_i))); } push(out_val, cmp_ln); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(len_nop) == 1 { p += 1; set rv_ln: list<str> = list_new(); set rp_ln: list<i64> = list_new(); set rs_ln: list<i64> = list_new(); set rs_ln_ai: list<i64> = list_new(); set rs_ln_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_ln, rp_ln, rs_ln, rs_ln_ai, rs_ln_ty, var_names, var_types); check len(rp_ln) > 0 { p = rp_ln[0]; } check len(rs_ln) > 0 { s = rs_ln[0]; } check len(rs_ln_ai) > 0 { an = rs_ln_ai[0]; } set rhs_ln: str = "0"; check len(rv_ln) > 0 { rhs_ln = rv_ln[0]; } set rhs_ln_ty: str = "ptr"; check len(rs_ln_ty) > 0 { rhs_ln_ty = rs_ln_ty[0]; } set rv_ln_i: str = rhs_ln; check rhs_ln_ty != "i64" { rv_ln_i = coerce_i64(rhs_ln, ir, ctr); } fixed cmp_ln: str = make_tmp(ctr); check len_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp eq  i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp ne  i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp slt i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sgt i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sle i64 "), tmp), str_concat(", ", rv_ln_i))); } check len_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ln), " = icmp sge i64 "), tmp), str_concat(", ", rv_ln_i))); } push(out_val, cmp_ln); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 check suppress_chain == 0 && chain_tier6(len_nop) > 0 {
                     // v1.1.0: len() results ride the standard chain folder — full
                     // operator set, correct precedence, and a trailing comparison
@@ -2087,7 +2390,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 fixed ap: str = make_tmp(ctr);
                 fixed raw: str = make_tmp(ctr);
                 set idx_i64: str = args[0];
-                fixed arg0_ty: str = "ptr";
+                set arg0_ty: str = "ptr";
                 check len(args_ty) > 0 { arg0_ty = args_ty[0]; }
                 check arg0_ty != "i64" { idx_i64 = coerce_i64(args[0], ir, ctr); }
                 emit(ir, str_concat(str_concat("  ", av), " = load ptr, ptr @torvik_argv, align 8"));
@@ -2202,19 +2505,24 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "fs_mtime" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_fs_mtime(ptr "), str_concat(args[0], ")")));
                 fixed _fm_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_fm_nop) == 1 { p += 1; set rv_fm: list<str> = list_new(); set rp_fm: list<i64> = list_new(); set rs_fm: list<i64> = list_new(); set rs_fm_ai: list<i64> = list_new(); set rs_fm_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fm, rp_fm, rs_fm, rs_fm_ai, rs_fm_ty, var_names, var_types); check len(rp_fm) > 0 { p = rp_fm[0]; } check len(rs_fm) > 0 { s = rs_fm[0]; } check len(rs_fm_ai) > 0 { an = rs_fm_ai[0]; } fixed rhs_fm: str = "0"; check len(rv_fm) > 0 { rhs_fm = rv_fm[0]; } fixed rhs_fm_ty: str = "ptr"; check len(rs_fm_ty) > 0 { rhs_fm_ty = rs_fm_ty[0]; } fixed rv_fm_i: str = rhs_fm; check rhs_fm_ty != "i64" { rv_fm_i = coerce_i64(rhs_fm, ir, ctr); } fixed cmp_fm: str = make_tmp(ctr); check _fm_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp slt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sle i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sge i64 "), tmp), str_concat(", ", rv_fm_i))); } push(out_val, cmp_fm); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(_fm_nop) == 1 { p += 1; set rv_fm: list<str> = list_new(); set rp_fm: list<i64> = list_new(); set rs_fm: list<i64> = list_new(); set rs_fm_ai: list<i64> = list_new(); set rs_fm_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fm, rp_fm, rs_fm, rs_fm_ai, rs_fm_ty, var_names, var_types); check len(rp_fm) > 0 { p = rp_fm[0]; } check len(rs_fm) > 0 { s = rs_fm[0]; } check len(rs_fm_ai) > 0 { an = rs_fm_ai[0]; } set rhs_fm: str = "0"; check len(rv_fm) > 0 { rhs_fm = rv_fm[0]; } set rhs_fm_ty: str = "ptr"; check len(rs_fm_ty) > 0 { rhs_fm_ty = rs_fm_ty[0]; } set rv_fm_i: str = rhs_fm; check rhs_fm_ty != "i64" { rv_fm_i = coerce_i64(rhs_fm, ir, ctr); } fixed cmp_fm: str = make_tmp(ctr); check _fm_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp slt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sle i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sge i64 "), tmp), str_concat(", ", rv_fm_i))); } push(out_val, cmp_fm); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
             check nm == "fs_exists" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_fs_exists(ptr "), str_concat(args[0], ")")));
                 fixed _fe_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_fe_nop) == 1 { p += 1; set rv_fe: list<str> = list_new(); set rp_fe: list<i64> = list_new(); set rs_fe: list<i64> = list_new(); set rs_fe_ai: list<i64> = list_new(); set rs_fe_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fe, rp_fe, rs_fe, rs_fe_ai, rs_fe_ty, var_names, var_types); check len(rp_fe) > 0 { p = rp_fe[0]; } check len(rs_fe) > 0 { s = rs_fe[0]; } check len(rs_fe_ai) > 0 { an = rs_fe_ai[0]; } fixed rhs_fe: str = "0"; check len(rv_fe) > 0 { rhs_fe = rv_fe[0]; } fixed rhs_fe_ty: str = "ptr"; check len(rs_fe_ty) > 0 { rhs_fe_ty = rs_fe_ty[0]; } fixed rv_fe_i: str = rhs_fe; check rhs_fe_ty != "i64" { rv_fe_i = coerce_i64(rhs_fe, ir, ctr); } fixed cmp_fe: str = make_tmp(ctr); check _fe_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp slt i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sle i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sge i64 "), tmp), str_concat(", ", rv_fe_i))); } push(out_val, cmp_fe); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
-                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                check suppress_chain == 0 && is_cmp_op(_fe_nop) == 1 { p += 1; set rv_fe: list<str> = list_new(); set rp_fe: list<i64> = list_new(); set rs_fe: list<i64> = list_new(); set rs_fe_ai: list<i64> = list_new(); set rs_fe_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fe, rp_fe, rs_fe, rs_fe_ai, rs_fe_ty, var_names, var_types); check len(rp_fe) > 0 { p = rp_fe[0]; } check len(rs_fe) > 0 { s = rs_fe[0]; } check len(rs_fe_ai) > 0 { an = rs_fe_ai[0]; } set rhs_fe: str = "0"; check len(rv_fe) > 0 { rhs_fe = rv_fe[0]; } set rhs_fe_ty: str = "ptr"; check len(rs_fe_ty) > 0 { rhs_fe_ty = rs_fe_ty[0]; } set rv_fe_i: str = rhs_fe; check rhs_fe_ty != "i64" { rv_fe_i = coerce_i64(rhs_fe, ir, ctr); } fixed cmp_fe: str = make_tmp(ctr); check _fe_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp slt i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sle i64 "), tmp), str_concat(", ", rv_fe_i))); } check _fe_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fe), " = icmp sge i64 "), tmp), str_concat(", ", rv_fe_i))); } push(out_val, cmp_fe); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                // v1.1.3: no trailing comparison - yield a real bool (previously
+                // tagged i64, so `echo!(fs_exists(p))` printed 1/0, unlike every
+                // other bool builtin).
+                fixed feb: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", feb), " = icmp ne i64 "), str_concat(tmp, ", 0")));
+                push(out_val, feb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return;
             }
             check nm == "sys_run" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_sys_run(ptr "), str_concat(args[0], ")")));
                 fixed _sr_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_sr_nop) == 1 { p += 1; set rv_sr: list<str> = list_new(); set rp_sr: list<i64> = list_new(); set rs_sr: list<i64> = list_new(); set rs_sr_ai: list<i64> = list_new(); set rs_sr_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_sr, rp_sr, rs_sr, rs_sr_ai, rs_sr_ty, var_names, var_types); check len(rp_sr) > 0 { p = rp_sr[0]; } check len(rs_sr) > 0 { s = rs_sr[0]; } check len(rs_sr_ai) > 0 { an = rs_sr_ai[0]; } fixed rhs_sr: str = "0"; check len(rv_sr) > 0 { rhs_sr = rv_sr[0]; } fixed rhs_sr_ty: str = "ptr"; check len(rs_sr_ty) > 0 { rhs_sr_ty = rs_sr_ty[0]; } fixed rv_sr_i: str = rhs_sr; check rhs_sr_ty != "i64" { rv_sr_i = coerce_i64(rhs_sr, ir, ctr); } fixed cmp_sr: str = make_tmp(ctr); check _sr_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp eq  i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp ne  i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp slt i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sgt i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sle i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sge i64 "), tmp), str_concat(", ", rv_sr_i))); } push(out_val, cmp_sr); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(_sr_nop) == 1 { p += 1; set rv_sr: list<str> = list_new(); set rp_sr: list<i64> = list_new(); set rs_sr: list<i64> = list_new(); set rs_sr_ai: list<i64> = list_new(); set rs_sr_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_sr, rp_sr, rs_sr, rs_sr_ai, rs_sr_ty, var_names, var_types); check len(rp_sr) > 0 { p = rp_sr[0]; } check len(rs_sr) > 0 { s = rs_sr[0]; } check len(rs_sr_ai) > 0 { an = rs_sr_ai[0]; } set rhs_sr: str = "0"; check len(rv_sr) > 0 { rhs_sr = rv_sr[0]; } set rhs_sr_ty: str = "ptr"; check len(rs_sr_ty) > 0 { rhs_sr_ty = rs_sr_ty[0]; } set rv_sr_i: str = rhs_sr; check rhs_sr_ty != "i64" { rv_sr_i = coerce_i64(rhs_sr, ir, ctr); } fixed cmp_sr: str = make_tmp(ctr); check _sr_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp eq  i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp ne  i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp slt i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sgt i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sle i64 "), tmp), str_concat(", ", rv_sr_i))); } check _sr_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_sr), " = icmp sge i64 "), tmp), str_concat(", ", rv_sr_i))); } push(out_val, cmp_sr); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
             check nm == "lex_source" && len(args) >= 1 {
@@ -2300,7 +2608,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 set pos_i64_tp: str = args[1]; check len(args_ty) < 2 || args_ty[1] != "i64" { pos_i64_tp = coerce_i64(args[1], ir, ctr); }
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @tok_peek(ptr "), args[0]), str_concat(", i64 ", str_concat(pos_i64_tp, ")"))));
                 fixed _fn_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_fn_nop) == 1 { p += 1; set rv_fn: list<str> = list_new(); set rp_fn: list<i64> = list_new(); set rs_fn: list<i64> = list_new(); set rs_fn_ai: list<i64> = list_new(); set rs_fn_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fn, rp_fn, rs_fn, rs_fn_ai, rs_fn_ty, var_names, var_types); check len(rp_fn) > 0 { p = rp_fn[0]; } check len(rs_fn) > 0 { s = rs_fn[0]; } check len(rs_fn_ai) > 0 { an = rs_fn_ai[0]; } fixed rhs_fn: str = "0"; check len(rv_fn) > 0 { rhs_fn = rv_fn[0]; } fixed rhs_fn_ty: str = "ptr"; check len(rs_fn_ty) > 0 { rhs_fn_ty = rs_fn_ty[0]; } fixed rv_fn_i: str = rhs_fn; check rhs_fn_ty != "i64" { rv_fn_i = coerce_i64(rhs_fn, ir, ctr); } fixed cmp_fn: str = make_tmp(ctr); check _fn_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp slt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sle i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sge i64 "), tmp), str_concat(", ", rv_fn_i))); } push(out_val, cmp_fn); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(_fn_nop) == 1 { p += 1; set rv_fn: list<str> = list_new(); set rp_fn: list<i64> = list_new(); set rs_fn: list<i64> = list_new(); set rs_fn_ai: list<i64> = list_new(); set rs_fn_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fn, rp_fn, rs_fn, rs_fn_ai, rs_fn_ty, var_names, var_types); check len(rp_fn) > 0 { p = rp_fn[0]; } check len(rs_fn) > 0 { s = rs_fn[0]; } check len(rs_fn_ai) > 0 { an = rs_fn_ai[0]; } set rhs_fn: str = "0"; check len(rv_fn) > 0 { rhs_fn = rv_fn[0]; } set rhs_fn_ty: str = "ptr"; check len(rs_fn_ty) > 0 { rhs_fn_ty = rs_fn_ty[0]; } set rv_fn_i: str = rhs_fn; check rhs_fn_ty != "i64" { rv_fn_i = coerce_i64(rhs_fn, ir, ctr); } fixed cmp_fn: str = make_tmp(ctr); check _fn_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp slt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sle i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sge i64 "), tmp), str_concat(", ", rv_fn_i))); } push(out_val, cmp_fn); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
             check nm == "substr" && len(args) >= 3 {
@@ -2312,13 +2620,13 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // ── Standard library: string-returning builtins (v1.0 wiring) ──
             // Each returns a fresh heap string; classified "a:str" in
             // temp_producer_code so Stage E frees the temp when it isn't adopted.
-            check nm == "tostr" && len(args) >= 1 { fixed ts0: str = args[0]; fixed ts0t: str = "ptr"; check len(args_ty) >= 1 { ts0t = args_ty[0]; } fixed ts0i: str = ts0; check ts0t != "i64" { ts0i = coerce_i64(ts0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_tostr(i64 "), str_concat(ts0i, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            check nm == "tostr" && len(args) >= 1 { fixed ts0: str = args[0]; set ts0t: str = "ptr"; check len(args_ty) >= 1 { ts0t = args_ty[0]; } set ts0i: str = ts0; check line_eq(ts0t, "i1") == 1 { fixed tsz: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tsz), " = zext i1 "), str_concat(ts0, " to i64"))); ts0i = tsz; } fallback { check ts0t != "i64" { ts0i = coerce_i64(ts0, ir, ctr); } } check line_eq(ts0t, "i1") == 1 || line_eq(ts0t, "bool") == 1 || line_eq(lookup_var_type(first_arg_name, var_names, var_types), "bool") == 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bool_to_str(i64 "), str_concat(ts0i, ")"))); } fallback { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_tostr(i64 "), str_concat(ts0i, ")"))); } finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "replace" && len(args) >= 3 { emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_replace(ptr "), args[0]), str_concat(", ptr ", args[1])), str_concat(", ptr ", args[2])), ")")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "time_str" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_time_str()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "datetime_str" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_datetime_str()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "date_str" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_date_str()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "readln" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_readln()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
-            check nm == "read" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_read(ptr "), str_concat(args[0], ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            check nm == "read" { set rdp: str = ""; check len(args) >= 1 { rdp = args[0]; } fallback { rdp = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_read(ptr "), str_concat(rdp, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "readenv" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_readenv(ptr "), str_concat(args[0], ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "split" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_split_list(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list"); return; }
             // ── Standard library: bag (set of unique strings), v1.0 wiring ──
@@ -2344,7 +2652,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
             }
             check nm == "err" && len(args) >= 2 {
-                set ec: str = args[0]; set ect: str = "ptr"; check len(args_ty) >= 1 { ect = args_ty[0]; } fixed eci: str = ec; check ect != "i64" { eci = coerce_i64(ec, ir, ctr); }
+                set ec: str = args[0]; set ect: str = "ptr"; check len(args_ty) >= 1 { ect = args_ty[0]; } set eci: str = ec; check ect != "i64" { eci = coerce_i64(ec, ir, ctr); }
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_result_err(i64 "), eci), str_concat(", ptr ", str_concat(args[1], ")"))));
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
             }
@@ -2417,7 +2725,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "float_to_str" && len(args) >= 1 { set fts_ty: str = "ptr"; check len(args_ty) >= 1 { fts_ty = args_ty[0]; } fixed fts_a: str = as_double(args[0], fts_ty, ir, ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_float_to_str(double "), str_concat(fts_a, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "tofloat" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call double @torvik_to_float(ptr "), str_concat(args[0], ")"))); check suppress_chain == 0 { chain_tail_f(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return; }
             check nm == "rand" { emit(ir, str_concat(str_concat("  ", tmp), " = call double @torvik_rand()")); check suppress_chain == 0 { chain_tail_f(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return; }
-            check nm == "readfloat" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call double @torvik_readfloat(ptr "), str_concat(args[0], ")"))); check suppress_chain == 0 { chain_tail_f(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return; }
+            check nm == "readfloat" { set rfp0: str = ""; check len(args) >= 1 { rfp0 = args[0]; } fallback { rfp0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call double @torvik_readfloat(ptr "), str_concat(rfp0, ")"))); check suppress_chain == 0 { chain_tail_f(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return; }
             // byte_at(s, i): the byte (code unit) at index i as an i64. This is the
             // byte-level accessor the compiler/runtime use internally; char_at now
             // returns a 1-char string for users.
@@ -2425,7 +2733,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 set ca_pos_tp: str = args[1]; check len(args_ty) < 2 || args_ty[1] != "i64" { ca_pos_tp = coerce_i64(args[1], ir, ctr); }
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_char_at(ptr "), args[0]), str_concat(", i64 ", str_concat(ca_pos_tp, ")"))));
                 fixed _fn_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_fn_nop) == 1 { p += 1; set rv_fn: list<str> = list_new(); set rp_fn: list<i64> = list_new(); set rs_fn: list<i64> = list_new(); set rs_fn_ai: list<i64> = list_new(); set rs_fn_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fn, rp_fn, rs_fn, rs_fn_ai, rs_fn_ty, var_names, var_types); check len(rp_fn) > 0 { p = rp_fn[0]; } check len(rs_fn) > 0 { s = rs_fn[0]; } check len(rs_fn_ai) > 0 { an = rs_fn_ai[0]; } fixed rhs_fn: str = "0"; check len(rv_fn) > 0 { rhs_fn = rv_fn[0]; } fixed rhs_fn_ty: str = "ptr"; check len(rs_fn_ty) > 0 { rhs_fn_ty = rs_fn_ty[0]; } fixed rv_fn_i: str = rhs_fn; check rhs_fn_ty != "i64" { rv_fn_i = coerce_i64(rhs_fn, ir, ctr); } fixed cmp_fn: str = make_tmp(ctr); check _fn_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp slt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sle i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sge i64 "), tmp), str_concat(", ", rv_fn_i))); } push(out_val, cmp_fn); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(_fn_nop) == 1 { p += 1; set rv_fn: list<str> = list_new(); set rp_fn: list<i64> = list_new(); set rs_fn: list<i64> = list_new(); set rs_fn_ai: list<i64> = list_new(); set rs_fn_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fn, rp_fn, rs_fn, rs_fn_ai, rs_fn_ty, var_names, var_types); check len(rp_fn) > 0 { p = rp_fn[0]; } check len(rs_fn) > 0 { s = rs_fn[0]; } check len(rs_fn_ai) > 0 { an = rs_fn_ai[0]; } set rhs_fn: str = "0"; check len(rv_fn) > 0 { rhs_fn = rv_fn[0]; } set rhs_fn_ty: str = "ptr"; check len(rs_fn_ty) > 0 { rhs_fn_ty = rs_fn_ty[0]; } set rv_fn_i: str = rhs_fn; check rhs_fn_ty != "i64" { rv_fn_i = coerce_i64(rhs_fn, ir, ctr); } fixed cmp_fn: str = make_tmp(ctr); check _fn_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp slt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sle i64 "), tmp), str_concat(", ", rv_fn_i))); } check _fn_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fn), " = icmp sge i64 "), tmp), str_concat(", ", rv_fn_i))); } push(out_val, cmp_fn); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
             check nm == "char_at" && len(args) >= 2 {
@@ -2439,7 +2747,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "toint" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_toint(ptr "), str_concat(args[0], ")")));
                 fixed _ti_nop: i64 = tok_peek(tokens, p);
-                check suppress_chain == 0 && is_cmp_op(_ti_nop) == 1 { p += 1; set rv_ti: list<str> = list_new(); set rp_ti: list<i64> = list_new(); set rs_ti: list<i64> = list_new(); set rs_ti_ai: list<i64> = list_new(); set rs_ti_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_ti, rp_ti, rs_ti, rs_ti_ai, rs_ti_ty, var_names, var_types); check len(rp_ti) > 0 { p = rp_ti[0]; } check len(rs_ti) > 0 { s = rs_ti[0]; } check len(rs_ti_ai) > 0 { an = rs_ti_ai[0]; } fixed rhs_ti: str = "0"; check len(rv_ti) > 0 { rhs_ti = rv_ti[0]; } fixed rhs_ti_ty: str = "ptr"; check len(rs_ti_ty) > 0 { rhs_ti_ty = rs_ti_ty[0]; } fixed rv_ti_i: str = rhs_ti; check rhs_ti_ty != "i64" { rv_ti_i = coerce_i64(rhs_ti, ir, ctr); } fixed cmp_ti: str = make_tmp(ctr); check _ti_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp eq  i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp ne  i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp slt i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sgt i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sle i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sge i64 "), tmp), str_concat(", ", rv_ti_i))); } push(out_val, cmp_ti); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                check suppress_chain == 0 && is_cmp_op(_ti_nop) == 1 { p += 1; set rv_ti: list<str> = list_new(); set rp_ti: list<i64> = list_new(); set rs_ti: list<i64> = list_new(); set rs_ti_ai: list<i64> = list_new(); set rs_ti_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_ti, rp_ti, rs_ti, rs_ti_ai, rs_ti_ty, var_names, var_types); check len(rp_ti) > 0 { p = rp_ti[0]; } check len(rs_ti) > 0 { s = rs_ti[0]; } check len(rs_ti_ai) > 0 { an = rs_ti_ai[0]; } set rhs_ti: str = "0"; check len(rv_ti) > 0 { rhs_ti = rv_ti[0]; } set rhs_ti_ty: str = "ptr"; check len(rs_ti_ty) > 0 { rhs_ti_ty = rs_ti_ty[0]; } set rv_ti_i: str = rhs_ti; check rhs_ti_ty != "i64" { rv_ti_i = coerce_i64(rhs_ti, ir, ctr); } fixed cmp_ti: str = make_tmp(ctr); check _ti_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp eq  i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp ne  i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp slt i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sgt i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sle i64 "), tmp), str_concat(", ", rv_ti_i))); } check _ti_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_ti), " = icmp sge i64 "), tmp), str_concat(", ", rv_ti_i))); } push(out_val, cmp_ti); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
             check nm == "skip_to_close_brace" || nm == "skip_to_close_paren" {
@@ -2456,9 +2764,9 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
 
             check nm == "ends" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_ends(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, tmp2); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             check nm == "starts" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_starts(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, tmp2); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
-            check nm == "push" && len(args) >= 2 { fixed pelem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); fixed pval: str = args[1]; fixed pval_ty: str = "ptr"; check len(args_ty) >= 2 { pval_ty = args_ty[1]; } fixed pe128: i64 = 0; check line_eq(pelem, "i128") == 1 || line_eq(pelem, "u128") == 1 { pe128 = 1; } fixed pv128: i64 = 0; check pval_ty == "i128" || pval_ty == "u128" { pv128 = 1; } fixed plit: str = ""; check len(args_lit) >= 2 { plit = args_lit[1]; } check pe128 == 1 && pv128 == 0 && len(plit) > 0 { set plok: i64 = 0; check line_eq(pelem, "i128") == 1 && i128_lit_in_range(plit) == 1 { plok = 1; } check line_eq(pelem, "u128") == 1 && u128_in_range(plit) == 1 { plok = 1; } check plok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", plit), str_concat(" is out of range for ", pelem))); } fixed plbox: str = i128_box_lit(plit, ir, ctr); pval = plbox; pval_ty = pelem; pv128 = 1; } check pe128 == 1 && pv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be pushed into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then push that."); } check pe128 == 0 && pv128 == 1 && (int_width(pelem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be pushed into a non-128-bit integer list. Use list<i128>/list<u128>."); } check pval_ty == "i1" { fixed zt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zt), " = zext i1 "), str_concat(pval, " to i64"))); pval = zt; pval_ty = "i64"; } check line_eq(pelem, "f64") == 1 || pval_ty == "f64" { fixed pfb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", pfb), " = bitcast double "), str_concat(pval, " to i64"))); pval = pfb; pval_ty = "i64"; } check pval_ty != "i64" { pval = coerce_i64(pval, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_push(ptr ", args[0]), ", i64 "), str_concat(pval, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
-            check nm == "list_remove" && len(args) >= 2 { fixed ridx: str = args[1]; fixed ridx_ty: str = "ptr"; check len(args_ty) >= 2 { ridx_ty = args_ty[1]; } check ridx_ty == "i1" { fixed rzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rzt), " = zext i1 "), str_concat(ridx, " to i64"))); ridx = rzt; ridx_ty = "i64"; } check ridx_ty != "i64" { ridx = coerce_i64(ridx, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_remove(ptr ", args[0]), ", i64 "), str_concat(ridx, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
-            check nm == "list_insert" && len(args) >= 3 { fixed ielem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); fixed iidx: str = args[1]; fixed iidx_ty: str = "ptr"; check len(args_ty) >= 2 { iidx_ty = args_ty[1]; } check iidx_ty == "i1" { fixed izt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", izt), " = zext i1 "), str_concat(iidx, " to i64"))); iidx = izt; iidx_ty = "i64"; } check iidx_ty != "i64" { iidx = coerce_i64(iidx, ir, ctr); } fixed ival: str = args[2]; fixed ival_ty: str = "ptr"; check len(args_ty) >= 3 { ival_ty = args_ty[2]; } fixed ie128: i64 = 0; check line_eq(ielem, "i128") == 1 || line_eq(ielem, "u128") == 1 { ie128 = 1; } fixed iv128: i64 = 0; check ival_ty == "i128" || ival_ty == "u128" { iv128 = 1; } fixed ilit: str = ""; check len(args_lit) >= 3 { ilit = args_lit[2]; } check ie128 == 1 && iv128 == 0 && len(ilit) > 0 { set ilok: i64 = 0; check line_eq(ielem, "i128") == 1 && i128_lit_in_range(ilit) == 1 { ilok = 1; } check line_eq(ielem, "u128") == 1 && u128_in_range(ilit) == 1 { ilok = 1; } check ilok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", ilit), str_concat(" is out of range for ", ielem))); } fixed ilbox: str = i128_box_lit(ilit, ir, ctr); ival = ilbox; ival_ty = ielem; iv128 = 1; } check ie128 == 1 && iv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be inserted into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then insert that."); } check ie128 == 0 && iv128 == 1 && (int_width(ielem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be inserted into a non-128-bit integer list. Use list<i128>/list<u128>."); } check ival_ty == "i1" { fixed ivzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ivzt), " = zext i1 "), str_concat(ival, " to i64"))); ival = ivzt; ival_ty = "i64"; } check line_eq(ielem, "f64") == 1 || ival_ty == "f64" { fixed ifb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ifb), " = bitcast double "), str_concat(ival, " to i64"))); ival = ifb; ival_ty = "i64"; } check ival_ty != "i64" { ival = coerce_i64(ival, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  call void @torvik_insert(ptr ", args[0]), ", i64 "), str_concat(iidx, ", i64 ")), str_concat(ival, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
+            check nm == "push" && len(args) >= 2 { fixed pelem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); set pval: str = args[1]; set pval_ty: str = "ptr"; check len(args_ty) >= 2 { pval_ty = args_ty[1]; } set pe128: i64 = 0; check line_eq(pelem, "i128") == 1 || line_eq(pelem, "u128") == 1 { pe128 = 1; } set pv128: i64 = 0; check pval_ty == "i128" || pval_ty == "u128" { pv128 = 1; } set plit: str = ""; check len(args_lit) >= 2 { plit = args_lit[1]; } check pe128 == 1 && pv128 == 0 && len(plit) > 0 { set plok: i64 = 0; check line_eq(pelem, "i128") == 1 && i128_lit_in_range(plit) == 1 { plok = 1; } check line_eq(pelem, "u128") == 1 && u128_in_range(plit) == 1 { plok = 1; } check plok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", plit), str_concat(" is out of range for ", pelem))); } fixed plbox: str = i128_box_lit(plit, ir, ctr); pval = plbox; pval_ty = pelem; pv128 = 1; } check pe128 == 1 && pv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be pushed into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then push that."); } check pe128 == 0 && pv128 == 1 && (int_width(pelem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be pushed into a non-128-bit integer list. Use list<i128>/list<u128>."); } check pval_ty == "i1" { fixed zt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zt), " = zext i1 "), str_concat(pval, " to i64"))); pval = zt; pval_ty = "i64"; } check line_eq(pelem, "f64") == 1 || pval_ty == "f64" { fixed pfb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", pfb), " = bitcast double "), str_concat(pval, " to i64"))); pval = pfb; pval_ty = "i64"; } check pval_ty != "i64" { pval = coerce_i64(pval, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_push(ptr ", args[0]), ", i64 "), str_concat(pval, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
+            check nm == "list_remove" && len(args) >= 2 { set ridx: str = args[1]; set ridx_ty: str = "ptr"; check len(args_ty) >= 2 { ridx_ty = args_ty[1]; } check ridx_ty == "i1" { fixed rzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rzt), " = zext i1 "), str_concat(ridx, " to i64"))); ridx = rzt; ridx_ty = "i64"; } check ridx_ty != "i64" { ridx = coerce_i64(ridx, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_remove(ptr ", args[0]), ", i64 "), str_concat(ridx, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
+            check nm == "list_insert" && len(args) >= 3 { fixed ielem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); set iidx: str = args[1]; set iidx_ty: str = "ptr"; check len(args_ty) >= 2 { iidx_ty = args_ty[1]; } check iidx_ty == "i1" { fixed izt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", izt), " = zext i1 "), str_concat(iidx, " to i64"))); iidx = izt; iidx_ty = "i64"; } check iidx_ty != "i64" { iidx = coerce_i64(iidx, ir, ctr); } set ival: str = args[2]; set ival_ty: str = "ptr"; check len(args_ty) >= 3 { ival_ty = args_ty[2]; } set ie128: i64 = 0; check line_eq(ielem, "i128") == 1 || line_eq(ielem, "u128") == 1 { ie128 = 1; } set iv128: i64 = 0; check ival_ty == "i128" || ival_ty == "u128" { iv128 = 1; } set ilit: str = ""; check len(args_lit) >= 3 { ilit = args_lit[2]; } check ie128 == 1 && iv128 == 0 && len(ilit) > 0 { set ilok: i64 = 0; check line_eq(ielem, "i128") == 1 && i128_lit_in_range(ilit) == 1 { ilok = 1; } check line_eq(ielem, "u128") == 1 && u128_in_range(ilit) == 1 { ilok = 1; } check ilok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", ilit), str_concat(" is out of range for ", ielem))); } fixed ilbox: str = i128_box_lit(ilit, ir, ctr); ival = ilbox; ival_ty = ielem; iv128 = 1; } check ie128 == 1 && iv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be inserted into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then insert that."); } check ie128 == 0 && iv128 == 1 && (int_width(ielem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be inserted into a non-128-bit integer list. Use list<i128>/list<u128>."); } check ival_ty == "i1" { fixed ivzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ivzt), " = zext i1 "), str_concat(ival, " to i64"))); ival = ivzt; ival_ty = "i64"; } check line_eq(ielem, "f64") == 1 || ival_ty == "f64" { fixed ifb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ifb), " = bitcast double "), str_concat(ival, " to i64"))); ival = ifb; ival_ty = "i64"; } check ival_ty != "i64" { ival = coerce_i64(ival, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  call void @torvik_insert(ptr ", args[0]), ", i64 "), str_concat(iidx, ", i64 ")), str_concat(ival, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
             check nm == "list_new" { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_list_new()"), "")); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list"); return; }
             // list_pop(xs): remove and return the last element, typed by the list's
             // element type (annotated or inferred). For list<str> the runtime
@@ -2512,18 +2820,34 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // ── Standard library: integer / boolean builtins (v1.0 wiring) ──
             // Value returners route the i64 result through chain_tail so they
             // chain and compare like any other call (abs(x)+1, max(a,b) > c).
-            check nm == "abs" && len(args) >= 1 { fixed a0: str = args[0]; fixed a0t: str = "ptr"; check len(args_ty) >= 1 { a0t = args_ty[0]; } fixed a0i: str = a0; check a0t != "i64" { a0i = coerce_i64(a0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_abs(i64 "), str_concat(a0i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
-            check nm == "max" && len(args) >= 2 { fixed m0: str = args[0]; fixed m0t: str = "ptr"; check len(args_ty) >= 1 { m0t = args_ty[0]; } fixed m0i: str = m0; check m0t != "i64" { m0i = coerce_i64(m0, ir, ctr); } fixed m1: str = args[1]; fixed m1t: str = "ptr"; check len(args_ty) >= 2 { m1t = args_ty[1]; } fixed m1i: str = m1; check m1t != "i64" { m1i = coerce_i64(m1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_max(i64 "), str_concat(m0i, ", i64 ")), str_concat(m1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
-            check nm == "min" && len(args) >= 2 { fixed n0: str = args[0]; fixed n0t: str = "ptr"; check len(args_ty) >= 1 { n0t = args_ty[0]; } fixed n0i: str = n0; check n0t != "i64" { n0i = coerce_i64(n0, ir, ctr); } fixed n1: str = args[1]; fixed n1t: str = "ptr"; check len(args_ty) >= 2 { n1t = args_ty[1]; } fixed n1i: str = n1; check n1t != "i64" { n1i = coerce_i64(n1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_min(i64 "), str_concat(n0i, ", i64 ")), str_concat(n1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
-            check nm == "randint" && len(args) >= 2 { fixed r0: str = args[0]; fixed r0t: str = "ptr"; check len(args_ty) >= 1 { r0t = args_ty[0]; } fixed r0i: str = r0; check r0t != "i64" { r0i = coerce_i64(r0, ir, ctr); } fixed r1: str = args[1]; fixed r1t: str = "ptr"; check len(args_ty) >= 2 { r1t = args_ty[1]; } fixed r1i: str = r1; check r1t != "i64" { r1i = coerce_i64(r1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_randint(i64 "), str_concat(r0i, ", i64 ")), str_concat(r1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "abs" && len(args) >= 1 { fixed a0: str = args[0]; set a0t: str = "ptr"; check len(args_ty) >= 1 { a0t = args_ty[0]; } set a0i: str = a0; check a0t != "i64" { a0i = coerce_i64(a0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_abs(i64 "), str_concat(a0i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "max" && len(args) >= 2 { fixed m0: str = args[0]; set m0t: str = "ptr"; check len(args_ty) >= 1 { m0t = args_ty[0]; } set m0i: str = m0; check m0t != "i64" { m0i = coerce_i64(m0, ir, ctr); } fixed m1: str = args[1]; set m1t: str = "ptr"; check len(args_ty) >= 2 { m1t = args_ty[1]; } set m1i: str = m1; check m1t != "i64" { m1i = coerce_i64(m1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_max(i64 "), str_concat(m0i, ", i64 ")), str_concat(m1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "min" && len(args) >= 2 { fixed n0: str = args[0]; set n0t: str = "ptr"; check len(args_ty) >= 1 { n0t = args_ty[0]; } set n0i: str = n0; check n0t != "i64" { n0i = coerce_i64(n0, ir, ctr); } fixed n1: str = args[1]; set n1t: str = "ptr"; check len(args_ty) >= 2 { n1t = args_ty[1]; } set n1i: str = n1; check n1t != "i64" { n1i = coerce_i64(n1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_min(i64 "), str_concat(n0i, ", i64 ")), str_concat(n1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "randint" && len(args) >= 2 { fixed r0: str = args[0]; set r0t: str = "ptr"; check len(args_ty) >= 1 { r0t = args_ty[0]; } set r0i: str = r0; check r0t != "i64" { r0i = coerce_i64(r0, ir, ctr); } fixed r1: str = args[1]; set r1t: str = "ptr"; check len(args_ty) >= 2 { r1t = args_ty[1]; } set r1i: str = r1; check r1t != "i64" { r1i = coerce_i64(r1, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_randint(i64 "), str_concat(r0i, ", i64 ")), str_concat(r1i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             check nm == "time_now" { emit(ir, str_concat(str_concat("  ", tmp), " = call i64 @torvik_time_now()")); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             check nm == "time_ms" { emit(ir, str_concat(str_concat("  ", tmp), " = call i64 @torvik_time_ms()")); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
-            check nm == "readint" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_readint(ptr "), str_concat(args[0], ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "readint" { set rip0: str = ""; check len(args) >= 1 { rip0 = args[0]; } fallback { rip0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_readint(ptr "), str_concat(rip0, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            // readkey() keeps its original i64 byte-code return (matching
+            // byte_at) so existing code is unbroken; readkey_str() is the
+            // additive v1.1.3 form returning the keypress as a 1-char string
+            // (matching char_at). STDLIB.md documents both.
             check nm == "readkey" { fixed rk8: str = make_tmp(ctr); emit(ir, str_concat(str_concat("  ", rk8), " = call i8 @torvik_readkey()")); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = sext i8 "), str_concat(rk8, " to i64"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            check nm == "readkey_str" { fixed rks8: str = make_tmp(ctr); emit(ir, str_concat(str_concat("  ", rks8), " = call i8 @torvik_readkey()")); fixed rks64: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rks64), " = sext i8 "), str_concat(rks8, " to i64"))); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_byte_str(i64 "), str_concat(rks64, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "contains" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_contains(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed ctb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ctb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, ctb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
-            check nm == "readbool" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_readbool(ptr "), str_concat(args[0], ")"))); fixed rbb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rbb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, rbb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+            check nm == "readbool" { set rbp0: str = ""; check len(args) >= 1 { rbp0 = args[0]; } fallback { rbp0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_readbool(ptr "), str_concat(rbp0, ")"))); fixed rbb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rbb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, rbb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             check nm == "trim" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_trim(ptr "), str_concat(args[0], ")")));
+                finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
+            }
+            // v1.1.3: upper/lower as ordinary calls. They previously existed
+            // ONLY as weave stages (`s ~> upper`); a direct `upper(s)` call was
+            // "undefined function" despite the docs listing them as builtins.
+            check nm == "upper" && len(args) >= 1 {
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_upper(ptr "), str_concat(args[0], ")")));
+                finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
+            }
+            check nm == "lower" && len(args) >= 1 {
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_lower(ptr "), str_concat(args[0], ")")));
                 finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
             }
             check nm == "triml" && len(args) >= 1 {
@@ -2540,7 +2864,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             set gi2: i64 = 0;
             whilst gi2 < len(args) {
                 check len(generic_args) > 0 { generic_args = str_concat(generic_args, ", "); }
-                fixed garg_ty: str = "ptr";
+                set garg_ty: str = "ptr";
                 check gi2 < len(args_ty) { garg_ty = args_ty[gi2]; }
                 // A 128-bit value is a heap-box ptr that the callee dereferences via
                 // torvik_i128_load. Passing a non-128-bit scalar (an int literal, i64,
@@ -2551,16 +2875,16 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 // value — also a clean error.
                 check gi2 < len(callee_ptypes) {
                     fixed ppt: str = callee_ptypes[gi2];
-                    fixed param_is_128: i64 = 0; check line_eq(ppt, "i128") == 1 || line_eq(ppt, "u128") == 1 { param_is_128 = 1; }
-                    fixed arg_is_128: i64 = 0; check garg_ty == "i128" || garg_ty == "u128" { arg_is_128 = 1; }
-                    check param_is_128 == 1 && arg_is_128 == 0 && (garg_ty == "i64" || garg_ty == "i1" || garg_ty == "f64") {
+                    set param_is_128: i64 = 0; check line_eq(ppt, "i128") == 1 || line_eq(ppt, "u128") == 1 { param_is_128 = 1; }
+                    set arg_is_128: i64 = 0; check garg_ty == "i128" || garg_ty == "u128" { arg_is_128 = 1; }
+                    check param_is_128 == 1 && arg_is_128 == 0 && (garg_ty == "i64" || garg_ty == "i1" || garg_ty == "bool" || garg_ty == "f64") {
                         emit_uerr(ir, pos, "a non-128-bit value cannot be passed to a 128-bit parameter. Bind the value to an i128/u128 variable first, then pass that.");
                     }
                     check param_is_128 == 0 && arg_is_128 == 1 && int_width(ppt) > 0 {
                         emit_uerr(ir, pos, "a 128-bit value cannot be passed to a non-128-bit integer parameter. Use a matching 128-bit parameter type, or convert explicitly.");
                     }
                 }
-                check garg_ty == "i1" || garg_ty == "i64" {
+                check garg_ty == "i1" || garg_ty == "i64" || garg_ty == "bool" {
                     generic_args = str_concat(generic_args, str_concat("i64 ", args[gi2]));
                 }
                 check garg_ty == "f64" {
@@ -2629,7 +2953,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 return;
             }
             check suppress_chain == 0 && call_next_op == OP_WEAVE {
-                compile_weave_tail(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+                compile_weave_tail(tokens, strings, allnames, tmp, cb_rt, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
                 return;
             }
             // Stage 2: a call result may begin an arithmetic chain (`f(x) + 16`,
@@ -2721,9 +3045,9 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, ixv, ixp, ixs, ixs_ai, ixv_ty, var_names, var_types);
             check len(ixp) > 0 { p = ixp[0]; } check len(ixs) > 0 { s = ixs[0]; } check len(ixs_ai) > 0 { an = ixs_ai[0]; }
             check tok_peek(tokens, p) == PUNCT_RBRACKET { p += 1; }
-            fixed ixval: str = "0"; check len(ixv) > 0 { ixval = ixv[0]; }
-            fixed ixval_ty: str = "ptr"; check len(ixv_ty) > 0 { ixval_ty = ixv_ty[0]; }
-            fixed ixi: str = ixval; check ixval_ty != "i64" { ixi = coerce_i64(ixval, ir, ctr); }
+            set ixval: str = "0"; check len(ixv) > 0 { ixval = ixv[0]; }
+            set ixval_ty: str = "ptr"; check len(ixv_ty) > 0 { ixval_ty = ixv_ty[0]; }
+            set ixi: str = ixval; check ixval_ty != "i64" { ixi = coerce_i64(ixval, ir, ctr); }
             fixed gtmp: str = make_tmp(ctr);
             emit(ir, str_concat(str_concat(str_concat(str_concat("  ", gtmp), " = call ptr @torvik_list_get(ptr "), tmp), str_concat(", i64 ", str_concat(ixi, ")"))));
             // Element type of the indexed list (from `list<ELEM>`). Drives how the
@@ -2732,12 +3056,12 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // inttoptr'd scalar (recovered via ptrtoint so it prints as a number
             // instead of being dereferenced as an address — the old lone-read crash).
             fixed lelem: str = list_elem_type(lookup_var_type(nm, var_names, var_types));
-            fixed elem_is_128: i64 = 0; check line_eq(lelem, "i128") == 1 || line_eq(lelem, "u128") == 1 { elem_is_128 = 1; }
+            set elem_is_128: i64 = 0; check line_eq(lelem, "i128") == 1 || line_eq(lelem, "u128") == 1 { elem_is_128 = 1; }
             // A 128-bit element can't ride the i64 compare/arith machinery below
             // (coerce_i64 would arithmetic-on-the-box-address). Bind it to an i128
             // variable first. (Matches the bare-var and call-arg 128-bit rules.)
             fixed ix_peek: i64 = tok_peek(tokens, p);
-            fixed ix_peek_cmp: i64 = 0;
+            set ix_peek_cmp: i64 = 0;
             check ix_peek == OP_EQEQ || ix_peek == OP_BANGEQ || ix_peek == OP_LT || ix_peek == OP_GT || ix_peek == OP_LTEQ || ix_peek == OP_GTEQ { ix_peek_cmp = 1; }
             // A 128-bit element followed by an arith/comparison op now folds via
             // the native i128 path (mirrors bare i128 variables): load the element
@@ -2804,7 +3128,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 return;
             }
             check suppress_chain == 0 && ix_nop == OP_WEAVE {
-                compile_weave_tail(tokens, strings, allnames, gtmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+                compile_weave_tail(tokens, strings, allnames, gtmp, lelem, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
                 return;
             }
             // Stage 2: an index result may begin an arithmetic chain
@@ -2812,7 +3136,12 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // f64 elements use the FLOAT chain instead (recovered below).
             check suppress_chain == 0 && chain_tier6(tok_peek(tokens, p)) > 0 && line_eq(lelem, "f64") == 0 {
                 fixed ixci: str = coerce_i64(gtmp, ir, ctr);
-                chain_tail(tokens, strings, allnames, ixci, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+                // v1.1.3: a list<u64> element LEADING the chain selects unsigned
+                // ops (previously hardcoded signed - `us[0] / 2` on a huge u64
+                // divided as a negative signed value, a silent wrong answer).
+                set ixcu: i64 = 0;
+                check line_eq(lelem, "u64") == 1 { ixcu = 1; }
+                chain_tail(tokens, strings, allnames, ixci, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, ixcu);
                 return;
             }
             // Lone element read. A 128-bit element stays a box ptr (typed so echo
@@ -2841,6 +3170,14 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 emit(ir, str_concat(str_concat(str_concat("  ", ixsc), " = ptrtoint ptr "), str_concat(gtmp, " to i64")));
                 push(out_val, ixsc); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, lelem); return;
             }
+            // v1.1.3: a bool element is recovered to its scalar 0/1 and tagged
+            // "bool" (previously it fell through as an untyped ptr, so
+            // `echo!(bs[0])` stringified 0/1 as a string POINTER - a segfault).
+            check line_eq(lelem, "bool") == 1 {
+                fixed ixbc: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", ixbc), " = ptrtoint ptr "), str_concat(gtmp, " to i64")));
+                push(out_val, ixbc); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "bool"); return;
+            }
             // v1.1.0: a str element carries its type (fixes fmt("{}", xs[i])
             // printing a pointer address, and gives concat/comparison tails).
             check line_eq(lelem, "str") == 1 {
@@ -2857,13 +3194,13 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         // on a string fall through to a clean parse error rather than silently
         // coercing the pointer to i64.
         fixed lead_vty_pre: str = lookup_var_type(nm, var_names, var_types);
-        fixed lead_is_str_pre: i64 = 0; check starts(lead_vty_pre, "str") { lead_is_str_pre = 1; }
+        set lead_is_str_pre: i64 = 0; check starts(lead_vty_pre, "str") { lead_is_str_pre = 1; }
         // Tier 3: 128-bit integers are heap-boxed, so they can never ride the i64
         // chain (coerce_i64 would arithmetic-on-the-box-address). An i128/u128 lead
         // followed by an arith/bitwise or comparison op takes the parallel native
         // i128 path: load the lead from its box, fold (arith) via fold_chain6_i128
         // and re-box, or compare directly to an i1. Signedness is lead-driven.
-        fixed lead_is_128_pre: i64 = 0;
+        set lead_is_128_pre: i64 = 0;
         check line_eq(lead_vty_pre, "i128") == 1 || line_eq(lead_vty_pre, "u128") == 1 { lead_is_128_pre = 1; }
         check lead_is_128_pre == 1 && (wtier > 0 || next_op == OP_EQEQ || next_op == OP_BANGEQ || next_op == OP_LT || next_op == OP_GT || next_op == OP_LTEQ || next_op == OP_GTEQ) {
             fixed lead128: str = i128_load_ir(tmp, ir, ctr);
@@ -2923,17 +3260,17 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 emit_uerr(ir, p, "float operand in an integer expression. Lead the expression with the float (e.g. `2.5 * count`), or convert with tofloat(...).");
             }
             fixed peek3: i64 = tok_peek(tokens, p + 2);
-            fixed rhs_is_int: i64 = 0; check peek2 == TOK_INT { rhs_is_int = 1; }
-            fixed rhs_is_var: i64 = 0; check peek2 == TOK_IDENT && peek3 != PUNCT_LPAREN && peek3 != PUNCT_LBRACKET { rhs_is_var = 1; }
+            set rhs_is_int: i64 = 0; check peek2 == TOK_INT { rhs_is_int = 1; }
+            set rhs_is_var: i64 = 0; check peek2 == TOK_IDENT && peek3 != PUNCT_LPAREN && peek3 != PUNCT_LBRACKET { rhs_is_var = 1; }
             // Stage 2: a call/index/paren after the operator is also a foldable
             // operand now (fold_chain6 evaluates it via compile_expr), so enter
             // the chain for those too — not just int/plain-var.
-            fixed rhs_is_call: i64 = 0; check peek2 == TOK_IDENT && (peek3 == PUNCT_LPAREN || peek3 == PUNCT_LBRACKET) { rhs_is_call = 1; }
-            fixed rhs_is_par: i64 = 0; check peek2 == PUNCT_LPAREN { rhs_is_par = 1; }
+            set rhs_is_call: i64 = 0; check peek2 == TOK_IDENT && (peek3 == PUNCT_LPAREN || peek3 == PUNCT_LBRACKET) { rhs_is_call = 1; }
+            set rhs_is_par: i64 = 0; check peek2 == PUNCT_LPAREN { rhs_is_par = 1; }
             // v1.1.0 operator edges: `a - -b`, `a + -5`, `a * -f(x)` — a unary
             // minus prefixing the operand also enters the chain; fold_chain6
             // consumes the minus and negates the operand.
-            fixed rhs_is_neg: i64 = 0;
+            set rhs_is_neg: i64 = 0;
             check peek2 == OP_MINUS {
                 fixed peek3n: i64 = tok_peek(tokens, p + 2);
                 check peek3n == TOK_INT || peek3n == TOK_IDENT || peek3n == PUNCT_LPAREN { rhs_is_neg = 1; }
@@ -2986,9 +3323,9 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     set rvz: list<str> = list_new(); set rpz: list<i64> = list_new(); set rsz: list<i64> = list_new(); set rsz_ai: list<i64> = list_new(); set rsz_ty: list<str> = list_new();
                     compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rvz, rpz, rsz, rsz_ai, rsz_ty, var_names, var_types);
                     check len(rpz) > 0 { p = rpz[0]; } check len(rsz) > 0 { s = rsz[0]; } check len(rsz_ai) > 0 { an = rsz_ai[0]; }
-                    fixed rhz: str = "0"; check len(rvz) > 0 { rhz = rvz[0]; }
-                    fixed rhz_ty: str = "ptr"; check len(rsz_ty) > 0 { rhz_ty = rsz_ty[0]; }
-                    fixed rhz_i: str = rhz; check rhz_ty != "i64" { rhz_i = coerce_i64(rhz, ir, ctr); }
+                    set rhz: str = "0"; check len(rvz) > 0 { rhz = rvz[0]; }
+                    set rhz_ty: str = "ptr"; check len(rsz_ty) > 0 { rhz_ty = rsz_ty[0]; }
+                    set rhz_i: str = rhz; check rhz_ty != "i64" { rhz_i = coerce_i64(rhz, ir, ctr); }
                     check line_eq(rhz_ty, "u64") == 1 { c1_uns = 1; }
                     fixed c1cmp: str = make_tmp(ctr);
                     set c1pred: str = "";
@@ -3028,8 +3365,8 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check len(rpk2) > 0 { p = rpk2[0]; }
             check len(rsk2) > 0 { s = rsk2[0]; }
             check len(rsk2_ai) > 0 { an = rsk2_ai[0]; }
-            fixed krhs: str = "null"; check len(rvk2) > 0 { krhs = rvk2[0]; }
-            fixed krhs_ty: str = "ptr"; check len(rsk2_ty) > 0 { krhs_ty = rsk2_ty[0]; }
+            set krhs: str = "null"; check len(rvk2) > 0 { krhs = rvk2[0]; }
+            set krhs_ty: str = "ptr"; check len(rsk2_ty) > 0 { krhs_ty = rsk2_ty[0]; }
             fixed klhs_i: str = make_tmp(ctr);
             emit(ir, str_concat(str_concat(str_concat("  ", klhs_i), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
             set krhs_i: str = krhs;
@@ -3051,7 +3388,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         // ~> weave on a bare variable: s ~> trim ~> upper == upper(trim(s)).
         // v1.1.0: shared tail (typed results + trailing-comparison folding).
         check next_op == OP_WEAVE {
-            compile_weave_tail(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
+            compile_weave_tail(tokens, strings, allnames, tmp, lookup_var_type(nm, var_names, var_types), p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
             return;
         }
         check is_cmp_op(next_op) == 1 {
@@ -3385,7 +3722,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 // annotation (e.g. vann "list<i64list_new", leaving the var null).
                 check tok_peek(tokens, pos) == OP_GTEQ { vann = str_concat(vann, ">"); pos += 1; }
             }
-            // An explicit ':' must be followed by a type name. `fixed x: = ...`
+            // An explicit ':' must be followed by a type name. `set x: = ...`
             // (colon present, no type) was silently accepted before. Caret on ':'.
             check had_colon == 1 && len(vann) == 0 {
                 push(err_pos, pos - 1);
@@ -3443,6 +3780,10 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             // Stage 1: record (vname, annotation). Nothing reads this yet.
             set vt_idx: i64 = 0 - 1;
             check len(vname) > 0 { push(var_names, vname); push(var_types, vann); vt_idx = len(var_types) - 1; }
+            // v1.1.3: record the binding's mutability so reassignment of a
+            // `fixed` binding is a clean compile error (previously unenforced -
+            // `set x = 1; x = 2;` compiled and mutated silently).
+            check len(vname) > 0 && t == KW_FIXED { push(var_names, str_concat("@fixed@", vname)); push(var_types, "1"); }
             set had_eq: i64 = 0;
             check tok_peek(tokens, pos) == OP_EQ { pos += 1; had_eq = 1; }
             // Reject an empty right-hand side: `fixed x: T = ;` — the '=' is present
@@ -3623,7 +3964,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             set rc_kind: str = "";
             check starts(vann, "list") { rc_kind = "list"; }
             check vann == "str" { rc_kind = "str"; }
-            check vann == "bag" { rc_kind = "bag"; }
+            check starts(vann, "bag") { rc_kind = "bag"; }  // v1.1.3: starts(), not == - `bag<str>` never matched, so bag slots skipped ARC entirely (use-after-free)
             check vann == "i128" || vann == "u128" { rc_kind = "i128"; }
             check starts(vann, "table") { rc_kind = "table"; }
             check starts(vann, "result") { rc_kind = "result"; }
@@ -3637,8 +3978,11 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 check slot_exists(ir, init_line) == 0 { emit(ir, init_line); }
             }
             check len(rv) > 0 && rv[0] != "void" {
-                check vtype == "i64" || vtype == "u64" {
+                check vtype == "i64" || vtype == "u64" || vtype == "bool" {
                     // Narrow integer types wrap to their width on store (no-op for i64/u64).
+                    // v1.1.3: "bool" (an i64 SSA 0/1, e.g. a true/false literal)
+                    // stores through the same path - previously it matched NO
+                    // branch and the store was silently dropped.
                     fixed canon_v: str = canonicalize_int(rv[0], vann, ir, ctr);
                     fixed cast_tmp: str = make_tmp(ctr);
                     emit(ir, str_concat(str_concat(str_concat("  ", cast_tmp), " = inttoptr i64 "), str_concat(canon_v, " to ptr")));
@@ -3950,7 +4294,24 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             set rv_ty: list<str> = list_new(); push(rv_ty, ret_cur_ty);
             pos = check_no_stranded_op(tokens, pos, ir);
             check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
-            check fn_ret_type == "void" || len(fn_ret_type) == 0 { push(err_pos, ret_pos); push(err_msg, "this function returns void and cannot return a value - use a bare `return;` to exit early"); continue; } check fn_ret_type != "void" && len(fn_ret_type) > 0 { check len(rv) > 0 { fixed rv_type_s: str = "ptr"; check len(rv_ty) > 0 { rv_type_s = rv_ty[0]; } check rv_type_s == "i1" { fixed zext_t: str = make_tmp(ctr); fixed itp_t: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zext_t), " = zext i1 "), str_concat(rv[0], " to i64"))); emit(ir, str_concat(str_concat(str_concat("  ", itp_t), " = inttoptr i64 "), str_concat(zext_t, " to ptr"))); emit(ir, str_concat("  ret ptr ", itp_t)); } check rv_type_s == "i64" || rv_type_s == "u64" { fixed rcv: str = canonicalize_int(rv[0], fn_ret_type, ir, ctr); fixed itp_t: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", itp_t), " = inttoptr i64 "), str_concat(rcv, " to ptr"))); emit(ir, str_concat("  ret ptr ", itp_t)); } check rv_type_s == "f64" { fixed rfb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rfb), " = bitcast double "), str_concat(rv[0], " to i64"))); fixed rfp: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rfp), " = inttoptr i64 "), str_concat(rfb, " to ptr"))); emit(ir, str_concat("  ret ptr ", rfp)); } check rv_type_s != "i1" && rv_type_s != "i64" && rv_type_s != "u64" && rv_type_s != "f64" { emit(ir, str_concat("  ret ptr ", rv[0])); } } }
+            check fn_ret_type == "void" || len(fn_ret_type) == 0 { push(err_pos, ret_pos); push(err_msg, "this function returns void and cannot return a value - use a bare `return;` to exit early"); continue; } check fn_ret_type != "void" && len(fn_ret_type) > 0 { check len(rv) > 0 { set rv_type_s: str = "ptr"; check len(rv_ty) > 0 { rv_type_s = rv_ty[0]; }
+            // v1.1.3: return-type compatibility. A definite kind mismatch between
+            // the returned value and the declared return type is a clean error -
+            // previously `df f() -> str { return 5; }` compiled and crashed (or
+            // printed a pointer) at run time. "ptr" (an integer variable's
+            // uniform load) is indefinite and stays unchecked, mirroring the
+            // declaration-side type check.
+            check line_eq(rv_type_s, "ptr") == 0 {
+                set _rvk: str = ty_kind(rv_type_s);
+                check line_eq(rv_type_s, "i1") == 1 { _rvk = "num"; }
+                fixed _rdk: str = ty_kind(fn_ret_type);
+                check line_eq(_rvk, _rdk) == 0 && line_eq(_rvk, "other") == 0 && line_eq(_rdk, "other") == 0 {
+                    push(err_pos, ret_pos);
+                    push(err_msg, fmt("can't return a value of type {rv_type_s} from a function declared to return {fn_ret_type}"));
+                    continue;
+                }
+            }
+            check rv_type_s == "i1" { fixed zext_t: str = make_tmp(ctr); fixed itp_t: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zext_t), " = zext i1 "), str_concat(rv[0], " to i64"))); emit(ir, str_concat(str_concat(str_concat("  ", itp_t), " = inttoptr i64 "), str_concat(zext_t, " to ptr"))); emit(ir, str_concat("  ret ptr ", itp_t)); } check rv_type_s == "i64" || rv_type_s == "u64" || rv_type_s == "bool" || (int_width(rv_type_s) > 0 && rv_type_s != "i128" && rv_type_s != "u128") { fixed rcv: str = canonicalize_int(rv[0], fn_ret_type, ir, ctr); fixed itp_t: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", itp_t), " = inttoptr i64 "), str_concat(rcv, " to ptr"))); emit(ir, str_concat("  ret ptr ", itp_t)); } check rv_type_s == "f64" { fixed rfb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rfb), " = bitcast double "), str_concat(rv[0], " to i64"))); fixed rfp: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rfp), " = inttoptr i64 "), str_concat(rfb, " to ptr"))); emit(ir, str_concat("  ret ptr ", rfp)); } check rv_type_s != "i1" && rv_type_s != "i64" && rv_type_s != "u64" && rv_type_s != "bool" && rv_type_s != "f64" && (int_width(rv_type_s) == 0 || rv_type_s == "i128" || rv_type_s == "u128") { emit(ir, str_concat("  ret ptr ", rv[0])); } } }
             continue;
         }
 
@@ -4033,8 +4394,8 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     fixed spelem: str = list_elem_type(lookup_var_type(s_first_arg_name, var_names, var_types));
                     set pval: str = args[1];
                     set pval_ty: str = "ptr"; check len(args_ty) >= 2 { pval_ty = args_ty[1]; }
-                    fixed spe128: i64 = 0; check line_eq(spelem, "i128") == 1 || line_eq(spelem, "u128") == 1 { spe128 = 1; }
-                    fixed spv128: i64 = 0; check pval_ty == "i128" || pval_ty == "u128" { spv128 = 1; }
+                    set spe128: i64 = 0; check line_eq(spelem, "i128") == 1 || line_eq(spelem, "u128") == 1 { spe128 = 1; }
+                    set spv128: i64 = 0; check pval_ty == "i128" || pval_ty == "u128" { spv128 = 1; }
                     set split: str = ""; check len(args_lit) >= 2 { split = args_lit[1]; }
                     check spe128 == 1 && spv128 == 0 && len(split) > 0 {
                         set splok: i64 = 0;
@@ -4067,8 +4428,8 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     set iidx: str = args[1]; set iidx_ty: str = "ptr"; check len(args_ty) >= 2 { iidx_ty = args_ty[1]; }
                     check iidx_ty == "i1" { fixed izt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", izt), " = zext i1 "), str_concat(iidx, " to i64"))); iidx = izt; } fallback { check iidx_ty != "i64" { iidx = coerce_i64(iidx, ir, ctr); } }
                     set ival: str = args[2]; set ival_ty: str = "ptr"; check len(args_ty) >= 3 { ival_ty = args_ty[2]; }
-                    fixed sie128: i64 = 0; check line_eq(sielem, "i128") == 1 || line_eq(sielem, "u128") == 1 { sie128 = 1; }
-                    fixed siv128: i64 = 0; check ival_ty == "i128" || ival_ty == "u128" { siv128 = 1; }
+                    set sie128: i64 = 0; check line_eq(sielem, "i128") == 1 || line_eq(sielem, "u128") == 1 { sie128 = 1; }
+                    set siv128: i64 = 0; check ival_ty == "i128" || ival_ty == "u128" { siv128 = 1; }
                     set silit: str = ""; check len(args_lit) >= 3 { silit = args_lit[2]; }
                     check sie128 == 1 && siv128 == 0 && len(silit) > 0 {
                         set silok: i64 = 0;
@@ -4111,7 +4472,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     set acond: str = args[0]; set acond_ty: str = "ptr"; check len(args_ty) >= 1 { acond_ty = args_ty[0]; }
                     fixed acond32: str = make_tmp(ctr);
                     check acond_ty == "i1" { emit(ir, str_concat(str_concat(str_concat("  ", acond32), " = zext i1 "), str_concat(acond, " to i32"))); } fallback {
-                        fixed ac_i: str = acond; check acond_ty != "i64" { ac_i = coerce_i64(acond, ir, ctr); }
+                        set ac_i: str = acond; check acond_ty != "i64" { ac_i = coerce_i64(acond, ir, ctr); }
                         emit(ir, str_concat(str_concat(str_concat("  ", acond32), " = trunc i64 "), str_concat(ac_i, " to i32")));
                     }
                     emit(ir, str_concat(str_concat(str_concat("  call void @torvik_assert(i32 ", acond32), ", ptr "), str_concat(args[1], ")")));
@@ -4147,16 +4508,16 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     check sgi < len(args_ty) { sarg_ty = args_ty[sgi]; }
                     check sgi < len(scallee_ptypes) {
                         fixed sppt: str = scallee_ptypes[sgi];
-                        fixed sp_is_128: i64 = 0; check line_eq(sppt, "i128") == 1 || line_eq(sppt, "u128") == 1 { sp_is_128 = 1; }
-                        fixed sa_is_128: i64 = 0; check sarg_ty == "i128" || sarg_ty == "u128" { sa_is_128 = 1; }
-                        check sp_is_128 == 1 && sa_is_128 == 0 && (sarg_ty == "i64" || sarg_ty == "i1" || sarg_ty == "f64") {
+                        set sp_is_128: i64 = 0; check line_eq(sppt, "i128") == 1 || line_eq(sppt, "u128") == 1 { sp_is_128 = 1; }
+                        set sa_is_128: i64 = 0; check sarg_ty == "i128" || sarg_ty == "u128" { sa_is_128 = 1; }
+                        check sp_is_128 == 1 && sa_is_128 == 0 && (sarg_ty == "i64" || sarg_ty == "i1" || sarg_ty == "bool" || sarg_ty == "f64") {
                             emit_uerr(ir, pos, "a non-128-bit value cannot be passed to a 128-bit parameter. Bind the value to an i128/u128 variable first, then pass that.");
                         }
                         check sp_is_128 == 0 && sa_is_128 == 1 && int_width(sppt) > 0 {
                             emit_uerr(ir, pos, "a 128-bit value cannot be passed to a non-128-bit integer parameter. Use a matching 128-bit parameter type, or convert explicitly.");
                         }
                     }
-                    check sarg_ty == "i1" || sarg_ty == "i64" {
+                    check sarg_ty == "i1" || sarg_ty == "i64" || sarg_ty == "bool" {
                         sgen_args = str_concat(sgen_args, str_concat("i64 ", args[sgi]));
                     }
                     check sarg_ty == "f64" {
@@ -4206,11 +4567,11 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 check len(wp) > 0 { pos = wp[0]; } check len(ws) > 0 { s = ws[0]; } check len(ws_ai) > 0 { an = ws_ai[0]; }
                 pos = check_no_stranded_op(tokens, pos, ir);
                 check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
-                fixed ixval: str = "0"; check len(ixv) > 0 { ixval = ixv[0]; }
-                fixed ixval_ty: str = "ptr"; check len(ixv_ty) > 0 { ixval_ty = ixv_ty[0]; }
-                fixed ixi: str = ixval; check ixval_ty != "i64" { ixi = coerce_i64(ixval, ir, ctr); }
-                fixed wval: str = "0"; check len(wv) > 0 { wval = wv[0]; }
-                fixed wval_ty: str = "ptr"; check len(wv_ty) > 0 { wval_ty = wv_ty[0]; }
+                set ixval: str = "0"; check len(ixv) > 0 { ixval = ixv[0]; }
+                set ixval_ty: str = "ptr"; check len(ixv_ty) > 0 { ixval_ty = ixv_ty[0]; }
+                set ixi: str = ixval; check ixval_ty != "i64" { ixi = coerce_i64(ixval, ir, ctr); }
+                set wval: str = "0"; check len(wv) > 0 { wval = wv[0]; }
+                set wval_ty: str = "ptr"; check len(wv_ty) > 0 { wval_ty = wv_ty[0]; }
                 set wi: str = wval;
                 check wval_ty == "i1" { fixed wzx: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", wzx), " = zext i1 "), str_concat(wval, " to i64"))); wi = wzx; } fallback { check wval_ty != "i64" { wi = coerce_i64(wval, ir, ctr); } }
                 fixed lst: str = make_tmp(ctr);
@@ -4225,6 +4586,10 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 // does not auto-declare; use 'set name: type = value;' to declare).
                 check slot_defined(ir, nm) == 1 { } fallback {
                     emit(ir, str_concat(str_concat(str_concat("  ; tv.undefvar:", nm), ":"), int_to_str(snm_pos)));
+                }
+                // v1.1.3: a `fixed` binding cannot be reassigned (plain or compound).
+                check lookup_fixed_marker(nm, var_names, var_types) == 1 {
+                    emit_uerr(ir, snm_pos, fmt("'{nm}' is fixed and cannot be reassigned - declare it with 'set' if it needs to change."));
                 }
                 fixed is_compound_asg: bool = asg_op != OP_EQ;
                 fixed is_plus_asg: bool = asg_op == OP_PLUSEQ;
@@ -4277,8 +4642,8 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 pos = check_no_stranded_op(tokens, pos, ir);
                 check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
                 fixed aslot: str = str_concat(str_concat("%", nm), "_slot");
-                fixed aval: str = "null"; check len(av) > 0 { aval = av[0]; }
-                fixed aval_ty: str = "ptr"; check len(av_ty) > 0 { aval_ty = av_ty[0]; }
+                set aval: str = "null"; check len(av) > 0 { aval = av[0]; }
+                set aval_ty: str = "ptr"; check len(av_ty) > 0 { aval_ty = av_ty[0]; }
                 check is_compound_asg {
                     check line_eq(lookup_var_type(nm, var_names, var_types), "f64") == 1 {
                         // Float compound: load+bitcast to double, fop, bitcast back.
@@ -4324,7 +4689,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     }
                 } fallback {
                     set astore_val: str = aval;
-                    check aval_ty == "i64" || aval_ty == "i1" || aval_ty == "u64" {
+                    check aval_ty == "i64" || aval_ty == "i1" || aval_ty == "u64" || aval_ty == "bool" {
                         set aiv: str = aval;
                         check aval_ty == "i1" { fixed az: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", az), " = zext i1 "), str_concat(aval, " to i64"))); aiv = az; }
                         // Narrow integer types wrap to their width on store (no-op for i64).
@@ -4348,7 +4713,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     set asg_kind: str = "";
                     check starts(asg_dty, "list") { asg_kind = "list"; }
                     check asg_dty == "str" { asg_kind = "str"; }
-                    check asg_dty == "bag" { asg_kind = "bag"; }
+                    check starts(asg_dty, "bag") { asg_kind = "bag"; }  // v1.1.3: starts(), see decl site
                     check starts(asg_dty, "table") { asg_kind = "table"; }
                     check asg_dty == "i128" || asg_dty == "u128" { asg_kind = "i128"; }
                     check len(asg_kind) > 0 {
@@ -4668,8 +5033,8 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     check redecl_conflict(evar, celem, var_names, var_types) == 1 {
                         emit_uerr(ir, pos - 2, fmt("loop variable '{}' is already declared with type {} in this function - an each loop over this list binds it as {}; use a different name.", evar, lookup_var_type(evar, var_names, var_types), celem));
                     }
-                    fixed cel_is_128: i64 = 0; check line_eq(celem, "i128") == 1 || line_eq(celem, "u128") == 1 { cel_is_128 = 1; }
-                    fixed cel_is_str: i64 = 0; check line_eq(celem, "str") == 1 { cel_is_str = 1; }
+                    set cel_is_128: i64 = 0; check line_eq(celem, "i128") == 1 || line_eq(celem, "u128") == 1 { cel_is_128 = 1; }
+                    set cel_is_str: i64 = 0; check line_eq(celem, "str") == 1 { cel_is_str = 1; }
                     // load the collection ptr once
                     fixed ccol: str = make_tmp(ctr);
                     emit(ir, str_concat(str_concat(str_concat(str_concat("  ", ccol), " = load ptr, ptr %"), coll_name), "_slot, align 8"));
@@ -5001,7 +5366,7 @@ df inject_scope_releases(fn_ir: list<str>, ctr: list<i64>, rty: str, pnames: lis
             set pk: str = "";
             check starts(pt, "list") { pk = "list"; }
             check pt == "str" { pk = "str"; }
-            check pt == "bag" { pk = "bag"; }
+            check starts(pt, "bag") { pk = "bag"; }  // v1.1.3: starts(), see decl site
             check starts(pt, "table") { pk = "table"; }
             check starts(pt, "result") { pk = "result"; }
             check pt == "i128" || pt == "u128" { pk = "i128"; }
@@ -5085,6 +5450,7 @@ df temp_producer_code(line: str, upats: list<str>, ucodes: list<str>) -> str {
     check str_contains(line, " = call ptr @torvik_str_concat(") { return "a:str"; }
     check str_contains(line, "; tv.strpop") { return "b:str"; }
     check str_contains(line, " = call ptr @torvik_char_str(") { return "a:str"; }
+    check str_contains(line, " = call ptr @torvik_byte_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_int_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_uint_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_i128_box(") { return "a:i128"; }
@@ -5553,6 +5919,7 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare void @torvik_list_mark_managed_i128(ptr)");
     emit(ir, "declare i64 @torvik_char_at(ptr, i64)");
     emit(ir, "declare ptr @torvik_char_str(ptr, i64)");
+    emit(ir, "declare ptr @torvik_byte_str(i64)");
     emit(ir, "declare i32 @torvik_ends(ptr, ptr)");
     emit(ir, "declare i32 @torvik_starts(ptr, ptr)");
     emit(ir, "@torvik_argc = internal global i64 0, align 8");
@@ -5611,6 +5978,9 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         upi += 1;
     }
     set fi: i64 = 0;
+    // v1.1.3: names of top-level `fixed` globals, for reassignment enforcement.
+    fixed fglist: list<str> = list_new();
+    collect_fixed_globals(tokens, allnames, fglist);
     // Tracks undefined-function names already reported (program-wide dedup).
     set undef_seen: list<str> = list_new();
     set undefvar_seen: list<str> = list_new();
@@ -5621,7 +5991,7 @@ whilst fi < len(fn_names) {
         fixed fname: str  = fn_names[fi];
             fixed bstart: i64 = fn_body_start[fi];
         fixed bend: i64   = fn_body_end[fi];
-        fixed irname: str = fname;
+        set irname: str = fname;
         check fname == "main" { irname = "torvik_user_main"; }
 
         // Use per-function IR list to avoid O(N^2) join_ir across all functions
@@ -5637,7 +6007,7 @@ whilst fi < len(fn_names) {
             sig_params = str_concat(sig_params, str_concat("ptr %", pnames[pi]));
             pi += 1;
         }
-        fixed fn_llret: str = "ptr"; fixed fn_ret_raw: str = "void"; check fi < len(fn_ret_types) { fn_ret_raw = fn_ret_types[fi]; }
+        fixed fn_llret: str = "ptr"; set fn_ret_raw: str = "void"; check fi < len(fn_ret_types) { fn_ret_raw = fn_ret_types[fi]; }
         emit(fn_ir, str_concat(str_concat(str_concat(str_concat("define ", fn_llret), str_concat(" @", irname)), str_concat("(", str_concat(sig_params, ") {"))), ""));
         emit(fn_ir, "entry:");
         // ARC Stage A: parse param types BEFORE the slot-store loop so list-typed
@@ -5656,7 +6026,7 @@ whilst fi < len(fn_names) {
                 set pkind: str = "";
                 check starts(pty, "list") { pkind = "list"; }
                 check pty == "str" { pkind = "str"; }
-                check pty == "bag" { pkind = "bag"; }
+                check starts(pty, "bag") { pkind = "bag"; }  // v1.1.3: starts(), see decl site
                 check starts(pty, "table") { pkind = "table"; }
                 check starts(pty, "result") { pkind = "result"; }
                 check pty == "i128" || pty == "u128" { pkind = "i128"; }
@@ -5693,6 +6063,13 @@ whilst fi < len(fn_names) {
         set gvi: i64 = 0;
         whilst gvi < len(global_names) {
             check gvi < len(global_types) { push(var_names, global_names[gvi]); push(var_types, global_types[gvi]); }
+            // v1.1.3: a top-level `fixed` global gets the same mutability marker
+            // as a fixed local, so reassignment from any function is the same
+            // clean compile error.
+            check fixed_global_seen(fglist, global_names[gvi]) == 1 {
+                push(var_names, str_concat("@fixed@", global_names[gvi]));
+                push(var_types, "1");
+            }
             gvi += 1;
         }
         // Per-function global slots alias the shared @NAME storage, so reads AND
@@ -5738,14 +6115,56 @@ whilst fi < len(fn_names) {
                         check st == TOK_IDENT || st == TOK_STRING { scan_an += 1; }
                         scan_p += 1;
                     }
+                    // v1.1.3: 128-bit globals take a single-literal initializer,
+                    // boxed exactly like a local i128/u128 declaration. (The
+                    // generic expression path below compiles the bare literal as
+                    // an i64 constant, which LLVM rejects past the u64 range.)
+                    set g128done: i64 = 0;
+                    check line_eq(egt, "i128") == 1 || line_eq(egt, "u128") == 1 {
+                        fixed g0t: i64 = tok_peek(tokens, global_init_pos[egi]);
+                        fixed g1t: i64 = tok_peek(tokens, global_init_pos[egi] + 1);
+                        fixed g2t: i64 = tok_peek(tokens, global_init_pos[egi] + 2);
+                        set glit: str = "";
+                        check g0t == TOK_INT && g1t == PUNCT_SEMI {
+                            glit = strings[global_init_s[egi]];
+                        }
+                        check g0t == OP_MINUS && g1t == TOK_INT && g2t == PUNCT_SEMI {
+                            glit = str_concat("-", strings[global_init_s[egi]]);
+                        }
+                        check len(glit) > 0 {
+                            set gneg: i64 = 0;
+                            check starts(glit, "-") { gneg = 1; }
+                            set glok: i64 = 0;
+                            check line_eq(egt, "i128") == 1 && i128_lit_in_range(glit) == 1 { glok = 1; }
+                            check line_eq(egt, "u128") == 1 && gneg == 0 && u128_in_range(glit) == 1 { glok = 1; }
+                            check glok == 0 {
+                                push(err_pos, global_init_pos[egi]);
+                                push(err_msg, str_concat(str_concat("literal ", glit), str_concat(" is out of range for ", egt)));
+                            }
+                            fixed gbox: str = i128_box_lit(glit, fn_ir, ctr);
+                            emit(fn_ir, str_concat("  call ptr @torvik_i128_retain(ptr ", str_concat(gbox, ")")));
+                            emit(fn_ir, str_concat(str_concat(str_concat("  store ptr ", gbox), ", ptr %"), str_concat(egn, "_slot, align 8")));
+                            g128done = 1;
+                        }
+                        check g128done == 0 {
+                            push(err_pos, global_init_pos[egi]);
+                            push(err_msg, str_concat(str_concat("a ", egt), " global takes a single literal initializer - compute expressions in a function, or bind the literal here and combine values at runtime"));
+                            g128done = 1;
+                        }
+                    }
+                    check g128done == 0 {
                     set iev: list<str> = list_new(); set iep: list<i64> = list_new(); set ies: list<i64> = list_new(); set iea: list<i64> = list_new(); set iety: list<str> = list_new();
                     compile_expr(tokens, strings, allnames, global_init_pos[egi], global_init_s[egi], global_init_an[egi], fn_ir, ctr, gvals, gnames, iev, iep, ies, iea, iety, var_names, var_types);
-                    fixed ival: str = "0"; check len(iev) > 0 { ival = iev[0]; }
-                    fixed ivty: str = "ptr"; check len(iety) > 0 { ivty = iety[0]; }
+                    set ival: str = "0"; check len(iev) > 0 { ival = iev[0]; }
+                    set ivty: str = "ptr"; check len(iety) > 0 { ivty = iety[0]; }
                     // Box scalars into the uniform ptr slot; pointers store directly.
                     set sptr: str = ival;
-                    check ivty == "i64" {
+                    check ivty == "i64" || ivty == "u64" || ivty == "bool" || (int_width(ivty) > 0 && ivty != "i128" && ivty != "u128") {
                         // Narrow integer globals wrap to their width (no-op for i64).
+                        // v1.1.3: "u64"/"bool"/narrow-int TAGS box through the same
+                        // path - previously only the exact "i64" tag matched, so a
+                        // bool or u64-tagged initializer was stored raw (clang
+                        // rejected the IR: i64 where ptr expected).
                         fixed icv: str = canonicalize_int(ival, egt, fn_ir, ctr);
                         fixed bx: str = make_tmp(ctr);
                         emit(fn_ir, str_concat(str_concat(str_concat("  ", bx), " = inttoptr i64 "), str_concat(icv, " to ptr")));
@@ -5770,9 +6189,10 @@ whilst fi < len(fn_names) {
                     set ekind: str = "";
                     check starts(egt, "list") { ekind = "list"; }
                     check egt == "str" { ekind = "str"; }
-                    check egt == "bag" { ekind = "bag"; }
+                    check starts(egt, "bag") { ekind = "bag"; }  // v1.1.3: starts(), see decl site
                     check starts(egt, "table") { ekind = "table"; }
                     check starts(egt, "result") { ekind = "result"; }
+                    check egt == "i128" || egt == "u128" { ekind = "i128"; }  // v1.1.3: claim the box past temp cleanup
                     check len(ekind) > 0 {
                         emit(fn_ir, str_concat(str_concat("  call ptr @torvik_", ekind), str_concat("_retain(ptr ", str_concat(sptr, ")"))));
                     }
@@ -5786,13 +6206,14 @@ whilst fi < len(fn_names) {
                         emit(fn_ir, str_concat("  call void @torvik_result_mark_managed(ptr ", str_concat(sptr, ")")));
                     }
                     emit(fn_ir, str_concat(str_concat(str_concat("  store ptr ", sptr), ", ptr %"), str_concat(egn, "_slot, align 8")));
+                    }
                 }
                 egi += 1;
             }
         }
             fixed body_ani: i64 = fn_body_an[fi];
         fixed body_si: i64 = fn_body_s[fi];
-            fixed fret_ty: str = "void"; check fi < len(fn_ret_types) { fret_ty = fn_ret_types[fi]; }
+            set fret_ty: str = "void"; check fi < len(fn_ret_types) { fret_ty = fn_ret_types[fi]; }
         fixed _cs_ret: i64 = compile_stmts(tokens, strings, allnames, bstart, bend, body_si, body_ani, fn_ir, ctr, gvals, gnames, lctr, fret_ty, var_names, var_types, global_names, err_pos, err_msg);
             // Surface calls to functions that don't exist as clean located errors
             // (otherwise clang rejects the call to an undefined @name — a TVC-5002).

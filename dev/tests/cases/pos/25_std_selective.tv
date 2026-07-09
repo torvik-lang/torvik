@@ -1,0 +1,6 @@
+apply std::math;
+
+df main() -> void {
+    echo!(pow(3, 3));
+    echo!(gcd(12, 8));
+}

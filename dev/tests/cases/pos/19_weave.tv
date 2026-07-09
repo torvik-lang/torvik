@@ -1,0 +1,23 @@
+df shout(s: str) -> str { return str_concat(s, "!"); }
+df addn(x: i64, n: i64) -> i64 { return x + n; }
+df main() -> void {
+    fixed raw: str = "  hello  ";
+    set cleaned: str = raw ~> trim;
+    echo!(cleaned);
+    set loud: str = raw ~> trim ~> shout;
+    echo!(loud);
+    fixed csv: str = " a,b,c ";
+    fixed slug: str = csv ~> trim ~> replace(",", "-") ~> upper;
+    echo!(slug);
+    set v: i64 = 5;
+    echo!(v ~> addn(3) ~> addn(10));
+    echo!("hey" ~> shout);
+    echo!(5 ~> addn(1));
+    set parts: list<str> = list_new();
+    push(parts, "  pad  ");
+    echo!(parts[0] ~> trim);
+    check raw ~> trim == "hello" { echo!("weave cmp ok"); }
+    fixed sub2: str = "xhellox" ~> replace("x", "") ~> substr(0, 4);
+    echo!(sub2);
+    echo!(trim(raw) ~> shout);
+}

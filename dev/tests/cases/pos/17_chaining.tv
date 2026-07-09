@@ -1,0 +1,33 @@
+df dbl(n: i64) -> i64 { return n * 2; }
+df name_of() -> str { return "sigrid"; }
+df main() -> void {
+    set s: str = "  done  ";
+    set i: i64 = 0;
+    set pad: str = "  x";
+    whilst char_at(pad, i) == " " { i += 1; }
+    echo!(i);
+    check substr("st_name", 0, 3) == "st_" { echo!("prefix ok"); }
+    set x: str = "a";
+    check "a" == x { echo!("lit lead ok"); }
+    set a: i64 = 2;
+    set b: i64 = 20;
+    check a + dbl(3) > 7 { echo!("mixed fold ok"); }
+    echo!(a + dbl(5));
+    echo!(dbl(a) + dbl(3));
+    set xs: list<str> = list_new();
+    push(xs, "beta");
+    check xs[0] != "" { echo!("elem ne ok"); }
+    check xs[0] == "beta" { echo!("elem eq ok"); }
+    check "apple" < "banana" { echo!("sorted"); }
+    check "b" > "a" { echo!("gt str"); }
+    check "abc" <= "abc" { echo!("le str"); }
+    check name_of() == "sigrid" { echo!("call cmp ok"); }
+    check trim(s) == "done" { echo!("trim cmp ok"); }
+    set t: table<str, i64> = table_new();
+    table_set(t, "k", 4);
+    echo!(table_get(t, "k") * 2);
+    check (a + 1) * 2 == 6 { echo!("paren chain ok"); }
+    fixed tern_call: str = a > 1 ?> str_concat("a", "b") !> "other";
+    echo!(tern_call);
+    echo!(dbl(3) == 6);
+}

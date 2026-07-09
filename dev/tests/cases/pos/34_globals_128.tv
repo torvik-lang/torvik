@@ -1,0 +1,11 @@
+fixed g_big: i128 = 200000000000000000000;
+set g_umax: u128 = 340282366920938463463374607431768211455;
+fixed g_min: i128 = -170141183460469231731687303715884105728;
+
+df main() -> void {
+    echo!(g_big);
+    echo!(g_umax);
+    echo!(g_min);
+    set x: i128 = g_big;
+    echo!(x);
+}

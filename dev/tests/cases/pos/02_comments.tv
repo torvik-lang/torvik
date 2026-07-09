@@ -1,0 +1,11 @@
+// line comment
+df main() -> void {
+    set x: i64 = 1; // trailing
+    #- block -#
+    set y: i64 = #- inline -# 5;
+    #-
+      multi
+      #- nested -#
+    -#
+    echo!(x + y);
+}

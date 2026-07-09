@@ -1,7 +1,20 @@
 # Torvik Roadmap
 
 
-## v1.1.2 — current release
+## v1.1.3 — current release
+
+Stability release: a full compiler-wide audit for silent wrong answers, silent no-ops, and
+compile-then-crash holes, backed by a new 78-case end-to-end test suite (in `/dev/tests`,
+with Linux and Windows runners) verified on both platforms. Highlights: leading unary minus
+precedence corrected everywhere; `fixed` immutability enforced for locals **and** globals;
+return types checked; weave stages arity- **and** type-checked; `bag<T>` reference counting
+repaired (a use-after-free that crashed on Windows); large-integer printing fixed on Windows
+(LLP64 `%ld` truncation); `readkey()` honors redirected stdin on Windows; `apply std;`
+repaired on every Windows install; full-range `i128`/`u128` global literals; `~` bitwise NOT,
+`upper()`/`lower()` calls, and the zero-arg console builtins implemented as documented; plus
+the additive `readkey_str()`. No breaking changes.
+
+## v1.1.2
 
 Patch release on top of v1.1.1. `rune update` robustness (clean HTTP 429 handling, a
 version-pinning fix so pinned installs report the correct version, and automatic cleanup of

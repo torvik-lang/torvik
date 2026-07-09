@@ -1,0 +1,35 @@
+df main() -> void {
+    set count: i64 = args();
+    check count >= 1 { echo!("args ok"); }
+    fixed prog: str = args_get(0);
+    check len(prog) > 0 { echo!("args_get ok"); }
+    fixed dir: str = cwd();
+    check len(dir) > 0 { echo!("cwd ok"); }
+    fixed home: str = sys_home_dir();
+    check len(home) > 0 { echo!("home ok"); }
+    fixed osn: str = sys_os_name();
+    check osn == "linux" || osn == "windows" || osn == "macos" { echo!("os ok"); }
+    fixed osv: str = sys_os_version();
+    check len(osv) > 0 { echo!("osver ok"); }
+    fixed arch: str = sys_arch();
+    check len(arch) > 0 { echo!("arch ok"); }
+    fixed hn: str = sys_hostname();
+    check len(hn) > 0 { echo!("host ok"); }
+    fixed un: str = sys_username();
+    check len(un) > 0 { echo!("user ok"); }
+    check sys_cpu_count() >= 1 { echo!("cpu ok"); }
+    check sys_mem_total() > 0 { echo!("memtotal ok"); }
+    check sys_mem_free() > 0 { echo!("memfree ok"); }
+    check sys_pid() > 0 { echo!("pid ok"); }
+    set start: i64 = time_ms();
+    check start > 0 { echo!("time_ms ok"); }
+    sleep(30);
+    set later: i64 = time_ms();
+    check later - start >= 20 { echo!("sleep ok"); }
+    check len(time_str()) > 0 { echo!("time_str ok"); }
+    check len(date_str()) > 0 { echo!("date_str ok"); }
+    check len(datetime_str()) > 0 { echo!("datetime ok"); }
+    check time_now() > 0 { echo!("time_now ok"); }
+    fixed env_home: str = readenv("HOME");
+    check len(env_home) > 0 || sys_os_name() == "windows" { echo!("readenv ok"); }
+}

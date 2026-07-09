@@ -1,0 +1,25 @@
+df dbl(n: i64) -> i64 { return n * 2; }
+df main() -> void {
+    fixed name: str = "Odin";
+    set count: i64 = 3;
+    fixed ratio: f64 = 0.5;
+    fixed ok: bool = true;
+    echo!("Hello {name}!");
+    echo!("{name} has {count} runes");
+    echo!("ratio={ratio}, ok={ok}");
+    echo!("brace {{literal}}");
+    set price: i64 = 4;
+    set qty: i64 = 5;
+    echo!("total: {price * qty}");
+    echo!("doubled: {dbl(count)}");
+    set runes: list<i64> = list_new();
+    push(runes, 9);
+    echo!("first: {runes[0]}");
+    echo!("{count} and {count + 1}");
+    fixed line: str = fmt("Hi {name}, n={count}");
+    echo!(line);
+    fixed label: str = fmt("{} + {} = {}", 2, 3, 5);
+    echo!(label);
+    fixed ex: str = fmt("sum={price + qty}");
+    echo!(ex);
+}

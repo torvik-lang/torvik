@@ -660,7 +660,7 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
         // nested double-quote escaping inside -Command.
         fixed guarded: str = str_concat(setver, "try { $s = (iwr -useb 'https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1').Content } catch { if ($_.Exception.Response.StatusCode.value__ -eq 429) { Write-Host 'error: GitHub is rate-limiting downloads right now (HTTP 429 Too Many Requests).' -ForegroundColor Red; Write-Host '  This is temporary - wait a few minutes and run rune update again.' -ForegroundColor Red } else { Write-Host 'error: could not download the installer (network or GitHub error). Try again shortly.' -ForegroundColor Red }; exit 1 }; Invoke-Expression $s");
         fixed pscmd: str = str_concat(str_concat("powershell -NoProfile -ExecutionPolicy Bypass -Command \"", guarded), "\"");
-        fixed rc: i64 = sys_run(pscmd);
+        set rc: i64 = sys_run(pscmd);
         check rc == 0 { echo!("Done. Run 'torvc version' to confirm."); exit(0); }
         echo!("Install failed. If you pinned a version, check it exists at");
         echo!("  https://github.com/torvik-lang/torvik/releases");

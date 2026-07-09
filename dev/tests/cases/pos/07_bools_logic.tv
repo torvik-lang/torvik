@@ -1,0 +1,11 @@
+df main() -> void {
+    fixed ready: bool = true;
+    echo!(ready);
+    set f: bool = false;
+    echo!(f);
+    check 7 > 3 && 2 < 5 { echo!("and ok"); }
+    check 1 > 2 || 3 < 4 { echo!("or ok"); }
+    check !(1 > 2) { echo!("not ok"); }
+    set t: bool = 5 > 1;
+    echo!(t);
+}

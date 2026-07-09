@@ -1,0 +1,30 @@
+df main() -> void {
+    set ages: table<str, i64> = table_new();
+    table_set(ages, "Ivar", 30);
+    echo!(table_get(ages, "Ivar"));
+    echo!(table_has(ages, "Ivar"));
+    echo!(table_has(ages, "Loki"));
+    echo!(table_len(ages));
+    echo!(table_get(ages, "missing"));
+    table_set(ages, "Freya", 25);
+    echo!(table_len(ages));
+    table_del(ages, "Ivar");
+    echo!(table_has(ages, "Ivar"));
+    echo!(table_len(ages));
+    set a2: i64 = table_get(ages, "Freya");
+    echo!(a2 * 2);
+    echo!(table_get(ages, "Freya") * 2);
+    check table_get(ages, "Freya") == 25 { echo!("tget cmp ok"); }
+    set names: table<str, str> = table_new();
+    table_set(names, "k", "valhalla");
+    echo!(table_get(names, "k"));
+    set seen: bag<str> = bag_new();
+    bag_add(seen, "rune");
+    echo!(bag_has(seen, "rune"));
+    echo!(bag_len(seen));
+    bag_add(seen, "axe");
+    echo!(bag_len(seen));
+    bag_remove(seen, "rune");
+    echo!(bag_has(seen, "rune"));
+    echo!(bag_len(seen));
+}

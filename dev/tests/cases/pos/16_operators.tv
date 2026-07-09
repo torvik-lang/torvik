@@ -1,0 +1,23 @@
+df main() -> void {
+    echo!((2 + 3) * 4);
+    echo!(10 - 4 / 2);
+    echo!(7 % 3);
+    echo!(6 & 3);
+    echo!(6 | 3);
+    echo!(6 ^ 3);
+    echo!(1 << 3);
+    echo!(16 >> 2);
+    echo!(~0);
+    echo!(2 + 3 * 4);
+    check 7 > 3 { echo!("gt"); }
+    check 3 >= 3 { echo!("ge"); }
+    check 2 != 3 { echo!("ne"); }
+    check 2 == 2 { echo!("eq"); }
+    check 2 < 3 && 3 < 4 || 1 > 2 { echo!("logic"); }
+    set x: i64 = 10;
+    x += 5; echo!(x);
+    x -= 3; echo!(x);
+    x *= 2; echo!(x);
+    x /= 4; echo!(x);
+    x %= 4; echo!(x);
+}

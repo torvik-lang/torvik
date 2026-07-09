@@ -1,0 +1,12 @@
+df main() -> void {
+    fixed name: str = readln();
+    echo!("Hello, {name}!");
+    fixed n: i64 = readint();
+    echo!(n * 2);
+    fixed f: f64 = readfloat();
+    echo!(f);
+    fixed k: i64 = readkey();
+    echo!(k);
+    fixed ks: str = readkey_str();
+    echo!(ks);
+}
