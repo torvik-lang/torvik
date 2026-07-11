@@ -1,0 +1,13 @@
+df main() -> void {
+    echo!(find("hello world", "world"));
+    echo!(find("hello", "xyz"));
+    echo!(find("hello", "h"));
+    echo!(find("hello", ""));
+    set s: str = "path/to/file";
+    fixed slash: i64 = find(s, "/");
+    echo!(slash);
+    echo!(substr(s, 0, find(s, "/")));
+    check find(s, "/") >= 0 { echo!("has slash"); }
+    echo!(find(s, "/") + 1);
+    check find(s, "zzz") == -1 { echo!("absent is -1"); }
+}

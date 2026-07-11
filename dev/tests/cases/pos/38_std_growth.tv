@@ -1,0 +1,25 @@
+apply std;
+df main() -> void {
+    set xs: list<i64> = list_new();
+    push(xs, 30); push(xs, 10); push(xs, 20);
+    sort(xs);
+    echo!("{xs[0]} {xs[1]} {xs[2]}");
+    reverse_list(xs);
+    echo!("{xs[0]} {xs[1]} {xs[2]}");
+    echo!(index_of(xs, 20));
+    set ss: list<str> = list_new();
+    push(ss, "gamma"); push(ss, "alpha"); push(ss, "beta");
+    sort_str(ss);
+    echo!("{ss[0]} {ss[1]} {ss[2]}");
+    echo!(index_of_str(ss, "beta"));
+    echo!(sign(-9));
+    echo!(isqrt(17));
+    echo!(count_str("abcabcab", "ab"));
+    echo!(reverse_str("torvik"));
+    echo!(capitalize("hello"));
+    echo!(path_base("src/std/path.tv"));
+    echo!(path_dir("src/std/path.tv"));
+    echo!(path_ext("src/std/path.tv"));
+    echo!(path_join("a/b/", "/c.tv"));
+    echo!(path_dir("file.tv"));
+}
