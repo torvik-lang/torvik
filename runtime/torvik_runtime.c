@@ -457,6 +457,14 @@ int torvik_contains(const char *s, const char *sub) {
     return strstr(s, sub) != NULL;
 }
 
+/* find — byte index of the first occurrence of sub in s, or -1 (v1.2.0).
+   An empty sub finds index 0, matching strstr semantics. */
+int64_t torvik_find(const char *s, const char *sub) {
+    const char *hit = strstr(s, sub);
+    if (!hit) return -1;
+    return (int64_t)(hit - s);
+}
+
 /* starts — 1 if s starts with prefix */
 int torvik_starts(const char *s, const char *prefix) {
     return strncmp(s, prefix, strlen(prefix)) == 0;
