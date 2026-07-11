@@ -254,6 +254,12 @@ df i128_binop_ptr(fn: str, a128: str, b128: str, ir: list<str>, ctr: list<i64>) 
 //            scalar (printed numerically) from a string (both surface as "ptr").
 // Returns a string ptr; non-stringifiable types fall through and print as-is.
 df echo_stringify(val: str, ev_ty: str, eff_ty: str, ir: list<str>, ctr: list<i64>) -> str {
+    // v1.2.0: aett-typed values are i64 ordinals - print them numerically.
+    // (One entry-point check covers echo AND interpolation, since every
+    // stringify path funnels through here.)
+    check is_aett_name(eff_ty) == 1 {
+        return echo_stringify(val, ev_ty, "i64", ir, ctr);
+    }
     check eff_ty == "i128" || eff_ty == "u128" {
         fixed lv: str = i128_load_ir(val, ir, ctr);
         fixed vslot: str = make_tmp(ctr);
@@ -415,6 +421,207 @@ df block_terminated(ir: list<str>) -> i64 {
 // pattern, which could report only ONE error and could not point at a line.
 df emit_uerr(ir: list<str>, tok_pos: i64, msg: str) -> void {
     emit(ir, str_concat(str_concat(str_concat("  ; tv.uerr:", int_to_str(tok_pos)), ":"), msg));
+}
+
+// ── v1.2.0: warnings channel ─────────────────────────────────────────────────
+// Warnings ride the same marker mechanism as user errors (`; tv.warn:POS:MSG`
+// comment lines collected after each function) but never fail the build. The
+// torvc --no-warn flag sets warn_suppress before codegen runs.
+set warn_suppress: i64 = 0;
+
+df emit_warn(ir: list<str>, tok_pos: i64, cat: str, msg: str) -> void {
+    emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat("  ; tv.warn:", int_to_str(tok_pos)), ":"), cat), ":"), msg));
+}
+
+df collect_warnings(fn_ir: list<str>, w_pos: list<i64>, w_cat: list<str>, w_msg: list<str>) -> void {
+    set i: i64 = 0;
+    whilst i < len(fn_ir) {
+        fixed line: str = fn_ir[i];
+        check starts(line, "  ; tv.warn:") {
+            fixed rest: str = substr(line, 12, len(line));
+            set ci: i64 = 0;
+            set found_c: i64 = 0;
+            whilst ci < len(rest) && found_c == 0 {
+                check byte_at(rest, ci) == 58 { found_c = 1; } fallback { ci += 1; }
+            }
+            push(w_pos, toint(substr(rest, 0, ci)));
+            fixed r2: str = substr(rest, ci + 1, len(rest));
+            set c2: i64 = 0;
+            set found_c2: i64 = 0;
+            whilst c2 < len(r2) && found_c2 == 0 {
+                check byte_at(r2, c2) == 58 { found_c2 = 1; } fallback { c2 += 1; }
+            }
+            push(w_cat, substr(r2, 0, c2));
+            push(w_msg, substr(r2, c2 + 1, len(r2)));
+        }
+        i += 1;
+    }
+}
+
+// v1.2.0: `!@` warning directives. Scans the raw source (the lexer consumes
+// directives like comments, so the token stream never sees them) skipping
+// string literals, // comments, and nestable #- -# blocks, so a directive
+// inside a string can never trigger. Recognized:
+//   !@NO_WARN;              suppress every warning for this compilation
+//   !@ALLOW[category];      suppress one category (unused_variable,
+//                           unreachable_code, deprecated)
+// A malformed or unknown directive is a LOCATED COMPILE ERROR - a typo'd
+// directive silently doing nothing would be exactly the silent-no-op class
+// Torvik hunts. Returns via out-lists: derr_off/derr_msg for errors; sets
+// suppress[0]=1 for NO_WARN; appends allowed-off categories to allow_cats.
+df scan_warn_directives(source: str, suppress: list<i64>, allow_cats: list<str>, derr_off: list<i64>, derr_msg: list<str>) -> void {
+    fixed n: i64 = len(source);
+    set i: i64 = 0;
+    whilst i < n {
+        fixed c: i64 = byte_at(source, i);
+        // string literal: consume with escape handling
+        check c == 34 {
+            i += 1;
+            whilst i < n && byte_at(source, i) != 34 {
+                check byte_at(source, i) == 92 { i += 1; }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        // line comment
+        check c == 47 && i + 1 < n && byte_at(source, i + 1) == 47 {
+            whilst i < n && byte_at(source, i) != 10 { i += 1; }
+            continue;
+        }
+        // block comment (nestable)
+        check c == 35 && i + 1 < n && byte_at(source, i + 1) == 45 {
+            i += 2;
+            set bd: i64 = 1;
+            whilst i < n && bd > 0 {
+                check byte_at(source, i) == 35 && i + 1 < n && byte_at(source, i + 1) == 45 { bd += 1; i += 2; continue; }
+                check byte_at(source, i) == 45 && i + 1 < n && byte_at(source, i + 1) == 35 { bd -= 1; i += 2; continue; }
+                i += 1;
+            }
+            continue;
+        }
+        check c == 33 && i + 1 < n && byte_at(source, i + 1) == 64 {
+            fixed dstart: i64 = i;
+            i += 2;
+            // collect the directive text up to `;` (same line only)
+            set dend: i64 = i;
+            whilst dend < n && byte_at(source, dend) != 59 && byte_at(source, dend) != 10 { dend += 1; }
+            check dend >= n || byte_at(source, dend) == 10 {
+                push(derr_off, dstart);
+                push(derr_msg, "unterminated warning directive - a `!@...` directive must end with `;` on the same line");
+                i = dend;
+                continue;
+            }
+            fixed body: str = substr(source, i, dend);
+            i = dend + 1;
+            check line_eq(body, "NO_WARN") == 1 {
+                check len(suppress) > 0 { suppress[0] = 1; }
+                continue;
+            }
+            check starts(body, "ALLOW[") && ends(body, "]") {
+                fixed cat: str = substr(body, 6, len(body) - 1);
+                set cat_ok: i64 = 0;
+                check line_eq(cat, "unused_variable") == 1 { cat_ok = 1; }
+                check line_eq(cat, "unreachable_code") == 1 { cat_ok = 1; }
+                check line_eq(cat, "deprecated") == 1 { cat_ok = 1; }
+                check cat_ok == 1 { push(allow_cats, cat); }
+                check cat_ok == 0 {
+                    push(derr_off, dstart);
+                    push(derr_msg, fmt("unknown warning category '{cat}' in !@ALLOW[...] - known categories: unused_variable, unreachable_code, deprecated"));
+                }
+                continue;
+            }
+            push(derr_off, dstart);
+            push(derr_msg, fmt("unknown warning directive '!@{body};' - known directives: !@NO_WARN; and !@ALLOW[category];"));
+            continue;
+        }
+        i += 1;
+    }
+}
+
+df warn_cat_allowed(cat: str, allow_cats: list<str>) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(allow_cats) {
+        check line_eq(allow_cats[i], cat) == 1 { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+// Deprecation channel: builtins scheduled for removal get an entry here and
+// every call site receives a warning naming the replacement. Empty today -
+// the mechanism ships in v1.2.0 so future deprecations are a one-line change.
+df deprecated_msg(nm: str) -> str {
+    return "";
+}
+
+// Unused locals: declarations drop a `; tv.declpos:NAME:POS` marker; after the
+// function body is compiled, any declared local whose slot is never LOADED
+// (`= load ptr, ptr %NAME_slot,`) gets a warning at its declaration. Loop
+// variables load their slot in the loop machinery and parameters emit no
+// marker, so neither ever warns.
+df warn_unused_locals(fn_ir: list<str>) -> void {
+    set di: i64 = 0;
+    whilst di < len(fn_ir) {
+        fixed line: str = fn_ir[di];
+        check starts(line, "  ; tv.declpos:") {
+            fixed rest: str = substr(line, 15, len(line));
+            set ci: i64 = 0;
+            set found_c: i64 = 0;
+            whilst ci < len(rest) && found_c == 0 {
+                check byte_at(rest, ci) == 58 { found_c = 1; } fallback { ci += 1; }
+            }
+            fixed dname: str = substr(rest, 0, ci);
+            fixed dpos: i64 = toint(substr(rest, ci + 1, len(rest)));
+            // Underscore-prefixed names are deliberate: `fixed _r: i64 = f(x);`
+            // says "I'm calling f for its effect and discarding the result".
+            // They are exempt from the unused warning.
+            check byte_at(dname, 0) == 95 { di += 1; continue; }
+            fixed needle: str = str_concat(str_concat("= load ptr, ptr %", dname), "_slot,");
+            // A slot LOAD is only a real use if its result temp feeds anything
+            // beyond the ARC machinery. Heap-typed slots (str/list/table/...)
+            // are loaded by release-of-old-contents at every store and by the
+            // scope-exit release pass, so a raw load count would never flag
+            // them. Follow each load's temp: a line using it that is not a
+            // retain/release call means the variable is genuinely read.
+            set used: i64 = 0;
+            set li: i64 = 0;
+            whilst li < len(fn_ir) && used == 0 {
+                fixed lline: str = fn_ir[li];
+                check str_contains(lline, needle) {
+                    // temp name = text before " = load" (skip the 2-space indent)
+                    set te: i64 = 2;
+                    whilst te < len(lline) && byte_at(lline, te) != 32 { te += 1; }
+                    fixed ltmp: str = substr(lline, 2, te);
+                    set ui: i64 = 0;
+                    whilst ui < len(fn_ir) && used == 0 {
+                        check ui != li {
+                            fixed uline: str = fn_ir[ui];
+                            set hits: i64 = 0;
+                            check str_contains(uline, str_concat(ltmp, " "))  { hits = 1; }
+                            check str_contains(uline, str_concat(ltmp, ",")) { hits = 1; }
+                            check str_contains(uline, str_concat(ltmp, ")")) { hits = 1; }
+                            // line-final temps: `ret ptr %tN` has no trailing
+                            // character, so the three delimiter matchers miss it.
+                            check ends(uline, ltmp) { hits = 1; }
+                            check hits == 1 {
+                                set arc_only: i64 = 0;
+                                check str_contains(uline, "_release(") { arc_only = 1; }
+                                check str_contains(uline, "_retain(")  { arc_only = 1; }
+                                check arc_only == 0 { used = 1; }
+                            }
+                        }
+                        ui += 1;
+                    }
+                }
+                li += 1;
+            }
+            check used == 0 {
+                emit_warn(fn_ir, dpos, "unused_variable", fmt("unused variable '{dname}' - it is never read. Remove it, or use it."));
+            }
+        }
+        di += 1;
+    }
 }
 
 // POS is the digits before the FIRST colon; everything after it is the message
@@ -643,6 +850,109 @@ df collect_fixed_globals(tokens: list<i64>, allnames: list<str>, out: list<str>)
         check tk == TOK_IDENT || tk == TOK_STRING { an += 1; }
         pos += 1;
     }
+}
+
+// ── v1.2.0: aett - a family of named values ─────────────────────────────────
+// `aett Status { Pending, Active, Closed }` declares named i64 constants
+// (0-based ordinals) with a nominal type name. Variants are accessed as
+// Status::Pending. Declarations are collected here from the raw tokens (the
+// parser skips the blocks); the maps live in globals so the deep expression
+// paths need no signature changes.
+set g_aett_names: list<str> = list_new();    // "Status"
+set g_aett_vlists: list<str> = list_new();   // "Pending Active Closed" (space-joined, parallel)
+set g_aett_keys: list<str> = list_new();     // "Status::Pending"
+set g_aett_ords: list<i64> = list_new();     // 0 (parallel to keys)
+
+df collect_aetts(tokens: list<i64>, allnames: list<str>, err_pos: list<i64>, err_msg: list<str>) -> void {
+    fixed ntok: i64 = len(tokens);
+    set pos: i64 = 0;
+    set an: i64 = 0;
+    set depth: i64 = 0;
+    whilst pos < ntok {
+        fixed tk: i64 = tok_peek(tokens, pos);
+        check tk == PUNCT_LBRACE { depth += 1; }
+        check tk == PUNCT_RBRACE { depth -= 1; }
+        check depth == 0 && tk == KW_AETT {
+            check tok_peek(tokens, pos + 1) != TOK_IDENT || tok_peek(tokens, pos + 2) != PUNCT_LBRACE {
+                push(err_pos, pos);
+                push(err_msg, "malformed aett - expected `aett Name { Variant, Variant, ... }`");
+                pos += 1;
+                continue;
+            }
+            fixed aname: str = allnames[an];
+            check is_aett_name(aname) == 1 {
+                push(err_pos, pos + 1);
+                push(err_msg, fmt("aett '{aname}' is declared twice - each aett needs a unique name."));
+            }
+            an += 1;         // the name
+            pos += 3;        // aett NAME {
+            set vlist: str = "";
+            set ord: i64 = 0;
+            set adone: i64 = 0;
+            whilst pos < ntok && adone == 0 {
+                fixed vt: i64 = tok_peek(tokens, pos);
+                check vt == PUNCT_RBRACE { adone = 1; pos += 1; }
+                check adone == 0 && vt == TOK_IDENT {
+                    fixed vname: str = allnames[an];
+                    fixed vkey: str = str_concat(str_concat(aname, "::"), vname);
+                    check aett_ord_for(vkey) >= 0 {
+                        push(err_pos, pos);
+                        push(err_msg, fmt("variant '{vname}' appears twice in aett '{aname}'."));
+                    }
+                    push(g_aett_keys, vkey);
+                    push(g_aett_ords, ord);
+                    check ord == 0 { vlist = vname; } fallback { vlist = str_concat(str_concat(vlist, " "), vname); }
+                    ord += 1;
+                    an += 1; pos += 1;
+                    check tok_peek(tokens, pos) == PUNCT_COMMA { pos += 1; }
+                    continue;
+                }
+                check adone == 0 && vt != TOK_IDENT {
+                    push(err_pos, pos);
+                    push(err_msg, fmt("unexpected token in aett '{aname}' - variants are comma-separated names, e.g. `aett {aname} {{ A, B }}`."));
+                    adone = 1;
+                }
+            }
+            check ord == 0 && adone == 1 {
+                push(err_pos, pos - 1);
+                push(err_msg, fmt("aett '{aname}' has no variants - declare at least one, e.g. `aett {aname} {{ A }}`."));
+            }
+            push(g_aett_names, aname);
+            push(g_aett_vlists, vlist);
+            continue;
+        }
+        check tk == TOK_IDENT || tk == TOK_STRING { an += 1; }
+        pos += 1;
+    }
+}
+
+df is_aett_name(nm: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(g_aett_names) {
+        check line_eq(g_aett_names[i], nm) == 1 { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+// Ordinal for "Name::Variant", or -1.
+df aett_ord_for(key: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(g_aett_keys) {
+        check line_eq(g_aett_keys[i], key) == 1 { return g_aett_ords[i]; }
+        i += 1;
+    }
+    return -1;
+}
+
+// Space-joined variant names of an aett, or "".
+df aett_variants_of(nm: str) -> str {
+    set i: i64 = 0;
+    whilst i < len(g_aett_names) {
+        check line_eq(g_aett_names[i], nm) == 1 { return g_aett_vlists[i]; }
+        i += 1;
+    }
+    return "";
 }
 
 // Membership test over the collected fixed-global names.
@@ -2281,8 +2591,38 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         fixed nm_pos: i64 = p;
         an += 1; p += 1;
 
+        // v1.2.0: aett variant access - `Status::Pending` is a named i64
+        // constant (its 0-based ordinal), usable anywhere an integer is.
+        check tok_peek(tokens, p) == PUNCT_COLONCOLON && tok_peek(tokens, p + 1) == TOK_IDENT {
+            fixed avn: str = allnames[an];
+            an += 1; p += 2;
+            fixed akey: str = str_concat(str_concat(nm, "::"), avn);
+            fixed aord: i64 = aett_ord_for(akey);
+            check aord < 0 {
+                check is_aett_name(nm) == 1 {
+                    emit_uerr(ir, nm_pos, fmt("aett '{}' has no variant '{}' - its variants are: {}.", nm, avn, aett_variants_of(nm)));
+                } fallback {
+                    emit_uerr(ir, nm_pos, fmt("'{}' is not an aett - `X::Y` reads variant Y of aett X. Declare it first: `aett {} {{ ... }}`.", nm, nm));
+                }
+            }
+            set aval: i64 = aord;
+            check aval < 0 { aval = 0; }
+            fixed atmp: str = make_tmp(ctr);
+            emit(ir, fmt("  {} = add i64 0, {}", atmp, aval));
+            check suppress_chain == 0 {
+                chain_tail(tokens, strings, allnames, atmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+                return;
+            }
+            push(out_val, atmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64");
+            return;
+        }
+
         check tok_peek(tokens, p) == PUNCT_LPAREN {
             p += 1;
+            // v1.2.0: deprecation channel - builtins listed in deprecated_msg()
+            // warn at every call site (the table is empty today).
+            fixed _depm: str = deprecated_msg(nm);
+            check len(_depm) > 0 { emit_warn(ir, nm_pos, "deprecated", _depm); }
             // Stage 4: capture a lone bare-identifier argument's name (for len dispatch).
             set lone_arg_name: str = "";
             check tok_peek(tokens, p) == TOK_IDENT && tok_peek(tokens, p + 1) == PUNCT_RPAREN {
@@ -2651,6 +2991,12 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_result_ok(ptr "), str_concat(okv, ")")));
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
             }
+            // v1.2.0: err(msg) - the common message-only form, error code 1.
+            // err(code, msg) remains for callers that carry a numeric code.
+            check nm == "err" && len(args) == 1 {
+                emit(ir, str_concat(str_concat("  ", tmp), str_concat(" = call ptr @torvik_result_err(i64 1, ptr ", str_concat(args[0], ")"))));
+                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+            }
             check nm == "err" && len(args) >= 2 {
                 set ec: str = args[0]; set ect: str = "ptr"; check len(args_ty) >= 1 { ect = args_ty[0]; } set eci: str = ec; check ect != "i64" { eci = coerce_i64(ec, ir, ctr); }
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_result_err(i64 "), eci), str_concat(", ptr ", str_concat(args[1], ")"))));
@@ -2833,6 +3179,8 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // (matching char_at). STDLIB.md documents both.
             check nm == "readkey" { fixed rk8: str = make_tmp(ctr); emit(ir, str_concat(str_concat("  ", rk8), " = call i8 @torvik_readkey()")); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = sext i8 "), str_concat(rk8, " to i64"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             check nm == "readkey_str" { fixed rks8: str = make_tmp(ctr); emit(ir, str_concat(str_concat("  ", rks8), " = call i8 @torvik_readkey()")); fixed rks64: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rks64), " = sext i8 "), str_concat(rks8, " to i64"))); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_byte_str(i64 "), str_concat(rks64, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            // v1.2.0: find(s, sub) - byte index of the first occurrence, -1 if absent.
+            check nm == "find" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_find(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             check nm == "contains" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_contains(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed ctb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ctb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, ctb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             check nm == "readbool" { set rbp0: str = ""; check len(args) >= 1 { rbp0 = args[0]; } fallback { rbp0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_readbool(ptr "), str_concat(rbp0, ")"))); fixed rbb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rbb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, rbb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             check nm == "trim" && len(args) >= 1 {
@@ -3636,6 +3984,10 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
     // caller unpacks: s = ret % 100000; an = ret / 100000
     fixed ntok: i64 = len(tokens);
 
+    // v1.2.0: 0 = normal; 1 = previous statement was a terminator (warn on the
+    // next statement); 2 = already warned in this block (stay quiet).
+    set after_term: i64 = 0;
+
     whilst pos < end && pos < ntok && tok_peek(tokens, pos) != TOK_EOF {
         // Memory Stage E: statement boundary marker. inject_temp_cleanup flushes
         // unclaimed producer temps here and strips the marker from final IR.
@@ -3664,6 +4016,25 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             }
         }
         fixed t: i64 = tok_peek(tokens, pos);
+
+        // v1.2.0: unreachable-code warning. If the PREVIOUS statement in this
+        // block was a terminator (return / break / continue / halt / exit),
+        // this statement can never run. Warn once per block and keep compiling.
+        check after_term == 1 && t != KW_RETURN {
+            emit_warn(ir, pos, "unreachable_code", "unreachable code - this statement follows a return/break/continue/halt/exit and can never run");
+            after_term = 2;
+        }
+        // A `return` in unreachable position is exempt: `halt(...); return "";`
+        // is the sanctioned idiom for satisfying the all-paths-return check
+        // after a terminating call. Statements after THAT return still warn.
+        check after_term != 2 {
+            after_term = 0;
+            check t == KW_RETURN || t == KW_BREAK || t == KW_CONTINUE { after_term = 1; }
+            check t == TOK_IDENT && tok_peek(tokens, pos + 1) == PUNCT_LPAREN {
+                fixed _tsn: str = allnames[an];
+                check line_eq(_tsn, "halt") == 1 || line_eq(_tsn, "exit") == 1 { after_term = 1; }
+            }
+        }
 
         // fixed/set NAME: TYPE = EXPR;
         check t == KW_FIXED || t == KW_SET {
@@ -3740,7 +4111,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             // An annotation that names no known type (e.g. `set x: zorp = 5`) would
             // otherwise be recorded and reach codegen, producing broken IR or a
             // crash. Reject cleanly; caret on the annotation. Recover to the ';'.
-            check had_colon == 1 && len(vann) > 0 && is_value_type(vann) == 0 {
+            check had_colon == 1 && len(vann) > 0 && is_value_type(vann) == 0 && is_aett_name(vann) == 0 {
                 push(err_pos, ann_start);
                 push(err_msg, str_concat(str_concat("unknown type '", vann), "' - expected i64, f64, str, bool, or a list/bag/table/result type"));
                 whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
@@ -3784,6 +4155,10 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             // `fixed` binding is a clean compile error (previously unenforced -
             // `set x = 1; x = 2;` compiled and mutated silently).
             check len(vname) > 0 && t == KW_FIXED { push(var_names, str_concat("@fixed@", vname)); push(var_types, "1"); }
+            // v1.2.0: declaration marker for the unused-variable warning pass.
+            check len(vname) > 0 {
+                emit(ir, str_concat(str_concat(str_concat("  ; tv.declpos:", vname), ":"), int_to_str(decl_pos)));
+            }
             set had_eq: i64 = 0;
             check tok_peek(tokens, pos) == OP_EQ { pos += 1; had_eq = 1; }
             // Reject an empty right-hand side: `fixed x: T = ;` — the '=' is present
@@ -4148,6 +4523,181 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
         }
 
         // check EXPR { BODY } fallback { BODY }
+        // v1.2.0: when - pattern matching over an aett (or integers).
+        //   when s { Status::A => stmt; Status::B => { ... } fallback => stmt; }
+        // Aett scrutinee without a fallback must cover every variant (compile
+        // error listing the missing ones). Non-aett scrutinee requires fallback.
+        check t == KW_WHEN {
+            fixed when_pos: i64 = pos;
+            pos += 1;
+            // Aett detection: a bare-variable scrutinee's declared type, or a
+            // direct Name::Variant expression's aett name.
+            set when_aett: str = "";
+            check tok_peek(tokens, pos) == TOK_IDENT {
+                fixed _wsn: str = allnames[an];
+                check tok_peek(tokens, pos + 1) == PUNCT_LBRACE {
+                    check is_aett_name(lookup_var_type(_wsn, var_names, var_types)) == 1 { when_aett = lookup_var_type(_wsn, var_names, var_types); }
+                }
+                check tok_peek(tokens, pos + 1) == PUNCT_COLONCOLON && is_aett_name(_wsn) == 1 { when_aett = _wsn; }
+            }
+            set wv: list<str> = list_new();
+            set wp: list<i64> = list_new();
+            set ws: list<i64> = list_new();
+            set ws_ai: list<i64> = list_new();
+            set wv_ty: list<str> = list_new();
+            compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, wv, wp, ws, ws_ai, wv_ty, var_names, var_types);
+            check len(wp) > 0 { pos = wp[0]; }
+            check len(ws) > 0 { s = ws[0]; }
+            check len(ws_ai) > 0 { an = ws_ai[0]; }
+            set wsc: str = "%undef_when"; check len(wv) > 0 { wsc = wv[0]; }
+            fixed wsc_i64: str = coerce_i64(wsc, ir, ctr);
+            check tok_peek(tokens, pos) != PUNCT_LBRACE {
+                push(err_pos, when_pos);
+                push(err_msg, "expected `{` after the when scrutinee - `when value { pattern => ...; }`");
+            }
+            pos += 1;
+            fixed wnum: i64 = lctr[0];
+            lctr[0] = wnum + 1;
+            fixed wend: str = str_concat("wend", int_to_str(wnum));
+            set warm: i64 = 0;
+            set saw_fallback: i64 = 0;
+            set covered: str = "";
+            set all_term: i64 = 1;
+            emit(ir, str_concat(str_concat("  br label %wchk", int_to_str(wnum)), "_0"));
+            whilst pos < end && tok_peek(tokens, pos) != PUNCT_RBRACE && tok_peek(tokens, pos) != TOK_EOF {
+                fixed chk_lbl: str = str_concat(str_concat(str_concat("wchk", int_to_str(wnum)), "_"), int_to_str(warm));
+                fixed body_lbl: str = str_concat(str_concat(str_concat("wbody", int_to_str(wnum)), "_"), int_to_str(warm));
+                fixed next_lbl: str = str_concat(str_concat(str_concat("wchk", int_to_str(wnum)), "_"), int_to_str(warm + 1));
+                emit(ir, str_concat(chk_lbl, ":"));
+                fixed pt: i64 = tok_peek(tokens, pos);
+                check saw_fallback == 1 {
+                    push(err_pos, pos);
+                    push(err_msg, "the fallback arm must be the last arm of a when");
+                }
+                check pt == KW_FALLBACK {
+                    saw_fallback = 1;
+                    pos += 1;
+                    emit(ir, str_concat("  br label %", body_lbl));
+                }
+                check pt == TOK_IDENT {
+                    fixed pan: str = allnames[an];
+                    an += 1; pos += 1;
+                    check tok_peek(tokens, pos) != PUNCT_COLONCOLON || tok_peek(tokens, pos + 1) != TOK_IDENT {
+                        push(err_pos, pos - 1);
+                        push(err_msg, "a when pattern is an aett variant (Name::Variant), an integer literal, or `fallback`");
+                    }
+                    set pvn: str = "";
+                    check tok_peek(tokens, pos) == PUNCT_COLONCOLON && tok_peek(tokens, pos + 1) == TOK_IDENT {
+                        pvn = allnames[an];
+                        an += 1; pos += 2;
+                    }
+                    check len(when_aett) > 0 && line_eq(pan, when_aett) == 0 {
+                        push(err_pos, pos - 2);
+                        push(err_msg, fmt("this when matches over aett '{}', but the pattern names aett '{}'.", when_aett, pan));
+                    }
+                    fixed pkey: str = str_concat(str_concat(pan, "::"), pvn);
+                    fixed pord: i64 = aett_ord_for(pkey);
+                    check pord < 0 && is_aett_name(pan) == 1 {
+                        push(err_pos, pos - 1);
+                        push(err_msg, fmt("aett '{}' has no variant '{}' - its variants are: {}.", pan, pvn, aett_variants_of(pan)));
+                    }
+                    check pord < 0 && is_aett_name(pan) == 0 {
+                        push(err_pos, pos - 2);
+                        push(err_msg, fmt("'{}' is not an aett - a when pattern is Name::Variant, an integer literal, or `fallback`.", pan));
+                    }
+                    check len(covered) == 0 { covered = pvn; } fallback { covered = str_concat(str_concat(covered, " "), pvn); }
+                    set wpval: i64 = pord; check wpval < 0 { wpval = 0; }
+                    fixed pc: str = make_tmp(ctr);
+                    emit(ir, fmt("  {} = icmp eq i64 {}, {}", pc, wsc_i64, wpval));
+                    emit(ir, fmt("  br i1 {}, label %{}, label %{}", pc, body_lbl, next_lbl));
+                }
+                set is_int_pat: i64 = 0;
+                check pt == TOK_INT { is_int_pat = 1; }
+                check pt == OP_MINUS && tok_peek(tokens, pos + 1) == TOK_INT { is_int_pat = 1; }
+                check is_int_pat == 1 {
+                    set ilit: str = "";
+                    check pt == OP_MINUS { pos += 1; ilit = "-"; }
+                    ilit = str_concat(ilit, strings[s]);
+                    s += 1; pos += 1;
+                    fixed pc2: str = make_tmp(ctr);
+                    emit(ir, fmt("  {} = icmp eq i64 {}, {}", pc2, wsc_i64, ilit));
+                    emit(ir, fmt("  br i1 {}, label %{}, label %{}", pc2, body_lbl, next_lbl));
+                }
+                check pt != KW_FALLBACK && pt != TOK_IDENT && pt != TOK_INT && pt != OP_MINUS {
+                    push(err_pos, pos);
+                    push(err_msg, "a when pattern is an aett variant (Name::Variant), an integer literal, or `fallback`");
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) != OP_FATARROW {
+                    push(err_pos, pos);
+                    push(err_msg, "expected `=>` after the when pattern");
+                }
+                check tok_peek(tokens, pos) == OP_FATARROW { pos += 1; }
+                emit(ir, str_concat(body_lbl, ":"));
+                check tok_peek(tokens, pos) == PUNCT_LBRACE {
+                    pos += 1;
+                    fixed abe: i64 = skip_to_close_brace(tokens, pos);
+                    {
+                        fixed cs_ret: i64 = compile_stmts(tokens, strings, allnames, pos, abe - 1, s, an, ir, ctr, gvals, gnames, lctr, fn_ret_type, var_names, var_types, global_names, err_pos, err_msg);
+                        s = cs_ret % 100000;
+                        an = cs_ret / 100000;
+                    }
+                    pos = abe;
+                } fallback {
+                    // single-statement arm: compile to the terminating `;`
+                    set ase: i64 = pos;
+                    whilst ase < end && tok_peek(tokens, ase) != PUNCT_SEMI && tok_peek(tokens, ase) != PUNCT_LBRACE && tok_peek(tokens, ase) != TOK_EOF { ase += 1; }
+                    check tok_peek(tokens, ase) != PUNCT_SEMI {
+                        push(err_pos, pos);
+                        push(err_msg, "a when arm is a single statement ending in `;`, or a block - use `=> { ... }` for multiple statements");
+                    }
+                    {
+                        fixed cs_ret: i64 = compile_stmts(tokens, strings, allnames, pos, ase + 1, s, an, ir, ctr, gvals, gnames, lctr, fn_ret_type, var_names, var_types, global_names, err_pos, err_msg);
+                        s = cs_ret % 100000;
+                        an = cs_ret / 100000;
+                    }
+                    pos = ase + 1;
+                }
+                check block_terminated(ir) == 0 { all_term = 0; }
+                emit(ir, str_concat("  br label %", wend));
+                warm += 1;
+            }
+            check tok_peek(tokens, pos) == PUNCT_RBRACE { pos += 1; }
+            // the final chk label: nothing matched - fall through to the end
+            emit(ir, str_concat(str_concat(str_concat("wchk", int_to_str(wnum)), "_"), str_concat(int_to_str(warm), ":")));
+            emit(ir, str_concat("  br label %", wend));
+            check saw_fallback == 0 && all_term == 1 { all_term = 0; }
+            // Exhaustiveness
+            check len(when_aett) > 0 && saw_fallback == 0 {
+                fixed wants: list<str> = split_words(aett_variants_of(when_aett));
+                fixed haves: list<str> = split_words(covered);
+                set missing: str = "";
+                set wvi: i64 = 0;
+                whilst wvi < len(wants) {
+                    set found_v: i64 = 0;
+                    set hj: i64 = 0;
+                    whilst hj < len(haves) {
+                        check line_eq(haves[hj], wants[wvi]) == 1 { found_v = 1; }
+                        hj += 1;
+                    }
+                    check found_v == 0 {
+                        check len(missing) == 0 { missing = wants[wvi]; } fallback { missing = str_concat(str_concat(missing, ", "), wants[wvi]); }
+                    }
+                    wvi += 1;
+                }
+                check len(missing) > 0 {
+                    push(err_pos, when_pos);
+                    push(err_msg, fmt("this when over aett '{}' is missing variants: {} - add arms for them, or a `fallback =>` arm.", when_aett, missing));
+                }
+            }
+            check len(when_aett) == 0 && saw_fallback == 0 {
+                push(err_pos, when_pos);
+                push(err_msg, "a when over a non-aett value needs a `fallback =>` arm - the compiler can't prove the patterns cover every value.");
+            }
+            emit(ir, str_concat(wend, ":"));
+            continue;
+        }
+
         check t == KW_CHECK {
             pos += 1;
             set cv: list<str> = list_new();
@@ -4592,7 +5142,6 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     emit_uerr(ir, snm_pos, fmt("'{nm}' is fixed and cannot be reassigned - declare it with 'set' if it needs to change."));
                 }
                 fixed is_compound_asg: bool = asg_op != OP_EQ;
-                fixed is_plus_asg: bool = asg_op == OP_PLUSEQ;
                 pos += 1;
                 // Reject an out-of-range literal assigned to a sized var (plain '='
                 // only; compound ops are arithmetic and wrap). 'unsafe' opts in.
@@ -5033,7 +5582,6 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     check redecl_conflict(evar, celem, var_names, var_types) == 1 {
                         emit_uerr(ir, pos - 2, fmt("loop variable '{}' is already declared with type {} in this function - an each loop over this list binds it as {}; use a different name.", evar, lookup_var_type(evar, var_names, var_types), celem));
                     }
-                    set cel_is_128: i64 = 0; check line_eq(celem, "i128") == 1 || line_eq(celem, "u128") == 1 { cel_is_128 = 1; }
                     set cel_is_str: i64 = 0; check line_eq(celem, "str") == 1 { cel_is_str = 1; }
                     // load the collection ptr once
                     fixed ccol: str = make_tmp(ctr);
@@ -5644,6 +6192,30 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     // the IR to clang. Lets multiple located errors surface at once.
     set err_pos: list<i64> = list_new();
     set err_msg: list<str> = list_new();
+    // v1.2.0: warnings collected across all functions, rendered after a
+    // successful (error-free) compile unless --no-warn set warn_suppress.
+    set warn_pos: list<i64> = list_new();
+    set warn_cat: list<str> = list_new();
+    set warn_msg: list<str> = list_new();
+    // v1.2.0: file-level `!@` warning directives - scanned from the raw source.
+    fixed warn_dsup: list<i64> = list_new(); push(warn_dsup, 0);
+    fixed warn_allow: list<str> = list_new();
+    fixed derr_off: list<i64> = list_new();
+    fixed derr_msg: list<str> = list_new();
+    scan_warn_directives(source, warn_dsup, warn_allow, derr_off, derr_msg);
+    // v1.2.0: collect aett declarations before any function compiles.
+    collect_aetts(tokens, allnames, err_pos, err_msg);
+    check len(derr_off) > 0 {
+        set de: i64 = 0;
+        whilst de < len(derr_off) {
+            render_source_error(source, srcfile, derr_off[de], derr_msg[de]);
+            echo!("");
+            de += 1;
+        }
+        echo!(fmt("{} error(s) found.", len(derr_off)));
+        exit(1);
+    }
+    check warn_dsup[0] == 1 { warn_suppress = 1; }
 
     // Parse
     set fn_names:       list<str> = list_new();
@@ -5689,6 +6261,7 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         fixed rt: str = fn_ret_types[rti];
         set rt_ok: i64 = 0;
         check is_value_type(rt) == 1 { rt_ok = 1; }
+        check is_aett_name(rt) == 1 { rt_ok = 1; }   // v1.2.0: aett return types
         check line_eq(rt, "void") == 1 { rt_ok = 1; }
         set rt_caret: i64 = fn_body_start[rti] - 1;
         check rt_caret < 0 { rt_caret = 0; }
@@ -5704,7 +6277,7 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         set pvi: i64 = 0;
         whilst pvi < len(ptypes_v) {
             fixed pvt: str = ptypes_v[pvi];
-            check is_value_type(pvt) == 0 {
+            check is_value_type(pvt) == 0 && is_aett_name(pvt) == 0 {
                 push(err_pos, rt_caret);
                 push(err_msg, str_concat(str_concat("unknown parameter type '", pvt), "' - expected i64, f64, str, bool, or a list/bag/table/result type"));
             }
@@ -5920,6 +6493,7 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare i64 @torvik_char_at(ptr, i64)");
     emit(ir, "declare ptr @torvik_char_str(ptr, i64)");
     emit(ir, "declare ptr @torvik_byte_str(i64)");
+    emit(ir, "declare i64 @torvik_find(ptr, ptr)");
     emit(ir, "declare i32 @torvik_ends(ptr, ptr)");
     emit(ir, "declare i32 @torvik_starts(ptr, ptr)");
     emit(ir, "@torvik_argc = internal global i64 0, align 8");
@@ -6007,7 +6581,7 @@ whilst fi < len(fn_names) {
             sig_params = str_concat(sig_params, str_concat("ptr %", pnames[pi]));
             pi += 1;
         }
-        fixed fn_llret: str = "ptr"; set fn_ret_raw: str = "void"; check fi < len(fn_ret_types) { fn_ret_raw = fn_ret_types[fi]; }
+        fixed fn_llret: str = "ptr";
         emit(fn_ir, str_concat(str_concat(str_concat(str_concat("define ", fn_llret), str_concat(" @", irname)), str_concat("(", str_concat(sig_params, ") {"))), ""));
         emit(fn_ir, "entry:");
         // ARC Stage A: parse param types BEFORE the slot-store loop so list-typed
@@ -6220,6 +6794,10 @@ whilst fi < len(fn_names) {
             collect_undef_fns(fn_ir, undef_seen, err_pos, err_msg);
             collect_undef_vars(fn_ir, fn_names, undefvar_seen, err_pos, err_msg);
             collect_user_errors(fn_ir, err_pos, err_msg);
+            // v1.2.0: warnings - append unused-local warnings, then collect all
+            // tv.warn markers this function produced.
+            warn_unused_locals(fn_ir);
+            collect_warnings(fn_ir, warn_pos, warn_cat, warn_msg);
             // Non-void functions must return on every path. If the body can reach its
             // end without a terminator (ret/br/unreachable), the LLVM block is
             // unterminated — previously an internal TVC-5002 at the closing '}'. Report
@@ -6292,6 +6870,21 @@ whilst fi < len(fn_names) {
     // ── Render accumulated compile errors (line+caret) and abort before clang ──
     // The IR on disk is irrelevant once we exit(1) here — torvc_main only invokes
     // clang after codegen_tokens returns, so partial IR is never compiled.
+    // v1.2.0: render warnings FIRST (never fatal) - when errors follow, the
+    // warning often explains them (e.g. "unreachable code" right before a
+    // "must return a value" error caused by dead statements after a return).
+    set warn_shown: i64 = 0;
+    check warn_suppress == 0 && len(warn_pos) > 0 {
+        set cw: i64 = 0;
+        whilst cw < len(warn_pos) {
+            check warn_cat_allowed(warn_cat[cw], warn_allow) == 0 {
+                render_source_warning(source, srcfile, offsets[warn_pos[cw]], warn_msg[cw]);
+                echo!("");
+                warn_shown += 1;
+            }
+            cw += 1;
+        }
+    }
     check len(err_pos) > 0 {
         set ce: i64 = 0;
         whilst ce < len(err_pos) {
@@ -6301,5 +6894,8 @@ whilst fi < len(fn_names) {
         }
         echo!(fmt("{} error(s) found.", len(err_pos)));
         exit(1);
+    }
+    check warn_suppress == 0 && warn_shown > 0 {
+        echo!(fmt("{} warning(s).", warn_shown));
     }
 }
