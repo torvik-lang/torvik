@@ -1,5 +1,74 @@
 # Changelog
 
+## [1.2.0]
+
+A language-ergonomics and tooling release.
+
+### Added
+
+- **`aett` — a family of named values.** Torvik's enumeration, named for the *ættir*
+  (the families the runes of the futhark are grouped into): `aett Status { Pending,
+  Active, Closed }` at the top level, variants accessed as `Status::Pending`. Variants
+  are i64 ordinals (0-based, declaration order) — they print, compare, store in lists,
+  and pass to functions like integers — while the aett name serves as a type annotation
+  for variables, parameters, and return types, and `typeof` reports it. Duplicate
+  aetts/variants, empty aetts, unknown variants, and `X::Y` on a non-aett are all clean
+  located errors.
+- **`when` — pattern matching.** `when value { pattern => statement-or-block; ...;
+  fallback => ...; }` with `=>` arms. Patterns are aett variants and integer literals
+  (negatives included); `fallback` is the default arm and must be last. An aett-typed
+  scrutinee without a `fallback` is checked for **exhaustiveness** — missing variants
+  are a compile error naming exactly what's uncovered, so adding a variant later
+  surfaces every `when` that needs updating. Non-aett scrutinees require a `fallback`.
+  Matching over the wrong aett is a clean error.
+- **Compile warnings system.** The compiler now warns (never fails) on code that is
+  legal but probably unintended, with the same line-and-caret rendering as errors:
+  **unused variables** (including write-only bindings; underscore-prefixed names like
+  `_r` are exempt as deliberate discards; loop variables and parameters never flag),
+  **unreachable code** (statements after `return`/`break`/`continue`/`halt`/`exit`,
+  with the `halt(...); return X;` all-paths-return idiom exempt), and a **deprecation
+  channel** (builtins scheduled for removal warn at each call site — empty today).
+  Warnings render before errors so an "unreachable code" note can explain a
+  "must return a value" error. New `torvc --no-warn` flag; `-q` implies it.
+  **File-level `!@` directives**: `!@NO_WARN;` suppresses everything for the
+  compilation; `!@ALLOW[category];` suppresses one category and stacks. Typo'd
+  directives and unknown categories are clean located compile errors. Directives
+  inside string literals are inert.
+  Enabling the system on the compiler itself found and removed four dead variables
+  in torvc and rune.
+- **Result types completed.** `ok(value)` and `err(msg)` / `err(code, msg)`
+  constructors mean user functions can now return `result<T>` (`i64`/`str`/`f64`),
+  closing the loop with the existing consumers (`is_ok`, `is_err`, `unwrap`,
+  `unwrap_or`, `err_msg`, `err_code`, `try_readfile`, `try_toint`, `try_tofloat`).
+  Documented in GUIDE.md and STDLIB.md. ASAN-clean.
+- **`find(s, sub)`** — byte index of the first occurrence of a substring, `-1` when
+  absent. The companion `contains` always told you *whether*; `find` tells you *where*.
+- **Version-string-looking literals get a real error.** `0.1.0` is not a number (a
+  float has a single decimal point), but it previously produced a confusing cascade of
+  parse errors. It's now one clean located error suggesting the fix: quote it.
+- **`rune uninstall` now removes itself on Windows.** Windows locks a running
+  program's file, so rune.exe couldn't delete itself the way the Linux uninstall
+  does — `bin\rune.exe` (and thus `bin\`) was left behind. The uninstall now
+  schedules the final sweep: a small batch in `%TEMP%` waits for rune to exit,
+  removes the remainder of `~/.torvik`, and deletes itself.
+- **Windows `.tv` file-type & icon integration.** The Windows installer now
+  registers the `.tv` extension with a friendly type name and the Torvik file
+  icon (per-user `HKCU` keys, no admin needed; no open-command is registered —
+  source files belong to your editor). `rune uninstall` removes the keys.
+- **Standard library grown (std v1.1.0).** New module **`std::path`** (`path_base`,
+  `path_dir`, `path_ext`, `path_join` — `/` and `\` both recognized on input);
+  **`std::list`** gains in-place `sort` / `sort_str` (stable insertion sort),
+  `reverse_list`, `index_of`, `index_of_str`; **`std::math`** gains `sign` and `isqrt`
+  (Newton's method, halts on negative input); **`std::strings`** gains `count_str`,
+  `reverse_str`, and `capitalize`.
+- **The standard library is now meaningfully versioned.** std carries its own semver
+  (the `std` line in VERSION): additive growth bumps its minor, breaking changes bump
+  its major — decoupled from the compiler's version. `torvc --version` and
+  `rune version` report it, and a project can require a minimum with `std = "x.y.z"`
+  in `torvik.rune` — a too-old installation is a clean build error pointing at
+  `rune update`. This release demonstrates the policy: std moves 1.0.0 → 1.1.0
+  while remaining fully backward compatible.
+
 ## [1.1.3] — 2026-07
 
 Stability release: a full compiler-wide sweep for silent wrong answers, silent
