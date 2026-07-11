@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# run_tests.sh - Torvik v1.1.x end-to-end test suite (Linux).
+# run_tests.sh - Torvik v1.2.x end-to-end test suite (Linux).
 # Usage: sh run_tests.sh [path-to-torvc] [path-to-rune]
 #   Defaults to `torvc` / `rune` on PATH.
 # All work happens in ./tv-test-work (NOT /tmp - safe for hardened noexec /tmp).
@@ -188,6 +188,21 @@ set -e
 ./build/fapp | grep -qi "hello"
 EOF
 
+# std version gate
+d="$WORK/rune_std_gate"; mkdir -p "$d"; cd "$d"
+"$RUNE" new gproj > /dev/null 2>&1
+cd gproj
+printf 'std         = "9.0.0"\n' >> torvik.rune
+"$RUNE" build > g1.log 2>&1
+r1=$?
+sed 's/std         = "9.0.0"/std         = "0.1.0"/' torvik.rune > t.rune && mv t.rune torvik.rune
+"$RUNE" build > g2.log 2>&1
+r2=$?
+if [ $r1 = 1 ] && grep -q "requires standard library" g1.log && [ $r2 = 0 ]; then
+    PASS=$((PASS+1)); note "ok    rune/std_version_gate"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES rune/std_version_gate"; note "FAIL  rune/std_version_gate"; fi
+cd "$WORK"
+
 # ---------- torvc flag cases ----------
 note ""
 note "== TORVC FLAG CASES =="
@@ -222,6 +237,67 @@ rc=$?
 if [ "$rc" = "1" ] && ! grep -q "TVC-" m.log; then
     PASS=$((PASS+1)); note "ok    flags/missing_source"
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES flags/missing_source"; note "FAIL  flags/missing_source (exit=$rc)"; fi
+
+# ---------- warning cases ----------
+note ""
+note "== WARNING CASES =="
+d="$WORK/warns"; mkdir -p "$d"; cd "$d"
+cat > warny.tv <<'TVEOF'
+df main() -> void {
+    set unused: i64 = 1;
+    echo!("ran");
+    return;
+    echo!("dead");
+}
+TVEOF
+
+"$TORVC" warny.tv -o wy > w1.log 2>&1
+if [ $? = 0 ] && grep -q "warning:" w1.log && grep -q "unused variable" w1.log && grep -q "unreachable code" w1.log && [ "$(./wy)" = "ran" ]; then
+    PASS=$((PASS+1)); note "ok    warns/emitted_nonfatal"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/emitted_nonfatal"; note "FAIL  warns/emitted_nonfatal"; fi
+
+"$TORVC" warny.tv -o wy2 --no-warn > w2.log 2>&1
+if [ $? = 0 ] && ! grep -q "warning:" w2.log; then
+    PASS=$((PASS+1)); note "ok    warns/no_warn_flag"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/no_warn_flag"; note "FAIL  warns/no_warn_flag"; fi
+
+"$TORVC" warny.tv -o wy3 -q > w3.log 2>&1
+if [ $? = 0 ] && ! grep -q "warning:" w3.log; then
+    PASS=$((PASS+1)); note "ok    warns/quiet_suppresses"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/quiet_suppresses"; note "FAIL  warns/quiet_suppresses"; fi
+
+printf 'df main() -> void {\n    fixed _ignored: i64 = 5;\n    echo!("clean");\n}\n' > uscore.tv
+"$TORVC" uscore.tv -o us > w4.log 2>&1
+if [ $? = 0 ] && ! grep -q "warning:" w4.log; then
+    PASS=$((PASS+1)); note "ok    warns/underscore_exempt"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/underscore_exempt"; note "FAIL  warns/underscore_exempt"; fi
+
+# directive cases
+cat > direc.tv <<'TVEOF'
+!@ALLOW[unused_variable];
+df main() -> void {
+    set unused: i64 = 1;
+    echo!("ran");
+    return;
+    echo!("dead");
+}
+TVEOF
+"$TORVC" direc.tv -o dr > w5.log 2>&1
+if [ $? = 0 ] && grep -q "unreachable code" w5.log && ! grep -q "unused variable" w5.log; then
+    PASS=$((PASS+1)); note "ok    warns/allow_category"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/allow_category"; note "FAIL  warns/allow_category"; fi
+
+sed 's/!@ALLOW\[unused_variable\];/!@NO_WARN;/' direc.tv > direc2.tv
+"$TORVC" direc2.tv -o dr2 > w6.log 2>&1
+if [ $? = 0 ] && ! grep -q "warning:" w6.log; then
+    PASS=$((PASS+1)); note "ok    warns/no_warn_directive"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/no_warn_directive"; note "FAIL  warns/no_warn_directive"; fi
+
+printf '!@NO_WRN;\ndf main() -> void { echo!("x"); }\n' > direc3.tv
+"$TORVC" direc3.tv -o dr3 > w7.log 2>&1
+if [ $? = 1 ] && grep -q "unknown warning directive" w7.log; then
+    PASS=$((PASS+1)); note "ok    warns/typo_directive_errors"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/typo_directive_errors"; note "FAIL  warns/typo_directive_errors"; fi
 
 # ---------- summary ----------
 note ""
