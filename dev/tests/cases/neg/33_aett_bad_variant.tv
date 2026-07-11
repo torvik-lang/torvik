@@ -1,0 +1,2 @@
+aett Status { Pending, Active }
+df main() -> void { echo!(Status::Missing); }

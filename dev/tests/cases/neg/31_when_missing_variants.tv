@@ -1,0 +1,7 @@
+aett Status { Pending, Active, Closed }
+df main() -> void {
+    set s: Status = Status::Pending;
+    when s {
+        Status::Pending => echo!("w");
+    }
+}
