@@ -314,6 +314,7 @@ df rune_require_entry() -> str {
 df rune_cmd_build(final: i64) -> void {
     fixed entry: str = rune_require_entry();
     rune_check_project_version();
+    rune_check_std_version();
     fixed t_start: i64 = time_ms();
     fixed name: str = rune_get_name();
     rune_mkdir("build");
@@ -345,6 +346,7 @@ df rune_needs_rebuild(out: str, srcpath: str) -> i64 {
 df rune_cmd_run(final: i64) -> void {
     fixed entry: str = rune_require_entry();
     rune_check_project_version();
+    rune_check_std_version();
     fixed name: str = rune_get_name();
     rune_mkdir("build");
     fixed out: str = str_concat(str_concat("build/", name), rune_exe_ext());
@@ -465,9 +467,15 @@ df rune_data_dir() -> str {
 }
 
 df rune_deregister_icons() -> void {
-    // Desktop integration is freedesktop-specific (xdg-mime, hicolor icons), so it
-    // only applies on Linux. On Windows and macOS this is a no-op - file
-    // associations there are handled by the OS installer, not rune.
+    // Desktop integration: freedesktop (xdg-mime, hicolor icons) on Linux;
+    // per-user registry keys (HKCU\Software\Classes) on Windows, matching what
+    // install.ps1 registers (v1.2.0). macOS is a no-op.
+    check rune_str_eq(sys_os_name(), "windows") == 1 {
+        sys_run("reg delete \"HKCU\\Software\\Classes\\.tv\" /f > NUL 2>&1");
+        sys_run("reg delete \"HKCU\\Software\\Classes\\Torvik.Source\" /f > NUL 2>&1");
+        sys_run("reg delete \"HKCU\\Software\\Classes\\SystemFileAssociations\\.tv\" /f > NUL 2>&1");
+        return;
+    }
     check rune_str_eq(sys_os_name(), "linux") == 0 { return; }
     fixed data: str = rune_data_dir();
     sys_run(fmt("xdg-mime uninstall --mode user \"{}/mime/packages/torvik-mime.xml\" > /dev/null 2>&1", data));
@@ -717,6 +725,31 @@ df rune_cmd_uninstall(confirmed: i64) -> void {
     echo!(fmt("Removed {}.", rune_home_display()));
     rune_clean_path_entries();
     rune_deregister_icons();
+    // v1.2.0: Windows locks a running program's file, so rune.exe cannot delete
+    // itself the way the Linux uninstall removes rune - fs_remove above cleared
+    // everything EXCEPT bin\rune.exe (and so bin\ remained). Schedule the final
+    // sweep: a tiny batch in %TEMP% waits for this process to exit, removes
+    // what's left of ~/.torvik, and deletes itself.
+    check rune_str_eq(sys_os_name(), "windows") == 1 {
+        fixed wtmp: str = readenv("TEMP");
+        check len(wtmp) > 0 {
+            fixed wroot: str = replace(root, "/", "\\");
+            fixed wbat: str = str_concat(wtmp, "\\torvik_uninstall_sweep.bat");
+            set wbs: str = "@echo off\r\n";
+            wbs = str_concat(wbs, "ping -n 3 127.0.0.1 > NUL\r\n");
+            wbs = str_concat(wbs, str_concat(str_concat("rd /s /q \"", wroot), "\"\r\n"));
+            wbs = str_concat(wbs, "del \"%~f0\"\r\n");
+            writefile(wbat, wbs);
+            sys_run(str_concat(str_concat("start \"\" /min cmd /c \"", wbat), "\""));
+            echo!("Torvik has been uninstalled. (rune.exe sweeps itself away in a moment -");
+            echo!("Windows locks a running program, so the last file goes via a scheduled cleanup.)");
+            return;
+        }
+        // No %TEMP% (unusual): say exactly what is left and how to finish.
+        echo!("Torvik has been uninstalled, except rune.exe itself - Windows locks a");
+        echo!(fmt("running program. Delete the leftover folder by hand: {}", rune_home_display()));
+        return;
+    }
     echo!("Torvik has been uninstalled.");
 }
 
@@ -743,15 +776,14 @@ df rune_ver_part(v: str, idx: i64) -> i64 {
     fixed n: i64 = len(s);
     set part: i64 = 0;
     set cur: i64 = 0;
-    set seen: i64 = 0;
     set i: i64 = 0;
     whilst i < n {
         fixed c: i64 = byte_at(s, i);
         check c == 46 {
             check part == idx { return cur; }
-            part += 1; cur = 0; seen = 0;
+            part += 1; cur = 0;
         } fallback {
-            check c >= 48 && c <= 57 { cur = cur * 10 + (c - 48); seen = 1; }
+            check c >= 48 && c <= 57 { cur = cur * 10 + (c - 48); }
         }
         i += 1;
     }
@@ -793,9 +825,32 @@ df rune_check_project_version() -> void {
     }
 }
 
+// v1.2.0: the standard library is versioned independently of the compiler (the
+// `std` line in VERSION). A project can declare `std = "1.1.0"` in torvik.rune
+// to require a minimum standard-library version - useful when std has grown or
+// made a breaking change without a corresponding compiler bump. std ships with
+// the toolchain, so the fix is always `rune update`.
+df rune_check_std_version() -> void {
+    check rune_path_exists("torvik.rune") == 0 { return; }
+    fixed req: str = rune_field(readfile("torvik.rune"), "std");
+    check len(req) == 0 { return; }
+    check rune_version_syntax_ok(req) == 0 {
+        echo!(fmt("error: torvik.rune has an invalid 'std' version requirement: '{}'.", req));
+        echo!("  Use a version like  std = \"1.1.0\"");
+        exit(1);
+    }
+    fixed have: str = rune_ver_of("std");
+    check rune_ver_ge(have, req) == 0 {
+        echo!(fmt("error: this project requires standard library {} or newer, but v{} is installed.", req, have));
+        echo!("  The standard library ships with the toolchain - update with:  rune update");
+        exit(1);
+    }
+}
+
 df rune_version() -> void {
     echo!(str_concat("rune v", str_concat(rune_ver_of("rune"), " - Torvik Package Manager")));
     echo!(str_concat("torvik v", rune_ver_of("torvik")));
+    echo!(str_concat("std v", rune_ver_of("std")));
 }
 
 df rune_config_get(key: str) -> str {

@@ -1,4 +1,4 @@
-# run_tests.ps1 - Torvik v1.1.x end-to-end test suite (Windows 10+).
+# run_tests.ps1 - Torvik v1.2.x end-to-end test suite (Windows 10+).
 # Usage: powershell -ExecutionPolicy Bypass -File run_tests.ps1 [torvc-path] [rune-path]
 #   Defaults to `torvc` / `rune` on PATH.
 # All work happens in .\tv-test-work (never %TEMP%). Exit code: 0 all pass, 1 any failure.
@@ -207,6 +207,26 @@ Rune-Case "final_build" {
     return ($out -match "(?i)hello")
 }
 
+# std version gate
+$d = Join-Path $Work "rune_std_gate"
+New-Item -ItemType Directory -Path $d | Out-Null
+Push-Location $d
+& $RuneExe new gproj *> $null
+Push-Location gproj
+Add-Content torvik.rune 'std         = "9.0.0"'
+& $RuneExe build *> g1.log
+$r1 = $LASTEXITCODE
+(Get-Content torvik.rune -Raw) -replace 'std         = "9.0.0"', 'std         = "0.1.0"' | Set-Content torvik.rune
+& $RuneExe build *> g2.log
+$r2 = $LASTEXITCODE
+if ($r1 -eq 1 -and ((Get-Content g1.log -Raw) -match "requires standard library") -and $r2 -eq 0) {
+    $script:PASS++; Note "ok    rune/std_version_gate"
+} else {
+    $script:FAIL++; $script:FAILED += "rune/std_version_gate"; Note "FAIL  rune/std_version_gate"
+}
+Pop-Location
+Pop-Location
+
 # ---------- torvc flag cases ----------
 Note ""
 Note "== TORVC FLAG CASES =="
@@ -214,6 +234,13 @@ $d = Join-Path $Work "flags"
 New-Item -ItemType Directory -Path $d | Out-Null
 Push-Location $d
 Set-Content flag.tv "df main() -> void {`n    echo!(`"flagtest`");`n}`n"
+
+function Flag-Case2([string]$name, [scriptblock]$body) {
+    $ok = $false
+    try { $ok = & $body } catch { $ok = $false }
+    if ($ok) { $script:PASS++; Note "ok    $name" }
+    else     { $script:FAIL++; $script:FAILED += $name; Note "FAIL  $name" }
+}
 
 function Flag-Case([string]$name, [scriptblock]$body) {
     $ok = $false
@@ -258,6 +285,66 @@ Flag-Case "missing_source" {
     & $TorvcExe no_such_file.tv -o x -q *> m.log
     if ($LASTEXITCODE -ne 1) { return $false }
     return ((Get-Content m.log -Raw) -notmatch "TVC-")
+}
+Pop-Location
+
+# ---------- warning cases ----------
+Note ""
+Note "== WARNING CASES =="
+$d = Join-Path $Work "warns"
+New-Item -ItemType Directory -Path $d | Out-Null
+Push-Location $d
+Set-Content warny.tv "df main() -> void {`n    set unused: i64 = 1;`n    echo!(`"ran`");`n    return;`n    echo!(`"dead`");`n}`n"
+
+Flag-Case2 "warns/emitted_nonfatal" {
+    & $TorvcExe warny.tv -o wy *> w1.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l = Get-Content w1.log -Raw
+    if ($l -notmatch "warning:") { return $false }
+    if ($l -notmatch "unused variable") { return $false }
+    if ($l -notmatch "unreachable code") { return $false }
+    $exe = if (Test-Path ".\wy.exe") { ".\wy.exe" } else { ".\wy" }
+    return ((& $exe) -eq "ran")
+}
+Flag-Case2 "warns/no_warn_flag" {
+    & $TorvcExe warny.tv -o wy2 --no-warn *> w2.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l2 = [string](Get-Content w2.log -Raw)
+    return ($l2 -notmatch "warning:")
+}
+Flag-Case2 "warns/quiet_suppresses" {
+    & $TorvcExe warny.tv -o wy3 -q *> w3.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l3 = [string](Get-Content w3.log -Raw)
+    return ($l3 -notmatch "warning:")
+}
+Flag-Case2 "warns/underscore_exempt" {
+    Set-Content uscore.tv "df main() -> void {`n    fixed _ignored: i64 = 5;`n    echo!(`"clean`");`n}`n"
+    & $TorvcExe uscore.tv -o us *> w4.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l4 = [string](Get-Content w4.log -Raw)
+    return ($l4 -notmatch "warning:")
+}
+Flag-Case2 "warns/allow_category" {
+    Set-Content direc.tv "!@ALLOW[unused_variable];`ndf main() -> void {`n    set unused: i64 = 1;`n    echo!(`"ran`");`n    return;`n    echo!(`"dead`");`n}`n"
+    & $TorvcExe direc.tv -o dr *> w5.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l = Get-Content w5.log -Raw
+    return (($l -match "unreachable code") -and ($l -notmatch "unused variable"))
+}
+Flag-Case2 "warns/no_warn_directive" {
+    Set-Content direc2.tv "!@NO_WARN;`ndf main() -> void {`n    set unused: i64 = 1;`n    echo!(`"ran`");`n    return;`n    echo!(`"dead`");`n}`n"
+    & $TorvcExe direc2.tv -o dr2 *> w6.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $l6 = [string](Get-Content w6.log -Raw)
+    return ($l6 -notmatch "warning:")
+}
+Flag-Case2 "warns/typo_directive_errors" {
+    Set-Content direc3.tv "!@NO_WRN;`ndf main() -> void { echo!(`"x`"); }`n"
+    & $TorvcExe direc3.tv -o dr3 *> w7.log
+    if ($LASTEXITCODE -ne 1) { return $false }
+    $l7 = [string](Get-Content w7.log -Raw)
+    return ($l7 -match "unknown warning directive")
 }
 Pop-Location
 

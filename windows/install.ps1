@@ -203,8 +203,55 @@ foreach ($a in @('torvik_lexer.tv','torvik_parser.tv','torvik_codegen.tv','diag.
 }
 $stdDir = Join-Path $LibDir 'std'
 New-Item -ItemType Directory -Force -Path $stdDir | Out-Null
-foreach ($a in @('math','strings','list')) {
+foreach ($a in @('math','strings','list','path')) {
     try { Download "$RawRef/src/std/$a.tv" (Join-Path $stdDir "$a.tv") } catch { }
+}
+
+# --- .tv file type + icon (v1.2.0) -------------------------------------------
+# Register the .tv extension with a friendly type name and the Torvik file icon
+# (per-user HKCU keys - no admin needed). No open-command is registered: source
+# files belong to your editor, not to the toolchain.
+try { Download "$RawRef/assets/torvik-file.ico" (Join-Path $InstallDir 'torvik-file.ico') } catch { }
+$icoPath = Join-Path $InstallDir 'torvik-file.ico'
+if (Test-Path $icoPath) {
+    $clsRoot = 'HKCU:\Software\Classes'
+    New-Item -Path "$clsRoot\.tv" -Force | Out-Null
+    Set-ItemProperty -Path "$clsRoot\.tv" -Name '(Default)' -Value 'Torvik.Source'
+    New-Item -Path "$clsRoot\Torvik.Source" -Force | Out-Null
+    Set-ItemProperty -Path "$clsRoot\Torvik.Source" -Name '(Default)' -Value 'Torvik Source File'
+    New-Item -Path "$clsRoot\Torvik.Source\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path "$clsRoot\Torvik.Source\DefaultIcon" -Name '(Default)' -Value "$icoPath,0"
+    # Keep the type connected to editors in the Open-with list without hijacking open.
+    New-Item -Path "$clsRoot\.tv\OpenWithProgids" -Force | Out-Null
+    Set-ItemProperty -Path "$clsRoot\.tv\OpenWithProgids" -Name 'Torvik.Source' -Value '' -Force
+    # Belt and braces: some shell paths consult SystemFileAssociations for the icon.
+    New-Item -Path "$clsRoot\SystemFileAssociations\.tv\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path "$clsRoot\SystemFileAssociations\.tv\DefaultIcon" -Name '(Default)' -Value "$icoPath,0"
+    # THE common reason the icon does not show: Explorer's per-user UserChoice
+    # (written when you ever picked "always open with <app>" for .tv) OVERRIDES
+    # the ProgID - Explorer then shows that app's icon and never consults ours.
+    # Writing UserChoice is hash-protected, but deleting it is allowed; after
+    # deletion .tv falls back to Torvik.Source and the icon shows. Choosing
+    # "always use this app" later re-creates UserChoice and the editor's icon
+    # returns - that is Windows association design; re-run this script to
+    # reclaim the Torvik icon.
+    $uc = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.tv\UserChoice'
+    if (Test-Path $uc) {
+        try {
+            $cur = (Get-ItemProperty -Path $uc -ErrorAction SilentlyContinue).ProgId
+            if ($cur -ne 'Torvik.Source') {
+                Remove-Item -Path $uc -Force -ErrorAction SilentlyContinue
+                Write-Host "  Cleared a previous per-user .tv association ($cur) so the Torvik icon can show."
+            }
+        } catch { }
+    }
+    # Tell the shell associations changed so Explorer refreshes without a reboot.
+    try {
+        Add-Type -Namespace TorvikShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, int uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);' -ErrorAction SilentlyContinue
+        [TorvikShell.Notify]::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+    } catch { }
+    try { Start-Process -FilePath "$env:WINDIR\System32\ie4uinit.exe" -ArgumentList '-show' -WindowStyle Hidden -ErrorAction SilentlyContinue } catch { }
+    Write-Host "Registered the .tv file type and icon (may need an Explorer restart to show)."
 }
 
 # --- default config ---------------------------------------------------------

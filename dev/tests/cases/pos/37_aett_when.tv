@@ -1,0 +1,45 @@
+aett Status { Pending, Active, Closed }
+aett Color { Red, Green, Blue }
+
+df describe(s: Status) -> str {
+    when s {
+        Status::Pending => return "waiting";
+        Status::Active  => return "live";
+        Status::Closed  => return "done";
+    }
+    return "";
+}
+
+df next(c: Color) -> Color {
+    when c {
+        Color::Red   => return Color::Green;
+        Color::Green => return Color::Blue;
+        Color::Blue  => return Color::Red;
+    }
+    return Color::Red;
+}
+
+df main() -> void {
+    echo!(describe(Status::Pending));
+    echo!(describe(Status::Closed));
+    set s: Status = Status::Active;
+    echo!(s);
+    echo!(typeof(s));
+    echo!("state {s} live");
+    check s == Status::Active { echo!("eq works"); }
+    when s {
+        Status::Active => { echo!("block"); echo!("arm"); }
+        fallback => echo!("other");
+    }
+    echo!(next(Color::Blue) == Color::Red);
+    set n: i64 = 7;
+    when n {
+        1 => echo!("one");
+        7 => echo!("seven");
+        -3 => echo!("neg");
+        fallback => echo!("many");
+    }
+    set xs: list<i64> = list_new();
+    push(xs, Status::Closed);
+    echo!(xs[0]);
+}

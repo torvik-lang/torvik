@@ -30,6 +30,7 @@ On success, `torvc` prints a confirmation with the compile time, for example
 | Flag              | Meaning                                             |
 |-------------------|-----------------------------------------------------|
 | `-o <file>`       | Set the output executable name                      |
+| `--no-warn`       | Suppress compile warnings (they never fail a build; `-q` also implies this; `!@NO_WARN;` at the top of a file does the same per-file) |
 | `-q`, `--quiet`   | Suppress the success / timing message               |
 | `-v`, `--verbose` | More detailed output                                |
 | `--final`         | Production build (maximum optimization, stripped)   |
@@ -136,6 +137,7 @@ Projects can require a **minimum** Torvik version in their `torvik.rune` manifes
 [project]
 name   = "myapp"
 torvik = "1.1.0"     # rune build/run refuses an older toolchain
+std    = "1.1.0"     # likewise for the standard library (it ships with the toolchain)
 ```
 
 If the installed toolchain is older than a project requires, `rune build` and `rune run` stop
@@ -171,7 +173,7 @@ with the Rune Library in a future release. For now a project is your own `.tv` s
 
 ## Platforms
 
-Torvik runs on Linux and Windows (both x86-64). macOS is not yet supported (official builds planned for v1.2.0); until then, use Linux (a VM or container works). The compiler emits
+Torvik runs on Linux and Windows (both x86-64). macOS is not yet supported (planned for a future version once real Apple hardware is available for testing); until then, use Linux (a VM or container works). The compiler emits
 LLVM IR and links it with `clang`, so a program behaves identically on every platform — only
 the toolchain binaries and the installer differ.
 

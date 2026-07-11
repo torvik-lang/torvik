@@ -45,9 +45,11 @@ df main() -> void {
             check i + 1 < argc { outpath = args_get(i + 1); i += 1; }
         } fallback {
             check a == "-v" || a == "--verbose" { verbose = 1; } fallback {
-                check a == "-q" || a == "--quiet" { quiet = 1; } fallback {
+                check a == "-q" || a == "--quiet" { quiet = 1; warn_suppress = 1; } fallback {
                     check a == "--final" { final = 1; } fallback {
-                        check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
+                        check a == "--no-warn" { warn_suppress = 1; } fallback {
+                            check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
+                        }
                     }
                 }
             }
@@ -158,6 +160,7 @@ df version_of(key: str) -> str {
 
 df print_version() -> void {
     echo!(str_concat(str_concat("torvik v", version_of("torvik")), str_concat(" / torvc v", version_of("torvc"))));
+    echo!(str_concat("std v", version_of("std")));
 }
 
 df print_help() -> void {
@@ -172,6 +175,7 @@ df print_help() -> void {
     echo!("  -v, --verbose   Show compile details (bytes, tokens, IR path)");
     echo!("  -q, --quiet     Suppress all output except errors");
     echo!("  --final         Production build (-O3, stripped)");
+    echo!("  --no-warn       Suppress compile warnings (they never fail the build)");
 }
 
 // Scan for an unterminated string literal. Returns the 0-based offset of the
@@ -245,6 +249,40 @@ df collect_source_errors(source: str, offs: list<i64>, msgs: list<str>) -> void 
                 whilst pos < n && byte_at(source, pos) != 10 { pos += 1; }
             }
             continue;
+        }
+        // v1.2.0: a numeric literal with TWO decimal points ("0.1.0") is not a
+        // number - it reads like a version string, and previously produced a
+        // confusing cascade of parse errors. Report it cleanly, once, with the
+        // fix. A range like 0..5 has no digit between the dots and never
+        // matches; the scan consumes the whole malformed run so nothing
+        // downstream trips over its tail.
+        check c >= 48 && c <= 57 {
+            set prev_id: i64 = 0;
+            check pos > 0 && ident_char(byte_at(source, pos - 1)) == 1 { prev_id = 1; }
+            check pos > 0 && byte_at(source, pos - 1) == 46 { prev_id = 1; }
+            check prev_id == 0 {
+                fixed num_at: i64 = pos;
+                set q2: i64 = pos;
+                set dots: i64 = 0;
+                set go2: i64 = 1;
+                whilst go2 == 1 {
+                    check q2 >= n { go2 = 0; }
+                    check go2 == 1 {
+                        fixed dc: i64 = byte_at(source, q2);
+                        check dc >= 48 && dc <= 57 { q2 += 1; continue; }
+                        check dc == 46 && q2 + 1 < n && byte_at(source, q2 + 1) >= 48 && byte_at(source, q2 + 1) <= 57 {
+                            dots += 1; q2 += 2; continue;
+                        }
+                        go2 = 0;
+                    }
+                }
+                check dots >= 2 {
+                    push(offs, num_at);
+                    push(msgs, fmt("'{}' is not a number - a float has a single decimal point. For a version string, use quotes: \"{}\"", substr(source, num_at, q2), substr(source, num_at, q2)));
+                    pos = q2;
+                    continue;
+                }
+            }
         }
         // 'df' as a whole word: 'd','f', non-identifier on both sides.
         check c == 100 && pos + 1 < n && byte_at(source, pos + 1) == 102 {

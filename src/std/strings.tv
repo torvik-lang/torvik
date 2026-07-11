@@ -46,3 +46,34 @@ df pad_right(s: str, width: i64, pad: str) -> str {
 df str_eq(a: str, b: str) -> bool {
     return a == b;
 }
+
+// Number of non-overlapping occurrences of sub in s (0 for an empty sub).
+df count_str(s: str, sub: str) -> i64 {
+    check len(sub) == 0 { return 0; }
+    set n: i64 = 0;
+    set from: i64 = 0;
+    whilst from <= len(s) - len(sub) {
+        fixed hit: i64 = find(substr(s, from, len(s)), sub);
+        check hit == -1 { return n; }
+        n += 1;
+        from = from + hit + len(sub);
+    }
+    return n;
+}
+
+// The string reversed (bytewise).
+df reverse_str(s: str) -> str {
+    set out: str = "";
+    set i: i64 = len(s) - 1;
+    whilst i >= 0 {
+        out = str_concat(out, char_at(s, i));
+        i -= 1;
+    }
+    return out;
+}
+
+// First character uppercased, the rest unchanged.
+df capitalize(s: str) -> str {
+    check len(s) == 0 { return s; }
+    return str_concat(upper(char_at(s, 0)), substr(s, 1, len(s)));
+}

@@ -65,6 +65,7 @@ fixed OP_BOUND:      i64 = 231;
 fixed OP_KINDRED:    i64 = 232;
 fixed OP_WEAVE:      i64 = 233;
 fixed OP_DOTDOTPLUS: i64 = 234;
+fixed OP_FATARROW:   i64 = 235;   // => (when arms)
 fixed PUNCT_LPAREN:  i64 = 300;
 fixed PUNCT_RPAREN:  i64 = 301;
 fixed PUNCT_LBRACE:  i64 = 302;
@@ -80,6 +81,7 @@ fixed PUNCT_RBRACKET: i64 = 310;
 fixed KW_CONTINUE: i64 = 123;
 fixed KW_BREAK:    i64 = 124;
 fixed KW_UNSAFE:     i64 = 125;
+fixed KW_AETT:       i64 = 126;   // aett - a family of named values (v1.2.0)
 
 df is_digit(c: i64) -> bool { return c >= 48 && c <= 57; }
 df is_alpha(c: i64) -> bool {
@@ -100,6 +102,7 @@ df keyword_for(word: str) -> i64 {
     check word == "in"       { return KW_IN; }
     check word == "whilst"   { return KW_UNTIL; }
     check word == "when"     { return KW_WHEN; }
+    check word == "aett"     { return KW_AETT; }
     check word == "shape"    { return KW_SHAPE; }
     check word == "apply"    { return KW_APPLY; }
     check word == "guard"    { return KW_GUARD; }
@@ -124,6 +127,15 @@ df lex_source(source: str) -> list<i64> {
     set pos: i64 = 0;
     whilst pos < slen {
         fixed c: i64 = byte_at(source, pos);
+        // v1.2.0: warning directives (`!@NO_WARN;`, `!@ALLOW[category];`) are
+        // consumed like comments - codegen scans the raw SOURCE text for them,
+        // so the token stream never sees them. One line, terminated by `;`.
+        check c == 33 && pos + 1 < slen && byte_at(source, pos + 1) == 64 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 59 && byte_at(source, pos) != 10 { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 59 { pos += 1; }
+            continue;
+        }
         check is_space(c) { pos += 1; continue; }
         check c == 47 {
             check pos + 1 < slen {
@@ -208,6 +220,10 @@ df lex_source(source: str) -> list<i64> {
             // =|= kindred (identity) — check 3-char form first
             check pos + 2 < slen && byte_at(source, pos + 1) == 124 && byte_at(source, pos + 2) == 61 {
                 push(kinds, OP_KINDRED); pos += 3; continue;
+            }
+            // => when-arm arrow (v1.2.0)
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(kinds, OP_FATARROW); pos += 2; continue;
             }
             check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
                 push(kinds, OP_EQEQ); pos += 2; continue;
@@ -349,6 +365,15 @@ df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
 
     whilst pos < slen {
         fixed c: i64 = byte_at(source, pos);
+        // v1.2.0: warning directives (`!@NO_WARN;`, `!@ALLOW[category];`) are
+        // consumed like comments - codegen scans the raw SOURCE text for them,
+        // so the token stream never sees them. One line, terminated by `;`.
+        check c == 33 && pos + 1 < slen && byte_at(source, pos + 1) == 64 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 59 && byte_at(source, pos) != 10 { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 59 { pos += 1; }
+            continue;
+        }
 
         // Skip line comments
         check c == 47 && pos + 1 < slen && byte_at(source, pos + 1) == 47 {
@@ -454,6 +479,9 @@ df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
 // Only words that keyword_for() returns non-TOK_IDENT for
 // Everything else (extern, from, str, i64, list, etc.) is TOK_IDENT
 df is_keyword(s: str) -> bool {
+    // KEEP IN LOCKSTEP with keyword_for() above - a word known to one but not
+    // the other shifts the allnames cursor off by one for the whole file.
+    check s == "aett"     { return true; }
     check s == "df"       { return true; }
     check s == "task"     { return true; }
     check s == "set"      { return true; }
@@ -489,6 +517,15 @@ df extract_all_names(source: str) -> list<str> {
 
     whilst pos < slen {
         fixed c: i64 = byte_at(source, pos);
+        // v1.2.0: warning directives (`!@NO_WARN;`, `!@ALLOW[category];`) are
+        // consumed like comments - codegen scans the raw SOURCE text for them,
+        // so the token stream never sees them. One line, terminated by `;`.
+        check c == 33 && pos + 1 < slen && byte_at(source, pos + 1) == 64 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 59 && byte_at(source, pos) != 10 { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 59 { pos += 1; }
+            continue;
+        }
 
         // Skip line comments (// to end of line)
         check c == 47 && pos + 1 < slen && byte_at(source, pos + 1) == 47 {
@@ -561,6 +598,15 @@ df extract_offsets(source: str) -> list<i64> {
     set pos: i64 = 0;
     whilst pos < slen {
         fixed c: i64 = byte_at(source, pos);
+        // v1.2.0: warning directives (`!@NO_WARN;`, `!@ALLOW[category];`) are
+        // consumed like comments - codegen scans the raw SOURCE text for them,
+        // so the token stream never sees them. One line, terminated by `;`.
+        check c == 33 && pos + 1 < slen && byte_at(source, pos + 1) == 64 {
+            pos += 2;
+            whilst pos < slen && byte_at(source, pos) != 59 && byte_at(source, pos) != 10 { pos += 1; }
+            check pos < slen && byte_at(source, pos) == 59 { pos += 1; }
+            continue;
+        }
         fixed tok_start: i64 = pos;
         check is_space(c) { pos += 1; continue; }
         check c == 47 {
@@ -645,6 +691,10 @@ df extract_offsets(source: str) -> list<i64> {
             // =|= kindred (identity) — check 3-char form first
             check pos + 2 < slen && byte_at(source, pos + 1) == 124 && byte_at(source, pos + 2) == 61 {
                 push(offs, tok_start); pos += 3; continue;
+            }
+            // => when-arm arrow (v1.2.0) — lockstep with lex_source
+            check pos + 1 < slen && byte_at(source, pos + 1) == 62 {
+                push(offs, tok_start); pos += 2; continue;
             }
             check pos + 1 < slen && byte_at(source, pos + 1) == 61 {
                 push(offs, tok_start); pos += 2; continue;

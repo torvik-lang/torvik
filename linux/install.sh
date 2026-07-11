@@ -50,6 +50,9 @@ torvik_register_icons() {
         else
             mkdir -p "$_data/icons/hicolor/${s}x${s}/mimetypes" "$_data/icons/hicolor/${s}x${s}/apps"
             cp "$_png/torvik-file-${s}.png" "$_data/icons/hicolor/${s}x${s}/mimetypes/text-x-torvik.png"
+            # legacy alias some file managers (Nemo family) still look up; the
+            # xdg-icon-resource path above creates it automatically.
+            cp "$_png/torvik-file-${s}.png" "$_data/icons/hicolor/${s}x${s}/mimetypes/gnome-mime-text-x-torvik.png"
             [ -f "$_png/torvik-icon-${s}.png" ] && cp "$_png/torvik-icon-${s}.png" "$_data/icons/hicolor/${s}x${s}/apps/torvik.png"
         fi
     done
@@ -73,6 +76,10 @@ torvik_register_icons() {
     [ "$_usexdg" -eq 1 ] && { xdg-icon-resource forceupdate --mode user 2>/dev/null || true; }
     command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f "$_hic" >/dev/null 2>&1 || true
     command -v update-mime-database  >/dev/null 2>&1 && update-mime-database "$_data/mime" >/dev/null 2>&1 || true
+    # A running file manager caches icon lookups per-process; ask it to quit
+    # politely (it respawns on next open). Best effort, never fails the install.
+    command -v nautilus >/dev/null 2>&1 && nautilus -q 2>/dev/null || true
+    command -v nemo     >/dev/null 2>&1 && nemo -q     2>/dev/null || true
     mkdir -p "$HOME/.torvik"; printf '%s\n' "$_ver" > "$_stamp"
     echo "  registered the .tv file type & icons (v$_ver)"
 }
@@ -186,7 +193,7 @@ for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do d
 dl "$RAW_REF/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
 dl "$RAW_REF/VERSION" "$LIB_DIR/VERSION"
 mkdir -p "$LIB_DIR/std"
-for a in math strings list; do dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
+for a in math strings list path; do dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
 
 # --- icons + .tv file type (Linux only; macOS/Windows association: v1.1.0) ---
 if [ "$OS" = "linux" ]; then

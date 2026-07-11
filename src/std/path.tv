@@ -1,0 +1,57 @@
+// std/path.tv — Torvik standard library: file-path helpers
+//
+// Part of the standard library. Bring in with `apply std::path;` or `apply std;`.
+// Pure Torvik over core builtins. Both `/` and `\` are recognized as separators
+// on input; joins use `/`, which every supported platform accepts.
+
+// Index of the last path separator in s, or -1.
+df _path_last_sep(s: str) -> i64 {
+    set i: i64 = len(s) - 1;
+    whilst i >= 0 {
+        fixed c: i64 = byte_at(s, i);
+        check c == 47 || c == 92 { return i; }
+        i -= 1;
+    }
+    return -1;
+}
+
+// The final component of a path: path_base("a/b/c.tv") is "c.tv".
+df path_base(p: str) -> str {
+    fixed i: i64 = _path_last_sep(p);
+    check i == -1 { return p; }
+    return substr(p, i + 1, len(p));
+}
+
+// The directory part of a path: path_dir("a/b/c.tv") is "a/b". A path with no
+// separator has directory ".".
+df path_dir(p: str) -> str {
+    fixed i: i64 = _path_last_sep(p);
+    check i == -1 { return "."; }
+    check i == 0 { return "/"; }
+    return substr(p, 0, i);
+}
+
+// The extension including the dot: path_ext("a/b/c.tv") is ".tv"; "" if none.
+// A leading dot alone (".gitignore") is a hidden name, not an extension.
+df path_ext(p: str) -> str {
+    fixed base: str = path_base(p);
+    set i: i64 = len(base) - 1;
+    whilst i > 0 {
+        check byte_at(base, i) == 46 { return substr(base, i, len(base)); }
+        i -= 1;
+    }
+    return "";
+}
+
+// Join two path segments with exactly one separator between them.
+df path_join(a: str, b: str) -> str {
+    check len(a) == 0 { return b; }
+    check len(b) == 0 { return a; }
+    set left: str = a;
+    fixed lc: i64 = byte_at(left, len(left) - 1);
+    check lc == 47 || lc == 92 { left = substr(left, 0, len(left) - 1); }
+    set right: str = b;
+    fixed rc: i64 = byte_at(right, 0);
+    check rc == 47 || rc == 92 { right = substr(right, 1, len(right)); }
+    return str_concat(str_concat(left, "/"), right);
+}

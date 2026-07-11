@@ -1,0 +1,6 @@
+df main() -> void {
+    set n: i64 = 1;
+    when n {
+        1 => echo!("one");
+    }
+}

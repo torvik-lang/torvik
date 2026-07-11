@@ -234,6 +234,16 @@ df diag_spaces(n: i64) -> str {
 //      |       ^
 // `offset` is the 0-based byte offset in `source` of the offending character.
 df render_source_error(source: str, file: str, offset: i64, message: str) -> void {
+    render_source_diag(source, file, offset, message, "error");
+}
+
+// v1.2.0: warnings share the error renderer with a different label. Warnings
+// never fail the build.
+df render_source_warning(source: str, file: str, offset: i64, message: str) -> void {
+    render_source_diag(source, file, offset, message, "warning");
+}
+
+df render_source_diag(source: str, file: str, offset: i64, message: str, label: str) -> void {
     fixed n: i64 = len(source);
     set off: i64 = offset;
     check off < 0 { off = 0; }
@@ -253,7 +263,7 @@ df render_source_error(source: str, file: str, offset: i64, message: str) -> voi
     fixed src_line: str = substr(source, line_start, lend);
     fixed gutter: str = int_to_str(line_no);
     fixed gpad: str = diag_spaces(len(gutter));
-    echo!(str_concat("error: ", message));
+    echo!(str_concat(str_concat(label, ": "), message));
     echo!(fmt("  --> {}:{}:{}", file, line_no, col));
     echo!(str_concat(gpad, " |"));
     echo!(str_concat(str_concat(gutter, " | "), src_line));

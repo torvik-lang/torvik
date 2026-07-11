@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed version: f64 = 0.1.0;
+    echo!(version);
+}

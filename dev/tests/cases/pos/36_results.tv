@@ -1,0 +1,29 @@
+df safe_div(a: i64, b: i64) -> result<i64> {
+    check b == 0 { return err("division by zero"); }
+    return ok(a / b);
+}
+df find_user(name: str) -> result<str> {
+    check name == "odin" { return ok("Odin Allfather"); }
+    return err(404, "user not found");
+}
+df main() -> void {
+    set r: result<i64> = safe_div(10, 2);
+    check is_ok(r) { echo!(unwrap(r)); }
+    set r2: result<i64> = safe_div(1, 0);
+    echo!(is_err(r2));
+    echo!(err_msg(r2));
+    echo!(unwrap_or(r2, -1));
+    set u: result<str> = find_user("odin");
+    echo!(unwrap(u));
+    set u2: result<str> = find_user("loki");
+    echo!(err_code(u2));
+    echo!(err_msg(u2));
+    fixed f: result<f64> = try_tofloat("2.5");
+    check is_ok(f) { echo!(unwrap(f)); }
+    set direct: result<str> = ok("direct");
+    echo!(unwrap(direct));
+    set di: result<i64> = ok(42);
+    echo!(unwrap(di));
+    set t: result<i64> = try_toint("nope");
+    echo!(is_ok(t));
+}

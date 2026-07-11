@@ -1,7 +1,27 @@
 # Torvik Roadmap
 
 
-## v1.1.3 — current release
+## v1.2.0 — current release
+
+A language-ergonomics and tooling release with **no breaking changes**, verified by
+three-generation self-hosting fixpoints and the full 94-case end-to-end suite on both Linux
+and Windows. Highlights: **`aett`** — a family of named values, Torvik's enumeration, named
+for the *ættir* the runes are grouped into (`aett Status { Pending, Active, Closed }`,
+variants as `Status::Pending`, i64-backed with the aett name as a type annotation and
+`typeof` support); **`when`** pattern matching with `=>` arms, `fallback =>` defaults, and
+compile-time **exhaustiveness checking** over aetts (missing variants are named in the
+error); a **compile warnings system** (unused variables with `_name` opt-out, unreachable
+code, a deprecation channel) that never fails a build, with `--no-warn` / `-q` and per-file
+`!@NO_WARN;` / `!@ALLOW[category];` directives where a typo'd directive is a clean error;
+**Result types completed** (`ok` / `err` constructors, so user functions return
+`result<i64|str|f64>`); the **`find(s, sub)`** builtin; **standard-library growth** (new
+`std::path`; `sort` / `sort_str` / `reverse_list` / `index_of` in `std::list`; `sign` /
+`isqrt`; `count_str` / `reverse_str` / `capitalize`) under a new **independent std
+versioning** policy (std moves to 1.1.0, projects can gate with `std = "x.y.z"` in
+`torvik.rune`); and **Windows `.tv` file-type & icon registration** (per-user, removed by
+`rune uninstall`).
+
+## v1.1.3
 
 Stability release: a full compiler-wide audit for silent wrong answers, silent no-ops, and
 compile-then-crash holes, backed by a new 78-case end-to-end test suite (in `/dev/tests`,
@@ -116,23 +136,11 @@ resolved.
 
 ---
 
-## v1.2.0 — planned
+## v1.3.0 — planned
 
-- **`task`** — async / concurrent tasks. (Moved from v1.1.0 to give it the room it needs.)
-- **Warnings system** — general compile-time warnings (unused variables/imports, unreachable
-  code), plus **deprecation warnings** for code scheduled for removal. (A first piece shipped
-  in v1.1.0 as a hard error: redeclaring a variable with a different type in the same
-  function — previously silent memory corruption.)
-- **Official macOS support** — macOS has no prebuilt binaries today and is not yet supported;
-  v1.2.0 brings full testing and official support (installer, file-type/icon integration, CI coverage).
-- **Windows `.tv` file-type & icon integration** — the icon assets already ship
-  (`assets/torvik-file.ico`), but the Windows installer does not yet register the `.tv` file
-  association or icon in the registry the way the Linux installer does via freedesktop. Add
-  that registration to `windows/install.ps1` (and matching cleanup on uninstall) so `.tv`
-  files show the Torvik icon on Windows.
-- **Result types** — `ok` / `err` / `result<T>` for explicit error handling. The runtime
-  already ships the `torvik_result_*` family (`try_readfile`, `try_toint`, `try_tofloat`,
-  unwrap/unwrap_or, error messages), so the remaining work is the language surface and codegen.
+- **`task`** — async / concurrent tasks. Deliberately given its own release: concurrency
+  touches the reference-counting runtime (atomic refcounts, allocator safety) and deserves
+  the room. (Moved from v1.1.0, then v1.2.0, to give it the room it needs.)
 
 ---
 
@@ -141,11 +149,16 @@ resolved.
 Features that WILL come to Torvik but are not tied to a version yet. They moved out of the
 v1.1.0 plan so that v1.1.0 — which carries important fixes for v1.0 users — can ship sooner.
 
+### Platforms
+
+- **Official macOS support** — macOS has no prebuilt binaries today and is not yet
+  supported. Official support needs real Apple hardware for testing (Apple Silicon ABI,
+  Mach-O linking, codesigning) — blind cross-compilation isn't a credible basis for
+  "supported". The port is scheduled once real Apple hardware access is sorted.
+
 ### Language & types
 
 - **`shape`** — structs / record types.
-- **`when`** — pattern matching.
-- **`enum`** — enumerations.
 - **`pub`** — visibility / export control.
 - **`f32`**, a dedicated **`char`** type, and **fixed-size arrays** (`[T; N]`).
 - **`\u{...}` Unicode escapes** — with the scanner alignment that requires.

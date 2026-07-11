@@ -34,3 +34,57 @@ df list_min(xs: list<i64>) -> i64 {
     whilst i < len(xs) { check xs[i] < m { m = xs[i]; } i += 1; }
     return m;
 }
+
+// Sort a list<i64> in place, ascending (insertion sort - stable, no allocation).
+df sort(xs: list<i64>) -> void {
+    set i: i64 = 1;
+    whilst i < len(xs) {
+        fixed v: i64 = xs[i];
+        set j: i64 = i - 1;
+        whilst j >= 0 {
+            check xs[j] > v { xs[j + 1] = xs[j]; j -= 1; } fallback { break; }
+        }
+        xs[j + 1] = v;
+        i += 1;
+    }
+}
+
+// Sort a list<str> in place, ascending by content (lexicographic).
+df sort_str(xs: list<str>) -> void {
+    set i: i64 = 1;
+    whilst i < len(xs) {
+        fixed v: str = xs[i];
+        set j: i64 = i - 1;
+        whilst j >= 0 {
+            check xs[j] > v { xs[j + 1] = xs[j]; j -= 1; } fallback { break; }
+        }
+        xs[j + 1] = v;
+        i += 1;
+    }
+}
+
+// Reverse a list<i64> in place.
+df reverse_list(xs: list<i64>) -> void {
+    set a: i64 = 0;
+    set b: i64 = len(xs) - 1;
+    whilst a < b {
+        fixed t: i64 = xs[a];
+        xs[a] = xs[b];
+        xs[b] = t;
+        a += 1; b -= 1;
+    }
+}
+
+// Index of the first element equal to v, or -1.
+df index_of(xs: list<i64>, v: i64) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(xs) { check xs[i] == v { return i; } i += 1; }
+    return -1;
+}
+
+// Index of the first element equal to s (content comparison), or -1.
+df index_of_str(xs: list<str>, s: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(xs) { check xs[i] == s { return i; } i += 1; }
+    return -1;
+}
