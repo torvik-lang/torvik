@@ -1,8 +1,9 @@
 # Torvik end-to-end test suite
 
-34 positive cases covering the language surface (values, operators, control flow,
+38 positive cases covering the language surface (values, operators, control flow,
 functions, collections, weave, membership, std lib, files, system, stdin),
-30 expected-clean-error cases, 8 rune project-tool cases, and 6 torvc flag
+34 expected-clean-error cases, 9 rune project-tool cases, 7 warning-system
+cases, and 6 torvc flag
 cases.
 
 ## Run
