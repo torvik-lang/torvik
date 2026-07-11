@@ -344,6 +344,30 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
             continue;
         }
 
+        // v1.2.0: aett declarations (`aett Name { A, B, C }`) are collected by
+        // codegen from the raw tokens; the parser just skips the block, keeping
+        // the name/string cursors in lockstep with the tokens consumed.
+        check t == KW_AETT {
+            pos += 1;
+            whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_LBRACE && tok_peek(tokens, pos) != TOK_EOF {
+                fixed hk: i64 = tok_peek(tokens, pos);
+                check hk == TOK_IDENT || hk == TOK_STRING { str_idx += 1; }
+                check hk == TOK_STRING || hk == TOK_INT || hk == TOK_FLOAT { str_idx_s += 1; }
+                pos += 1;
+            }
+            check tok_peek(tokens, pos) == PUNCT_LBRACE {
+                pos += 1;
+                whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_RBRACE && tok_peek(tokens, pos) != TOK_EOF {
+                    fixed ak: i64 = tok_peek(tokens, pos);
+                    check ak == TOK_IDENT || ak == TOK_STRING { str_idx += 1; }
+                    check ak == TOK_STRING || ak == TOK_INT || ak == TOK_FLOAT { str_idx_s += 1; }
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) == PUNCT_RBRACE { pos += 1; }
+            }
+            continue;
+        }
+
         // Function definition: df NAME(PARAMS) -> TYPE { BODY }
         check t == KW_DF {
             // ── Validate the header shape BEFORE parsing it. Each required element
