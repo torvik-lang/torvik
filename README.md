@@ -6,7 +6,7 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.1.3-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
@@ -35,7 +35,12 @@ there is no virtual machine and no garbage collector.
   written in Torvik.
 - **Automatic reference counting** — deterministic memory management, no GC, no manual frees.
 - **A small, sharp type system** — integers `i8`–`i64`, `u8`–`u64`, the wide `i128`/`u128`,
-  `f64`, `bool`, `str`, and the `list`, `table`, and `bag` collections.
+  `f64`, `bool`, `str`, the `list`, `table`, and `bag` collections, `result<T>` for
+  explicit error handling, and **`aett`** — enumerations named for the rune families,
+  with exhaustiveness-checked **`when`** pattern matching.
+- **A compiler that talks to you** — clean located errors for every invalid program, and
+  a warnings system (unused variables, unreachable code, deprecations) that never fails
+  a build and can be tuned per file with `!@` directives.
 - **`rune` project tool** — create, build, and run projects with one command.
 
 ---
@@ -68,8 +73,8 @@ terminal (restart your shell or run `. ~/.bashrc` on Linux) and confirm with
 `rune uninstall` removes it.
 
 **macOS:** not yet supported. Official macOS builds (with a tested installer) are planned for
-**v1.2.0**. There's no prebuilt binary today, so the installer will stop with a note if run on
-macOS. The toolchain is written to be macOS-compatible and can be built from source by the
+a future version, once real Apple hardware is available for credible testing. There's no
+prebuilt binary today, so the installer will stop with a note if run on macOS. The toolchain is written to be macOS-compatible and can be built from source by the
 adventurous (needs clang via `xcode-select --install`), but this is untested — if you want a
 supported setup now, run Torvik on Linux, including in a Linux VM or container.
 
@@ -79,7 +84,7 @@ supported setup now, run Torvik on Linux, including in a Linux VM or container.
 |---------------------|--------------|-------------------------------|
 | Linux               | x86_64       | Supported                     |
 | Windows             | x86_64       | Supported                     |
-| macOS               | x86_64 / arm | Not yet — planned for v1.2.0  |
+| macOS               | x86_64 / arm | Not yet — future version      |
 
 > Torvik is 64-bit only.
 
