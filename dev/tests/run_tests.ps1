@@ -1,4 +1,4 @@
-# run_tests.ps1 - Torvik v1.1.x end-to-end test suite (Windows 10+).
+# run_tests.ps1 - Torvik v1.2.x end-to-end test suite (Windows 10+).
 # Usage: powershell -ExecutionPolicy Bypass -File run_tests.ps1 [torvc-path] [rune-path]
 #   Defaults to `torvc` / `rune` on PATH.
 # All work happens in .\tv-test-work (never %TEMP%). Exit code: 0 all pass, 1 any failure.
