@@ -1,13 +1,13 @@
 # The Torvik Guide
 
-A complete tutorial and reference for the Torvik programming language, version 1.1.
+A complete tutorial and reference for the Torvik programming language, version 1.2.
 
 Torvik is a compiled, statically-typed, general-purpose language with a Norse-inspired
 keyword set. It compiles to native binaries through LLVM (emitting LLVM IR that is linked
 with `clang`), and its own compiler (`torvc`) and package manager (`rune`) are written in
 Torvik itself.
 
-This guide describes **only what version 1.1 actually implements**. Features planned for
+This guide describes **only what version 1.2 actually implements**. Features planned for
 later versions are listed in [Roadmap & limitations](#roadmap--limitations) so you always
 know where the edges are.
 
@@ -25,16 +25,19 @@ know where the edges are.
 8. [Conditionals: `check` / `fallback`](#conditionals-check--fallback)
 9. [The ternary: `?>` / `!>`](#the-ternary----)
 10. [Guards: `guard` / `fallback`](#guards-guard--fallback)
-11. [Loops: `whilst` and `each`](#loops-whilst-and-each)
-12. [Functions: `df`](#functions-df)
-13. [Collections: `list`, `table`, `bag`](#collections-list-table-bag)
-14. [Assertions and aborts: `vow` and `halt`](#assertions-and-aborts-vow-and-halt)
-15. [The `unsafe` prefix](#the-unsafe-prefix)
-16. [Modules: `apply`](#modules-apply)
-17. [Memory model](#memory-model)
-18. [Roadmap & limitations](#roadmap--limitations)
-19. [Keyword reference](#keyword-reference)
-20. [Operator reference](#operator-reference)
+11. [Aetts and pattern matching: `aett` / `when`](#aetts-and-pattern-matching-aett--when)
+12. [Loops: `whilst` and `each`](#loops-whilst-and-each)
+13. [Functions: `df`](#functions-df)
+14. [Collections: `list`, `table`, `bag`](#collections-list-table-bag)
+15. [Assertions and aborts: `vow` and `halt`](#assertions-and-aborts-vow-and-halt)
+16. [Error handling: `result<T>`, `ok`, and `err`](#error-handling-resultt-ok-and-err)
+17. [Compile warnings](#compile-warnings)
+18. [The `unsafe` prefix](#the-unsafe-prefix)
+19. [Modules: `apply`](#modules-apply)
+20. [Memory model](#memory-model)
+21. [Roadmap & limitations](#roadmap--limitations)
+22. [Keyword reference](#keyword-reference)
+23. [Operator reference](#operator-reference)
 
 ---
 
@@ -373,6 +376,60 @@ If a guard's condition is compound, wrap it in parentheses: `guard (a > 0 && b >
 
 ---
 
+## Aetts and pattern matching: `aett` / `when`
+
+An **aett** is a family of named values — Torvik's take on an enumeration, named for the
+*ættir*, the families the runes of the futhark are grouped into. Declare one at the top
+level and access its variants with `::`:
+
+```tv
+aett Status { Pending, Active, Closed }
+
+df main() -> void {
+    set s: Status = Status::Pending;
+    echo!(s);            // 0 - variants are i64 ordinals, in declaration order
+    echo!(typeof(s));    // Status
+    s = Status::Closed;
+    check s == Status::Closed { echo!("closed"); }
+}
+```
+
+Aett values are i64-backed (0-based ordinals), so they print, compare, store in lists,
+and pass to functions like any integer — while the aett name works as a type annotation
+for variables, parameters, and return types, and `typeof` reports it.
+
+**`when`** matches a value against patterns. Arms use `=>`, with a single statement or a
+block on the right, and `fallback =>` as the default arm (last, as always in Torvik):
+
+```tv
+df describe(s: Status) -> str {
+    when s {
+        Status::Pending => return "waiting";
+        Status::Active  => return "live";
+        Status::Closed  => return "done";
+    }
+    return "";
+}
+```
+
+When the scrutinee is aett-typed and there's no `fallback`, the compiler checks
+**exhaustiveness**: a missing variant is a clean compile error naming exactly what's
+uncovered — add the arm or a `fallback`. Adding a variant to an aett later instantly
+surfaces every `when` that needs updating.
+
+`when` also matches integers (literal patterns, negatives included), where a `fallback`
+arm is required — the compiler can't prove integer patterns cover every value:
+
+```tv
+when n {
+    1        => echo!("one");
+    7        => echo!("seven");
+    fallback => echo!("many");
+}
+```
+
+---
+
 ## Loops: `whilst` and `each`
 
 ### `whilst` — condition loop
@@ -638,6 +695,81 @@ Use `vow` to enforce invariants and `halt` for unrecoverable error paths.
 
 ---
 
+## Error handling: `result<T>`, `ok`, and `err`
+
+For operations that can fail, Torvik has an explicit result type instead of exceptions.
+A `result<T>` is either an **ok** carrying a value of type `T`, or an **err** carrying a
+message (and optionally a numeric code). Your own functions produce them with `ok(value)`
+and `err(message)` / `err(code, message)`:
+
+```tv
+df safe_div(a: i64, b: i64) -> result<i64> {
+    check b == 0 { return err("division by zero"); }
+    return ok(a / b);
+}
+
+df main() -> void {
+    set r: result<i64> = safe_div(10, 0);
+    check is_ok(r) {
+        echo!(unwrap(r));
+    } fallback {
+        echo!("failed: {err_msg(r)}");     // failed: division by zero
+    }
+    echo!(unwrap_or(r, -1));               // -1 - the fallback value
+}
+```
+
+The consumers: `is_ok(r)` / `is_err(r)` test the state; `unwrap(r)` takes the value
+(and halts with the error message if the result is an err — check first, or use
+`unwrap_or(r, default)`); `err_msg(r)` and `err_code(r)` read the error side.
+`result<i64>`, `result<str>`, and `result<f64>` are supported, as parameters, return
+types, and locals.
+
+Several builtins come in a result-returning form: `try_readfile(path)`,
+`try_toint(s)`, and `try_tofloat(s)` — the same operations as their plain
+counterparts, but a failure is an `err` you can inspect instead of a halt.
+
+---
+
+## Compile warnings
+
+The compiler warns about code that is legal but probably not what you meant. Warnings
+never fail the build — the binary is produced either way — and each one comes with the
+same line-and-caret display as errors:
+
+- **Unused variable** — a `set` or `fixed` binding that is never read (including
+  write-only variables that are assigned but never consulted). Prefix the name with an
+  underscore to say the discard is deliberate: `fixed _r: i64 = f(x);` calls `f` for
+  its effect and never warns.
+- **Unreachable code** — a statement after a `return`, `break`, `continue`, `halt`, or
+  `exit` in the same block. One exception: a `return` right after `halt`/`exit` is the
+  sanctioned idiom for satisfying the all-paths-return check and never warns.
+- **Deprecations** — builtins scheduled for removal warn at every call site with the
+  replacement to use. (Nothing is deprecated today; the channel ships so future
+  deprecations are visible immediately.)
+
+`torvc --no-warn` suppresses them, and `-q` implies it. Loop variables and function
+parameters are never flagged.
+
+### `!@` warning directives
+
+Warnings can also be controlled from inside the file, at the top:
+
+```tv
+!@NO_WARN;                    // suppress every warning for this compilation
+!@ALLOW[unused_variable];     // suppress one category (stackable - one per line)
+```
+
+The categories are `unused_variable`, `unreachable_code`, and `deprecated`. A typo'd
+directive or unknown category is a clean compile error, not a silent no-op — a
+directive that silently did nothing would be exactly the bug class Torvik hunts.
+Because `apply` inlines modules into one compilation unit, a directive covers the
+whole compile of the file it appears in, applied modules included. The `!@` prefix
+is reserved for warning-system directives, so future controls slot in without new
+syntax.
+
+---
+
 ## The `unsafe` prefix
 
 `unsafe` is **not** a general "lower-level" block. It is a single-statement prefix that opts
@@ -734,14 +866,13 @@ What this guarantees:
 
 ## Roadmap & limitations
 
-Torvik is deliberately focused. The following are **not** in the language yet. `task` (async),
-a compile-time warnings system, and official macOS support are planned for **v1.2.0**; the
-rest are planned for future versions (see [ROADMAP.md](../ROADMAP.md) for the full plan and
-reasoning):
+Torvik is deliberately focused. The following are **not** in the language yet. `task`
+(async) is planned for **v1.3.0**; the rest — including official macOS support, which is
+waiting on real Apple hardware for credible testing — are planned for future versions (see
+[ROADMAP.md](../ROADMAP.md) for the full plan and reasoning):
 
-- **Structs (`shape`)**, **pattern matching (`when`)**, and **async / concurrent tasks
-  (`task`)**.
-- **Result types** (`ok` / `err` / `result<T>`), **enums**, and a **`pub`** visibility keyword.
+- **Structs (`shape`)** and **async / concurrent tasks (`task`)**.
+- **A `pub`** visibility keyword.
 - **Additional numeric types**: `f32` and a dedicated `char` type (today, character literals
   are one-character strings).
 - **Fixed-size arrays** (`[T; N]`).
@@ -762,8 +893,9 @@ Known limitations:
 
 Every one of these is a clean compile error or a documented narrow case, never a silent wrong
 answer or a crash. The full plan is in [ROADMAP.md](../ROADMAP.md). Windows support landed in
-v1.1.0 (Linux and Windows are both supported; macOS is not yet supported, coming in v1.2.0); the warnings system,
-`task` (async), Result types, and official macOS support are planned for v1.2.0.
+v1.1.0 and macOS is not yet supported (planned for a future version once real Apple hardware
+is available for testing). The warnings system, `aett` + `when` pattern matching, and Result
+types all landed in v1.2.0; `task` (async) is planned for v1.3.0.
 
 ---
 
@@ -780,6 +912,8 @@ v1.1.0 (Linux and Windows are both supported; macOS is not yet supported, coming
 | `guard`     | Require a condition, else run a fallback (early-exit)          |
 | `whilst`    | Condition loop (`while`)                                       |
 | `each`      | Range loop (`each i in START..END`)                            |
+| `aett`      | Declare a family of named values (an enumeration)              |
+| `when`      | Pattern matching over an aett or integers (`fallback` arm as default) |
 | `in`        | Separates the loop variable from its range in `each`           |
 | `break`     | Exit the current loop                                          |
 | `continue`  | Skip to the next loop iteration                                |
@@ -805,6 +939,8 @@ v1.1.0 (Linux and Windows are both supported; macOS is not yet supported, coming
 | Range      | `..`  `..+`                             | `..` exclusive, `..+` inclusive; used in `each` |
 | Ternary    | `?>`  `!>`                              | `cond ?> a !> b`; only the taken branch runs |
 | Weave      | `~>`                                    | `x ~> f ~> g` is `g(f(x))`             |
+| Variant    | `::`                                    | `Status::Active` reads an aett variant |
+| When arm   | `=>`                                    | `pattern => statement-or-block`        |
 | Membership | `<\|`                                   | `item <\| collection` yields a `bool`  |
 
 Arithmetic binds tighter than comparison, including with call/index operands
