@@ -32,6 +32,7 @@ it is reported as a clean compile error, never a crash.
 | `lower(s)` | `str` | Lowercase copy of `s` (also usable as a weave stage: `s ~> lower`) |
 | `replace(s, old, new)` | `str` | Replace occurrences of `old` with `new` |
 | `contains(s, sub)` | `bool` | Whether `s` contains `sub` |
+| `find(s, sub)` | `i64` | Byte index of the first occurrence of `sub` in `s`, or `-1` |
 | `starts(s, prefix)` | `bool` | Whether `s` starts with `prefix` |
 | `ends(s, suffix)` | `bool` | Whether `s` ends with `suffix` |
 | `split(s, sep)` | `list<str>` | Split `s` on `sep` into a list of pieces |
@@ -169,13 +170,35 @@ echo!("Hello, {name}!");
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `readfile(path)` | `str` | Read a file's contents |
-| `try_readfile(path)` | — | Read a file, signalling failure rather than aborting |
+| `try_readfile(path)` | `result<str>` | Read a file; failure is an `err` you can inspect instead of a halt |
 | `writefile(path, content)` | — | Write a string to a file |
 | `appendline(path, line)` | — | Append a line (with newline) to a file |
 | `fs_exists(path)` | `bool` | Whether a path exists |
 | `fs_mkdir(path)` | — | Create a directory |
 | `fs_mtime(path)` | `i64` | Modification time |
 | `fs_remove(path)` | — | Remove a file or directory |
+
+## Results (`result<T>`)
+
+Explicit error handling without exceptions: a `result<T>` is either an **ok** carrying a
+`T`, or an **err** carrying a message and an optional numeric code. `result<i64>`,
+`result<str>`, and `result<f64>` are supported. See [the guide](GUIDE.md#error-handling-resultt-ok-and-err)
+for the full walkthrough.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `ok(value)` | `result<T>` | Construct a success carrying `value` |
+| `err(msg)` | `result<T>` | Construct a failure with message `msg` (code 1) |
+| `err(code, msg)` | `result<T>` | Construct a failure with a numeric code and message |
+| `is_ok(r)` | `bool` | Whether `r` is a success |
+| `is_err(r)` | `bool` | Whether `r` is a failure |
+| `unwrap(r)` | `T` | The value; halts with the error message if `r` is an err |
+| `unwrap_or(r, default)` | `T` | The value, or `default` if `r` is an err |
+| `err_msg(r)` | `str` | The failure message (`""` for an ok) |
+| `err_code(r)` | `i64` | The failure code (`0` for an ok) |
+| `try_readfile(path)` | `result<str>` | `readfile` that signals failure instead of halting |
+| `try_toint(s)` | `result<i64>` | `toint` that signals failure instead of halting |
+| `try_tofloat(s)` | `result<f64>` | `tofloat` that signals failure instead of halting |
 
 ```torvik
 writefile("/tmp/note.txt", "skål");
@@ -252,9 +275,16 @@ echo!(datetime_str());
 
 Everything above is a core builtin, always available. The functions below are the **opt-in
 standard library**: bring them in with `apply std;` (all of it) or per-module with
-`apply std::math;`, `apply std::strings;`, or `apply std::list;`. The library is installed at
-`~/.torvik/lib/` and versioned independently of the compiler (the `std` key in `VERSION`).
-Set `std = no_std` in a project's `torvik.rune` to opt out entirely.
+`apply std::math;`, `apply std::strings;`, `apply std::list;`, or `apply std::path;`. The
+library is installed at `~/.torvik/lib/` and versioned independently of the compiler (the
+`std` key in `VERSION`). Set `std = no_std` in a project's `torvik.rune` to opt out entirely.
+
+**Standard-library versioning.** std has its own semver, separate from the compiler's:
+additive growth bumps its minor version, a breaking change bumps its major — without the
+compiler having to move. The installed version always ships with the toolchain
+(`torvc --version` and `rune version` both report it), and a project can require a minimum
+with `std = "1.1.0"` in `torvik.rune`; a too-old installation is a clean build error that
+says to run `rune update`.
 
 ### `std::math`
 
@@ -267,6 +297,8 @@ Set `std = no_std` in a project's `torvik.rune` to opt out entirely.
 | `factorial(n)` | `i64` | `n!` |
 | `is_even(n)` | `i64` | `1` if `n` is even, else `0` |
 | `is_odd(n)` | `i64` | `1` if `n` is odd, else `0` |
+| `sign(n)` | `i64` | `-1`, `0`, or `1` by the sign of `n` |
+| `isqrt(n)` | `i64` | Integer square root: largest `r` with `r*r <= n` (halts on negative input) |
 
 ### `std::strings`
 
@@ -277,6 +309,9 @@ Set `std = no_std` in a project's `torvik.rune` to opt out entirely.
 | `pad_left(s, width, pad)` | `str` | Left-pad `s` to `width` using `pad` |
 | `pad_right(s, width, pad)` | `str` | Right-pad `s` to `width` using `pad` |
 | `str_eq(a, b)` | `bool` | Whether two strings are equal |
+| `count_str(s, sub)` | `i64` | Non-overlapping occurrences of `sub` in `s` |
+| `reverse_str(s)` | `str` | The string reversed (bytewise) |
+| `capitalize(s)` | `str` | First character uppercased, rest unchanged |
 
 ### `std::list`
 
@@ -286,6 +321,23 @@ Set `std = no_std` in a project's `torvik.rune` to opt out entirely.
 | `sum(xs)` | `i64` | Sum of a `list<i64>` |
 | `list_max(xs)` | `i64` | Largest element |
 | `list_min(xs)` | `i64` | Smallest element |
+| `sort(xs)` | — | Sort a `list<i64>` in place, ascending (stable) |
+| `sort_str(xs)` | — | Sort a `list<str>` in place, ascending by content |
+| `reverse_list(xs)` | — | Reverse a `list<i64>` in place |
+| `index_of(xs, v)` | `i64` | Index of the first element equal to `v`, or `-1` |
+| `index_of_str(xs, s)` | `i64` | Index of the first element equal to `s` (content), or `-1` |
+
+### `std::path`
+
+File-path helpers. Both `/` and `\` are recognized as separators on input; joins use `/`,
+which every supported platform accepts.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `path_base(p)` | `str` | Final component: `path_base("a/b/c.tv")` is `"c.tv"` |
+| `path_dir(p)` | `str` | Directory part: `"a/b"`; `"."` when there is no separator |
+| `path_ext(p)` | `str` | Extension with the dot (`".tv"`), `""` if none; a lone leading dot is a hidden name, not an extension |
+| `path_join(a, b)` | `str` | Join two segments with exactly one separator |
 
 ```torvik
 apply std;
