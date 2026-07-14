@@ -1,10 +1,24 @@
 # Torvik Roadmap
 
 
-## v1.2.0 — current release
+## v1.2.1 — current release
+
+A patch release fixing four correctness bugs in v1.2.0; no new features, no breaking
+changes for correct programs. **Warnings now actually reach `rune run` users** — `-q`
+no longer implies `--no-warn` (warnings are diagnostics, like errors), and rune
+captures the compiler's diagnostics and replays them on cached runs until the code is
+fixed or a suppressor is used. **Unannotated declarations** (`set v = trim(x);`,
+`set b = a;`) previously compiled silently broken — garbage reads and segfaults — and
+are now clean located errors (only the documented `set xs = list_new();` inference may
+omit an annotation). **Bare statement calls of value-returning builtins** (`trim(s);`)
+now get a truthful error instead of "call to undefined function". **Diagnostics under
+`apply`** now report the user's real line numbers instead of positions inside the
+prepended module text.
+
+## v1.2.0
 
 A language-ergonomics and tooling release with **no breaking changes**, verified by
-three-generation self-hosting fixpoints and the full 94-case end-to-end suite on both Linux
+three-generation self-hosting fixpoints and the full 93-case end-to-end suite on both Linux
 and Windows. Highlights: **`aett`** — a family of named values, Torvik's enumeration, named
 for the *ættir* the runes are grouped into (`aett Status { Pending, Active, Closed }`,
 variants as `Status::Pending`, i64-backed with the aett name as a type annotation and
