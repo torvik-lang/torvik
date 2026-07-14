@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.2.1]
+
+### Fixed
+
+- **Warnings now reach `rune run` users — and stay visible on cached runs.** Two
+  compounding bugs hid the entire v1.2.0 warnings system from anyone building through
+  rune: rune compiles with `-q`, and `-q` implied `--no-warn`; and on cache hits no
+  compiler ran at all, so nothing could print. `-q` now suppresses only the
+  informational build output — **warnings are diagnostics, like errors, and always
+  show** unless `--no-warn` or a `!@` directive silences them — and rune captures the
+  compiler's diagnostics to `build/.diag.log` and replays them on every cached run
+  until the code is fixed or a suppressor is used.
+- **Unannotated declarations no longer compile silently broken.** `set v = trim(x);`
+  produced garbage aliasing unrelated memory, and `set b = a;` segfaulted — both are
+  now clean located errors. The guide has always required type annotations; only the
+  documented `set xs = list_new();` inference may omit one.
+- **Bare statement calls of value-returning builtins get a truthful error.**
+  `trim(s);` as a statement previously claimed "call to undefined function 'trim'";
+  it now explains the real situation and shows the fix.
+- **Diagnostics under `apply` report the user's real line numbers.** Applied modules
+  are prepended to the compilation unit, so an error on the user's line 3 was
+  reported as line 330-something of their file. Offsets past the prelude now
+  subtract its lines; diagnostics inside an applied module say so instead of
+  mislabeling the user's file.
+
 ## [1.2.0]
 
 A language-ergonomics and tooling release.
