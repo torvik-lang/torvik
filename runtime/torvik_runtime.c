@@ -1512,6 +1512,12 @@ int64_t torvik_sys_pid(void) {
 }
 
 int64_t torvik_sys_run(const char *cmd) {
+    /* v1.2.1: the child writes to the inherited fds immediately, while our own
+       buffered stdio may still be holding earlier output (rune's replayed
+       diagnostics, for one) - flush so parent output always precedes the
+       child's. */
+    fflush(stdout);
+    fflush(stderr);
 #if defined(_WIN32)
     /* On Windows system() returns the command's exit code directly (or -1 if the
        command interpreter can't be started). No WEXITSTATUS wrapping needed. */
