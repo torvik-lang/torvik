@@ -261,10 +261,12 @@ if [ $? = 0 ] && ! grep -q "warning:" w2.log; then
     PASS=$((PASS+1)); note "ok    warns/no_warn_flag"
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/no_warn_flag"; note "FAIL  warns/no_warn_flag"; fi
 
+# -q suppresses the success banner but NOT warnings - they are diagnostics.
+# (rune builds with -q; this is exactly how warnings reach `rune run` users.)
 "$TORVC" warny.tv -o wy3 -q > w3.log 2>&1
-if [ $? = 0 ] && ! grep -q "warning:" w3.log; then
-    PASS=$((PASS+1)); note "ok    warns/quiet_suppresses"
-else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/quiet_suppresses"; note "FAIL  warns/quiet_suppresses"; fi
+if [ $? = 0 ] && grep -q "warning:" w3.log && ! grep -q "Compiled successfully" w3.log; then
+    PASS=$((PASS+1)); note "ok    warns/quiet_keeps_warnings"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/quiet_keeps_warnings"; note "FAIL  warns/quiet_keeps_warnings"; fi
 
 printf 'df main() -> void {\n    fixed _ignored: i64 = 5;\n    echo!("clean");\n}\n' > uscore.tv
 "$TORVC" uscore.tv -o us > w4.log 2>&1
@@ -298,6 +300,13 @@ printf '!@NO_WRN;\ndf main() -> void { echo!("x"); }\n' > direc3.tv
 if [ $? = 1 ] && grep -q "unknown warning directive" w7.log; then
     PASS=$((PASS+1)); note "ok    warns/typo_directive_errors"
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/typo_directive_errors"; note "FAIL  warns/typo_directive_errors"; fi
+
+# apply line translation: an error below `apply std;` reports the USER's line
+printf 'apply std;\ndf main() -> void {\n    nosuchfn();\n}\n' > lineoff.tv
+"$TORVC" lineoff.tv -o lo > w9.log 2>&1
+if [ $? = 1 ] && grep -q "lineoff.tv:3:" w9.log; then
+    PASS=$((PASS+1)); note "ok    warns/apply_line_numbers"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/apply_line_numbers"; note "FAIL  warns/apply_line_numbers"; fi
 
 # ---------- summary ----------
 note ""

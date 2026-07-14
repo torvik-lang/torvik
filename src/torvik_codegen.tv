@@ -955,6 +955,30 @@ df aett_variants_of(nm: str) -> str {
     return "";
 }
 
+// v1.2.1: the value-returning builtins that exist only in EXPRESSION position.
+// A bare statement call of one of these previously produced the misleading
+// "call to undefined function" (and emitted a bogus direct call) - the
+// statement path recognizes them and explains the real situation instead.
+// KEEP IN LOCKSTEP with the expression registrations in compile_value.
+df is_expr_builtin(nm: str) -> i64 {
+    check nm == "trim" || nm == "triml" || nm == "trimr" || nm == "upper" || nm == "lower" { return 1; }
+    check nm == "replace" || nm == "substr" || nm == "char_at" || nm == "byte_at" || nm == "split" { return 1; }
+    check nm == "find" || nm == "contains" || nm == "starts" || nm == "ends" || nm == "str_concat" { return 1; }
+    check nm == "fmt" || nm == "tostr" || nm == "int_to_str" || nm == "float_to_str" { return 1; }
+    check nm == "toint" || nm == "tofloat" || nm == "typeof" || nm == "len" { return 1; }
+    check nm == "abs" || nm == "min" || nm == "max" || nm == "randint" || nm == "rand" { return 1; }
+    check nm == "readln" || nm == "readint" || nm == "readfloat" || nm == "readbool" || nm == "read" { return 1; }
+    check nm == "readkey" || nm == "readkey_str" || nm == "readenv" || nm == "readfile" { return 1; }
+    check nm == "try_readfile" || nm == "try_toint" || nm == "try_tofloat" { return 1; }
+    check nm == "ok" || nm == "err" || nm == "is_ok" || nm == "is_err" { return 1; }
+    check nm == "unwrap" || nm == "unwrap_or" || nm == "err_msg" || nm == "err_code" { return 1; }
+    check nm == "table_get" || nm == "table_has" || nm == "bag_has" || nm == "table_new" || nm == "bag_new" || nm == "list_new" { return 1; }
+    check nm == "time_ms" || nm == "datetime_str" || nm == "fs_exists" || nm == "fs_mtime" { return 1; }
+    check nm == "sys_os_name" || nm == "sys_os_version" || nm == "sys_arch" || nm == "sys_hostname" || nm == "sys_username" { return 1; }
+    check nm == "sys_cpu_count" || nm == "sys_mem_total" || nm == "sys_mem_free" || nm == "sys_pid" || nm == "args" || nm == "args_get" { return 1; }
+    return 0;
+}
+
 // Membership test over the collected fixed-global names.
 df fixed_global_seen(names: list<str>, nm: str) -> i64 {
     set i: i64 = 0;
@@ -4095,6 +4119,31 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             }
             // An explicit ':' must be followed by a type name. `set x: = ...`
             // (colon present, no type) was silently accepted before. Caret on ':'.
+            // v1.2.1: an unannotated declaration is only supported for the
+            // documented inference case, `set xs = list_new();`. Every other
+            // shape previously compiled SILENTLY BROKEN: a call result read
+            // back as garbage aliasing unrelated memory, and a plain variable
+            // copy (`set b = a;`) segfaulted. The guide has always said
+            // declarations require a type annotation - now the compiler does.
+            check had_colon == 0 {
+                set uad_ok: i64 = 0;
+                check tok_peek(tokens, pos) == OP_EQ && tok_peek(tokens, pos + 1) == TOK_IDENT && tok_peek(tokens, pos + 2) == PUNCT_LPAREN && tok_peek(tokens, pos + 3) == PUNCT_RPAREN {
+                    check line_eq(allnames[an], "list_new") == 1 { uad_ok = 1; }
+                }
+                check uad_ok == 0 {
+                    push(err_pos, decl_pos);
+                    push(err_msg, fmt("'{}' needs a type annotation - write `set {}: str = ...;` (or i64, f64, bool, ...). Only `set xs = list_new();` may omit it: the element type is inferred from the first push.", vname, vname));
+                    whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                        fixed _uak: i64 = tok_peek(tokens, pos);
+                        check _uak == TOK_INT || _uak == TOK_FLOAT { s += 1; }
+                        check _uak == TOK_STRING { s += 1; an += 1; }
+                        check _uak == TOK_IDENT { an += 1; }
+                        pos += 1;
+                    }
+                    check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                    continue;
+                }
+            }
             check had_colon == 1 && len(vann) == 0 {
                 push(err_pos, pos - 1);
                 push(err_msg, "expected a type after ':'");
@@ -5093,7 +5142,14 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                         continue;
                     }
                 } fallback {
-                    emit(ir, str_concat(str_concat(str_concat("  ; tv.undeffn:", nm), ":"), int_to_str(snm_pos)));
+                    // v1.2.1: a bare statement call of a value-returning builtin
+                    // is a real situation with a real explanation - not an
+                    // "undefined function". Truly undefined names keep the marker.
+                    check is_expr_builtin(nm) == 1 {
+                        emit_uerr(ir, snm_pos, fmt("'{}' is a builtin that returns a value - a bare statement discards the result. Use it: `set v = {}(...)`, or inside an expression.", nm, nm));
+                    } fallback {
+                        emit(ir, str_concat(str_concat(str_concat("  ; tv.undeffn:", nm), ":"), int_to_str(snm_pos)));
+                    }
                 }
                 emit(ir, str_concat(str_concat(str_concat(str_concat("  ", scall_tmp), " = call ptr @"), nm), str_concat("(", str_concat(sgen_args, ")"))));
                 continue;

@@ -89,7 +89,8 @@ case "$ARCH" in x86_64|amd64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) ech
 case "$OS" in
   linux) ;;
   darwin)
-    echo "Torvik doesn't have official macOS builds yet - macOS support is planned for v1.2.0."
+    echo "Torvik doesn't have official macOS builds yet - macOS support is planned for a"
+    echo "future version, once real Apple hardware is available for credible testing."
     echo ""
     echo "There's no prebuilt torvc/rune for macOS to install right now. If you'd like to try"
     echo "it early, the toolchain is written to be macOS-compatible and can be built from source"
@@ -98,8 +99,8 @@ case "$OS" in
     echo "  git clone https://github.com/torvik-lang/torvik"
     echo "  # then follow docs/GUIDE.md to bootstrap the compiler"
     echo ""
-    echo "Otherwise, watch the repo for the v1.2.0 release, which brings tested macOS binaries and"
-    echo "a proper installer. You can also run Torvik today on Linux (including in a Linux VM/container)."
+    echo "Otherwise, watch the repo (https://github.com/torvik-lang/torvik) for the macOS release."
+    echo "You can also run Torvik today on Linux (including in a Linux VM/container)."
     exit 1 ;;
   mingw*|msys*|cygwin*)
     echo "It looks like you're on Windows (running under $OS)."

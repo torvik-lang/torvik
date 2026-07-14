@@ -312,11 +312,11 @@ Flag-Case2 "warns/no_warn_flag" {
     $l2 = [string](Get-Content w2.log -Raw)
     return ($l2 -notmatch "warning:")
 }
-Flag-Case2 "warns/quiet_suppresses" {
+Flag-Case2 "warns/quiet_keeps_warnings" {
     & $TorvcExe warny.tv -o wy3 -q *> w3.log
     if ($LASTEXITCODE -ne 0) { return $false }
     $l3 = [string](Get-Content w3.log -Raw)
-    return ($l3 -notmatch "warning:")
+    return (($l3 -match "warning:") -and ($l3 -notmatch "Compiled successfully"))
 }
 Flag-Case2 "warns/underscore_exempt" {
     Set-Content uscore.tv "df main() -> void {`n    fixed _ignored: i64 = 5;`n    echo!(`"clean`");`n}`n"
@@ -345,6 +345,12 @@ Flag-Case2 "warns/typo_directive_errors" {
     if ($LASTEXITCODE -ne 1) { return $false }
     $l7 = [string](Get-Content w7.log -Raw)
     return ($l7 -match "unknown warning directive")
+}
+Flag-Case2 "warns/apply_line_numbers" {
+    Set-Content lineoff.tv "apply std;`ndf main() -> void {`n    nosuchfn();`n}`n"
+    & $TorvcExe lineoff.tv -o lo *> w9.log
+    if ($LASTEXITCODE -ne 1) { return $false }
+    return ([string](Get-Content w9.log -Raw) -match "lineoff.tv:3:")
 }
 Pop-Location
 

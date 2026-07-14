@@ -2,7 +2,7 @@
 
 38 positive cases covering the language surface (values, operators, control flow,
 functions, collections, weave, membership, std lib, files, system, stdin),
-34 expected-clean-error cases, 9 rune project-tool cases, 7 warning-system
+36 expected-clean-error cases, 9 rune project-tool cases, 8 warning-system
 cases, and 6 torvc flag
 cases.
 

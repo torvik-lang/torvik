@@ -323,7 +323,9 @@ df rune_cmd_build(final: i64) -> void {
     set cmd: str = str_concat(str_concat(str_concat(str_concat(torvc, " "), entry), " -o "), out);
     cmd = str_concat(cmd, " -q");
     check final == 1 { cmd = str_concat(cmd, " --final"); }
+    cmd = str_concat(cmd, str_concat(str_concat(" > ", rune_diag_log()), " 2>&1"));
     fixed rc: i64 = sys_run(cmd);
+    rune_echo_diag();
     check rc == 0 {
         check diag_path_exists(out) == 1 {
             echo!(fmt("Compiled {} in {}", out, diag_fmt_secs(time_ms() - t_start)));
@@ -333,6 +335,20 @@ df rune_cmd_build(final: i64) -> void {
     } fallback {
         exit(rc);
     }
+}
+
+// v1.2.1: warnings must survive the build cache. torvc's diagnostics are
+// captured to build/.diag.log during a real compile and REPLAYED on cache
+// hits - so `rune run` shows the same warnings every time until the code is
+// fixed or a suppressor (--no-warn / !@ directives) is used, both of which
+// leave the log empty naturally. Errors ride the same capture (echoed before
+// the failing exit).
+df rune_diag_log() -> str { return "build/.diag.log"; }
+
+df rune_echo_diag() -> void {
+    check rune_path_exists(rune_diag_log()) == 0 { return; }
+    fixed d: str = readfile(rune_diag_log());
+    check len(trim(d)) > 0 { echo(d); }
 }
 
 df rune_needs_rebuild(out: str, srcpath: str) -> i64 {
@@ -357,8 +373,14 @@ df rune_cmd_run(final: i64) -> void {
         set cmd: str = str_concat(str_concat(str_concat(str_concat(torvc, " "), entry), " -o "), out);
         cmd = str_concat(cmd, " -q");
         check final == 1 { cmd = str_concat(cmd, " --final"); }
+        cmd = str_concat(cmd, str_concat(str_concat(" > ", rune_diag_log()), " 2>&1"));
         fixed rc: i64 = sys_run(cmd);
+        rune_echo_diag();
         check rc != 0 { exit(rc); }
+    } fallback {
+        // cache hit: no compile ran - replay the last build's diagnostics so
+        // warnings stay visible on every run until resolved or suppressed.
+        rune_echo_diag();
     }
     fixed prc: i64 = sys_run(rune_run_path(out));
     exit(prc);

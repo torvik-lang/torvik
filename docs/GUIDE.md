@@ -23,7 +23,7 @@ know where the edges are.
 6. [Printing: `echo` and `echo!`](#printing-echo-and-echo)
 7. [Strings and interpolation](#strings-and-interpolation)
 8. [Conditionals: `check` / `fallback`](#conditionals-check--fallback)
-9. [The ternary: `?>` / `!>`](#the-ternary----)
+9. [The ternary: `?>` / `!>`](#the-ternary---)
 10. [Guards: `guard` / `fallback`](#guards-guard--fallback)
 11. [Aetts and pattern matching: `aett` / `when`](#aetts-and-pattern-matching-aett--when)
 12. [Loops: `whilst` and `each`](#loops-whilst-and-each)
@@ -748,7 +748,7 @@ same line-and-caret display as errors:
   replacement to use. (Nothing is deprecated today; the channel ships so future
   deprecations are visible immediately.)
 
-`torvc --no-warn` suppresses them, and `-q` implies it. Loop variables and function
+`torvc --no-warn` suppresses them (`-q` does not — warnings are diagnostics, shown even in quiet builds, which is how they reach you through `rune run`). Loop variables and function
 parameters are never flagged.
 
 ### `!@` warning directives

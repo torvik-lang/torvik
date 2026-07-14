@@ -30,7 +30,7 @@ On success, `torvc` prints a confirmation with the compile time, for example
 | Flag              | Meaning                                             |
 |-------------------|-----------------------------------------------------|
 | `-o <file>`       | Set the output executable name                      |
-| `--no-warn`       | Suppress compile warnings (they never fail a build; `-q` also implies this; `!@NO_WARN;` at the top of a file does the same per-file) |
+| `--no-warn`       | Suppress compile warnings (they never fail a build; `!@NO_WARN;` at the top of a file does the same per-file; `-q` does **not** suppress them — warnings are diagnostics) |
 | `-q`, `--quiet`   | Suppress the success / timing message               |
 | `-v`, `--verbose` | More detailed output                                |
 | `--final`         | Production build (maximum optimization, stripped)   |

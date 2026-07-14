@@ -1,0 +1,4 @@
+df main() -> void {
+    set v = trim("  x  ");
+    echo!(v);
+}

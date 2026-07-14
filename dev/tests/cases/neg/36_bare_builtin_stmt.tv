@@ -1,0 +1,5 @@
+df main() -> void {
+    fixed s: str = "  x  ";
+    trim(s);
+    echo!(s);
+}
