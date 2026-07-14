@@ -45,7 +45,7 @@ df main() -> void {
             check i + 1 < argc { outpath = args_get(i + 1); i += 1; }
         } fallback {
             check a == "-v" || a == "--verbose" { verbose = 1; } fallback {
-                check a == "-q" || a == "--quiet" { quiet = 1; warn_suppress = 1; } fallback {
+                check a == "-q" || a == "--quiet" { quiet = 1; } fallback {
                     check a == "--final" { final = 1; } fallback {
                         check a == "--no-warn" { warn_suppress = 1; } fallback {
                             check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
@@ -173,9 +173,9 @@ df print_help() -> void {
     echo!("");
     echo!("FLAGS:");
     echo!("  -v, --verbose   Show compile details (bytes, tokens, IR path)");
-    echo!("  -q, --quiet     Suppress all output except errors");
+    echo!("  -q, --quiet     Suppress build output except diagnostics (errors and warnings)");
     echo!("  --final         Production build (-O3, stripped)");
-    echo!("  --no-warn       Suppress compile warnings (they never fail the build)");
+    echo!("  --no-warn       Suppress compile warnings (they never fail the build; -q does NOT imply this - warnings are diagnostics)");
 }
 
 // Scan for an unterminated string literal. Returns the 0-based offset of the
@@ -503,7 +503,18 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
 
     set import_seen_set: list<str> = list_new();
     fixed no_std: i64 = project_no_std();
-    fixed combined:  str = str_concat(build_prelude(source, import_seen_set, no_std), source);
+    fixed prelude: str = build_prelude(source, import_seen_set, no_std);
+    fixed combined:  str = str_concat(prelude, source);
+    // v1.2.1: record where the user's own text begins so diagnostics report
+    // the user's real line numbers (see render_source_diag).
+    diag_user_start = len(prelude);
+    set _plc: i64 = 0;
+    set _pli: i64 = 0;
+    whilst _pli < len(prelude) {
+        check byte_at(prelude, _pli) == 10 { _plc += 1; }
+        _pli += 1;
+    }
+    diag_prelude_lines = _plc;
 
     fixed tokens: list<i64> = lex_source(combined);
     fixed ntok: i64 = len(tokens);
