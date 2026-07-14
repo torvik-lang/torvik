@@ -109,7 +109,7 @@ if ($env:TORVIK_VERSION) {
             if ($line -match '^\s*torvik\s*=\s*(.+?)\s*$') { $V = $Matches[1].Trim(); break }
         }
     } catch { }
-    if (-not $V) { $V = '1.1.0' }
+    if (-not $V) { $V = '1.2.1' }
     Write-Host "Installing Torvik v$V ($OS/$Arch)..."
 }
 $Rel = "$Org/releases/download/v$V"
