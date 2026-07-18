@@ -1,4 +1,4 @@
-# run_tests.ps1 - Torvik v1.2.x end-to-end test suite (Windows 10+).
+# run_tests.ps1 - Torvik v1.3.x end-to-end test suite (Windows 10+).
 # Usage: powershell -ExecutionPolicy Bypass -File run_tests.ps1 [torvc-path] [rune-path]
 #   Defaults to `torvc` / `rune` on PATH.
 # All work happens in .\tv-test-work (never %TEMP%). Exit code: 0 all pass, 1 any failure.
@@ -345,6 +345,12 @@ Flag-Case2 "warns/typo_directive_errors" {
     if ($LASTEXITCODE -ne 1) { return $false }
     $l7 = [string](Get-Content w7.log -Raw)
     return ($l7 -match "unknown warning directive")
+}
+Flag-Case2 "warns/unused_result" {
+    Set-Content ur.tv "df init(code: i64) -> i64 { return code; }`ndf main() -> void { init(1); echo!(`"ran`"); }`n"
+    & $TorvcExe ur.tv -o ur *> w8.log
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return ([string](Get-Content w8.log -Raw) -match "unused")
 }
 Flag-Case2 "warns/apply_line_numbers" {
     Set-Content lineoff.tv "apply std;`ndf main() -> void {`n    nosuchfn();`n}`n"
