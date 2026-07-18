@@ -337,7 +337,7 @@ df rune_cmd_build(final: i64) -> void {
     }
 }
 
-// v1.2.1: warnings must survive the build cache. torvc's diagnostics are
+// v1.3.0: warnings must survive the build cache. torvc's diagnostics are
 // captured to build/.diag.log during a real compile and REPLAYED on cache
 // hits - so `rune run` shows the same warnings every time until the code is
 // fixed or a suppressor (--no-warn / !@ directives) is used, both of which
@@ -705,7 +705,11 @@ df rune_cmd_update(confirmed: i64, pin_in: str) -> void {
         // Probe the HTTP status first so a rate limit (429) or other HTTP error
         // gives a clean, specific message instead of a silent failure.
         fixed probe_tmp: str = str_concat(sys_home_dir(), "/.torvik/.httpcode");
-        sys_run(str_concat(str_concat("sh -c 'curl -s -o /dev/null -w \"%{{http_code}}\" ", lurl), str_concat(" > ", str_concat(probe_tmp, " 2>/dev/null'"))));
+        // v1.3.0: plain string literals no longer collapse {{ to { (interpolation
+        // is scoped to echo/echo!/fmt), so curl's %{http_code} format is built
+        // from char-literal braces - identical output under old and new semantics.
+        fixed curl_fmt: str = str_concat("sh -c 'curl -s -o /dev/null -w \"%", '{', "http_code", '}', "\" ");
+        sys_run(str_concat(str_concat(curl_fmt, lurl), str_concat(" > ", str_concat(probe_tmp, " 2>/dev/null'"))));
         set http: str = "";
         check fs_exists(probe_tmp) == 1 { http = trim(readfile(probe_tmp)); }
         sys_run(str_concat("rm -f ", probe_tmp));
