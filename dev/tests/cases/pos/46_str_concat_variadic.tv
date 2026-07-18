@@ -1,0 +1,18 @@
+// v1.3.0: str_concat folds any number of arguments (>= 2) left-to-right,
+// so multi-part strings need no nesting.
+df main() -> void {
+    echo!(str_concat("a", "b"));
+    echo!(str_concat("a", "b", "c"));
+    echo!(str_concat("a", "b", "c", "d", "e"));
+
+    fixed key: str = "name";
+    fixed value: str = "torvik";
+    echo!(str_concat(key, " = ", value));
+
+    // Mixed variables and literals, and a reused accumulator.
+    set line: str = str_concat("[", key, "=", value, "]");
+    echo!(str_concat(line, " ", line));
+
+    // Nesting still composes.
+    echo!(str_concat(str_concat("x", "y"), "z"));
+}

@@ -1,7 +1,33 @@
 # Torvik Roadmap
 
 
-## v1.2.1 — current release
+## v1.3.0 — current public release
+
+- **File-system surface for real tools** — `dir_list(path)` (sorted directory entry names
+  as `list<str>`), `fs_is_dir(path)`, and `fs_copy(src, dst)` (binary-safe, so images and
+  other assets round-trip exactly); `fs_mkdir` documented as the `mkdir -p` it always was.
+  Built for the Torvik-showcase static site generator, useful to every tool that walks a tree.
+- **Concurrency — ravens and bridges.** `raven` spawns a `df` function as a task on its own
+  OS thread (fire-and-forget, or a `task<T>` handle joined with `join`); `bridge<T>` is a
+  typed, buffered channel between tasks (`bridge_new` / `send` / `recv` / `try_recv` /
+  `bridge_close`). The model is safe by construction: values deep-copy as they cross a thread
+  boundary, so tasks share no mutable state and the reference-counting runtime stays lock-free
+  — the one atomic in the design is a bridge's own refcount. A compile-time reachability pass
+  enforces that spawned functions are self-contained (touch no globals). Given its own release,
+  as promised, because concurrency touches the runtime and deserved the room.
+- **Variadic `str_concat`** — folds any number of arguments, and a one-argument call is now a
+  clean error instead of silently dropping extras.
+- **Interpolation scoped to `echo`/`echo!`/`fmt`** — a string literal anywhere else is plain
+  data, so CSS, JSON, and template text sit in ordinary strings with no `{{` escapes. Found
+  while building [Vefna](https://github.com/torvik-lang/vefna), fixed before either shipped.
+- **Standard library v1.2.0** — additive growth across `std::strings`, `std::list`, and
+  `std::math`, plus a new `std::convert` module (base conversions and safe parsing). No
+  breaking changes; see [CHANGELOG](CHANGELOG.md).
+
+---
+
+
+## v1.2.1
 
 A patch release fixing four correctness bugs in v1.2.0; no new features, no breaking
 changes for correct programs. **Warnings now actually reach `rune run` users** — `-q`
@@ -150,14 +176,6 @@ resolved.
 
 ---
 
-## v1.3.0 — planned
-
-- **`task`** — async / concurrent tasks. Deliberately given its own release: concurrency
-  touches the reference-counting runtime (atomic refcounts, allocator safety) and deserves
-  the room. (Moved from v1.1.0, then v1.2.0, to give it the room it needs.)
-
----
-
 ## Future versions — planned, not yet scheduled
 
 Features that WILL come to Torvik but are not tied to a version yet. They moved out of the
@@ -179,7 +197,10 @@ v1.1.0 plan so that v1.1.0 — which carries important fixes for v1.0 users — 
 
 ### Standard library & tooling
 
-- **Methods** — method-style calls in the standard library (e.g. `s.str_cmp(t)`).
+- **Methods** — method-style calls in the standard library (e.g. `s.str_cmp(t)`). The
+  standard library itself keeps growing in the meantime as plain functions (v1.3.0 added a
+  batch across strings, lists, math, and a new `convert` module); method *syntax* is the
+  future addition.
 - **Rune Library** — the package registry: external dependencies via the `[runes]` section of
   `torvik.rune` (`rune add` / `remove` / `update`). This is a substantial project on its own —
   registry infrastructure (website, storage, hosting) comes with real costs, so its timeline

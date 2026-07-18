@@ -1,0 +1,23 @@
+// v1.3.0: bridges - two producers, one consumer. Cross-producer ordering is
+// deliberately NOT asserted; the count and the sum are deterministic.
+df worker(ch: bridge<i64>, base: i64, n: i64) -> void {
+    set i: i64 = 0;
+    whilst i < n {
+        send(ch, base + i);
+        i += 1;
+    }
+}
+
+df main() -> void {
+    set ch: bridge<i64> = bridge_new(3);
+    raven worker(ch, 100, 3);
+    raven worker(ch, 200, 3);
+    set total: i64 = 0;
+    set got: i64 = 0;
+    whilst got < 6 {
+        total += recv(ch);
+        got += 1;
+    }
+    echo!("count: ", got);
+    echo!("sum: ", total);
+}

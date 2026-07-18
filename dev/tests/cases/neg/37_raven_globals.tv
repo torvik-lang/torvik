@@ -1,0 +1,10 @@
+set counter: i64 = 0;
+
+df helper() -> i64 { return counter; }
+
+df worker(n: i64) -> i64 { return helper() + n; }
+
+df main() -> void {
+    set h: task<i64> = raven worker(2);
+    echo!(join(h));
+}

@@ -1,0 +1,40 @@
+// v1.3.0: tables returned from functions (+1-on-return fix - previously a
+// dangling pointer), bag returns (same fix), and table iteration via
+// table_keys (sorted key list; values via table_get).
+df build() -> table<str, str> {
+    set t: table<str, str> = table_new();
+    table_set(t, "gamma", "3");
+    table_set(t, "alpha", "1");
+    table_set(t, "beta", "2");
+    return t;
+}
+
+df tags() -> bag<str> {
+    set b: bag<str> = bag_new();
+    bag_add(b, "release");
+    return b;
+}
+
+df main() -> void {
+    fixed cfg: table<str, str> = build();
+    fixed ks: list<str> = table_keys(cfg);
+    set i: i64 = 0;
+    whilst i < len(ks) {
+        fixed k: str = ks[i];
+        echo!(k, " = ", table_get(cfg, k));
+        i += 1;
+    }
+    echo!("count: ", len(ks));
+
+    // Captured keys are independent of later mutation; a fresh capture sees it.
+    table_set(cfg, "delta", "4");
+    echo!("captured: ", len(ks), " fresh: ", len(table_keys(cfg)));
+
+    // Bag returns share the +1-on-return fix.
+    fixed g: bag<str> = tags();
+    echo!("bag: ", bag_has(g, "release"));
+
+    // Empty table iterates zero times.
+    set e: table<str, str> = table_new();
+    echo!("empty: ", len(table_keys(e)));
+}

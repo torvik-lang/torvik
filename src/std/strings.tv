@@ -77,3 +77,61 @@ df capitalize(s: str) -> str {
     check len(s) == 0 { return s; }
     return str_concat(upper(char_at(s, 0)), substr(s, 1, len(s)));
 }
+
+// Remove `prefix` from the front of s if present (else s unchanged).
+df strip_prefix(s: str, prefix: str) -> str {
+    check len(prefix) == 0 { return s; }
+    check starts(s, prefix) { return substr(s, len(prefix), len(s)); }
+    return s;
+}
+
+// Remove `suffix` from the end of s if present (else s unchanged).
+df strip_suffix(s: str, suffix: str) -> str {
+    check len(suffix) == 0 { return s; }
+    check ends(s, suffix) { return substr(s, 0, len(s) - len(suffix)); }
+    return s;
+}
+
+// True if s is non-empty and every character is an ASCII digit 0-9.
+df is_digits(s: str) -> bool {
+    check len(s) == 0 { return false; }
+    set i: i64 = 0;
+    whilst i < len(s) {
+        fixed c: i64 = byte_at(s, i);
+        check c < 48 || c > 57 { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// True if s is non-empty and every character is an ASCII letter A-Z or a-z.
+df is_alpha(s: str) -> bool {
+    check len(s) == 0 { return false; }
+    set i: i64 = 0;
+    whilst i < len(s) {
+        fixed c: i64 = byte_at(s, i);
+        set ok: i64 = 0;
+        check c >= 65 && c <= 90 { ok = 1; }
+        check c >= 97 && c <= 122 { ok = 1; }
+        check ok == 0 { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// Center s within `width` using `pad` (extra padding favors the right side).
+df center(s: str, width: i64, pad: str) -> str {
+    set out: str = s;
+    set left: i64 = 1;
+    whilst len(out) < width {
+        check left == 1 { out = str_concat(pad, out); left = 0; } fallback { out = str_concat(out, pad); left = 1; }
+    }
+    return out;
+}
+
+// Truncate s to at most `width` characters, appending `ellipsis` if it was cut.
+df truncate(s: str, width: i64, ellipsis: str) -> str {
+    check len(s) <= width { return s; }
+    check width <= len(ellipsis) { return substr(s, 0, width); }
+    return str_concat(substr(s, 0, width - len(ellipsis)), ellipsis);
+}

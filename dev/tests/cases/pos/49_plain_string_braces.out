@@ -1,0 +1,9 @@
+.a{color:red}
+{{title}} - {{site_title}}
+{"k":{"n":1}}
+[{x}]
+Hello Odin, n=3
+fmt: Odin has 3 runes
+brace {escape} here
+1 + 2 = 3
+{{title}} - {{site_title}}

@@ -1,0 +1,37 @@
+// v1.3.0: interpolation is scoped to echo/echo!/fmt. A string literal anywhere
+// else is plain data - braces are ordinary characters, no escapes needed, no
+// variable reads. This is what lets CSS, JSON, and template text live in
+// ordinary strings.
+apply std;
+
+df wrap(s: str) -> str {
+    return str_concat("[", s, "]");
+}
+
+df main() -> void {
+    // Plain literals hold brace-heavy content untouched.
+    fixed css: str = ".a{color:red}";
+    echo!(css);
+    fixed tpl: str = "{{title}} - {{site_title}}";
+    echo!(tpl);
+    fixed jsn: str = "{\"k\":{\"n\":1}}";
+    echo!(jsn);
+
+    // A literal passed to an ordinary function is inert too.
+    echo!(wrap("{x}"));
+
+    // echo/echo!/fmt still interpolate their direct string-literal arguments,
+    // and {{ still escapes a literal brace there.
+    fixed name: str = "Odin";
+    set n: i64 = 3;
+    echo!("Hello {name}, n={n}");
+    fixed line: str = fmt("fmt: {name} has {n} runes");
+    echo!(line);
+    echo!("brace {{escape}} here");
+    fixed holes: str = fmt("{} + {} = {}", 1, 2, 3);
+    echo!(holes);
+
+    // Echoing a VARIABLE that holds braces prints them as-is: interpolation
+    // is a compile-time feature of literals, never a runtime scan of values.
+    echo!(tpl);
+}

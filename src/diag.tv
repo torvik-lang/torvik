@@ -244,9 +244,11 @@ df render_source_warning(source: str, file: str, offset: i64, message: str) -> v
 }
 
 // v1.2.1: `apply` prepends module source ahead of the user's file, so raw
-// offsets produced line numbers hundreds past the user's real line. torvc_main
-// records where the user's text begins; diagnostics past that point subtract
-// the prelude's lines, and diagnostics inside an applied module say so.
+// offsets into the combined text produced line numbers hundreds past the
+// user's real line ("src/main.tv:337" for line 11). torvc_main records where
+// the user's own text begins; diagnostics at or past that point subtract the
+// prelude's lines, and diagnostics inside an applied module say so instead of
+// mislabeling the user's file.
 set diag_user_start: i64 = 0;
 set diag_prelude_lines: i64 = 0;
 
@@ -264,6 +266,10 @@ df render_source_diag(source: str, file: str, offset: i64, message: str, label: 
         i += 1;
     }
     fixed col: i64 = off - line_start + 1;
+    // v1.2.1: translate combined-source lines back to the user's file. Text at
+    // or past diag_user_start belongs to the user's file (subtract the applied
+    // prelude's lines); earlier text is inside an applied module - label it
+    // honestly instead of pointing at a wrong line of the user's file.
     set shown_line: i64 = line_no;
     set shown_file: str = file;
     check diag_user_start > 0 && off >= diag_user_start {

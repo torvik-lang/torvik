@@ -253,7 +253,22 @@ df i128_binop_ptr(fn: str, a128: str, b128: str, ir: list<str>, ctr: list<i64>) 
 //            variable this is the declared type, which disambiguates a boxed
 //            scalar (printed numerically) from a string (both surface as "ptr").
 // Returns a string ptr; non-stringifiable types fall through and print as-is.
+// v1.3.0: echo statements record their keyword position here so the single
+// stringify funnel below can emit a LOCATED error for unprintable types
+// (task handles) without threading a position through every call site.
+set raven_echo_pos: i64 = 0;
+
 df echo_stringify(val: str, ev_ty: str, eff_ty: str, ir: list<str>, ctr: list<i64>) -> str {
+    // A task handle has no printable value - and printing the raw pointer
+    // would be exactly the silent-garbage class Torvik forbids.
+    check starts(eff_ty, "task<") {
+        emit_uerr(ir, raven_echo_pos, "a task handle has no printable value - join the task and echo its result instead: `fixed r: T = join(h); echo!(r);`");
+        return val;
+    }
+    check starts(eff_ty, "bridge<") {
+        emit_uerr(ir, raven_echo_pos, "a bridge has no printable value - recv from it and echo what crossed: `fixed v: T = recv(ch); echo!(v);`");
+        return val;
+    }
     // v1.2.0: aett-typed values are i64 ordinals - print them numerically.
     // (One entry-point check covers echo AND interpolation, since every
     // stringify path funnels through here.)
@@ -524,10 +539,11 @@ df scan_warn_directives(source: str, suppress: list<i64>, allow_cats: list<str>,
                 check line_eq(cat, "unused_variable") == 1 { cat_ok = 1; }
                 check line_eq(cat, "unreachable_code") == 1 { cat_ok = 1; }
                 check line_eq(cat, "deprecated") == 1 { cat_ok = 1; }
+                check line_eq(cat, "unused_result") == 1 { cat_ok = 1; }
                 check cat_ok == 1 { push(allow_cats, cat); }
                 check cat_ok == 0 {
                     push(derr_off, dstart);
-                    push(derr_msg, fmt("unknown warning category '{cat}' in !@ALLOW[...] - known categories: unused_variable, unreachable_code, deprecated"));
+                    push(derr_msg, fmt("unknown warning category '{cat}' in !@ALLOW[...] - known categories: unused_variable, unreachable_code, deprecated, unused_result"));
                 }
                 continue;
             }
@@ -682,7 +698,7 @@ df collect_undef_vars(fn_ir: list<str>, fn_names: list<str>, undef_seen: list<st
         check starts(line, "  ; tv.unclosedinterp:") {
             fixed ipos: i64 = toint(substr(line, 22, len(line)));
             push(e_pos, ipos);
-            push(e_msg, "unclosed interpolation in a string - every '{{' needs a matching '}}' (use '{{{{' to print a literal brace)");
+            push(e_msg, fmt("unclosed interpolation in a string - every '{{' needs a matching '}}' (use '{{{{' to print a literal brace)"));
         }
         check starts(line, "  ; tv.undefvar:") {
             fixed rest: str = substr(line, 16, len(line));
@@ -960,6 +976,10 @@ df aett_variants_of(nm: str) -> str {
 // "call to undefined function" (and emitted a bogus direct call) - the
 // statement path recognizes them and explains the real situation instead.
 // KEEP IN LOCKSTEP with the expression registrations in compile_value.
+// NOTE v1.3.0: `join` is deliberately NOT in this list. It is dual-form -
+// legal as a bare statement (`join(h);` waits and discards, via
+// torvik_task_join_drop) AND as an expression - so both paths intercept it
+// explicitly BEFORE this classifier's bare-statement error can fire.
 df is_expr_builtin(nm: str) -> i64 {
     check nm == "trim" || nm == "triml" || nm == "trimr" || nm == "upper" || nm == "lower" { return 1; }
     check nm == "replace" || nm == "substr" || nm == "char_at" || nm == "byte_at" || nm == "split" { return 1; }
@@ -970,10 +990,13 @@ df is_expr_builtin(nm: str) -> i64 {
     check nm == "readln" || nm == "readint" || nm == "readfloat" || nm == "readbool" || nm == "read" { return 1; }
     check nm == "readkey" || nm == "readkey_str" || nm == "readenv" || nm == "readfile" { return 1; }
     check nm == "try_readfile" || nm == "try_toint" || nm == "try_tofloat" { return 1; }
+    check nm == "try_writefile" || nm == "try_appendline" || nm == "try_fs_copy" { return 1; }
+    check nm == "bridge_new" || nm == "recv" || nm == "try_recv" { return 1; }   // v1.3.0
     check nm == "ok" || nm == "err" || nm == "is_ok" || nm == "is_err" { return 1; }
     check nm == "unwrap" || nm == "unwrap_or" || nm == "err_msg" || nm == "err_code" { return 1; }
     check nm == "table_get" || nm == "table_has" || nm == "bag_has" || nm == "table_new" || nm == "bag_new" || nm == "list_new" { return 1; }
-    check nm == "time_ms" || nm == "datetime_str" || nm == "fs_exists" || nm == "fs_mtime" { return 1; }
+    check nm == "time_ms" || nm == "datetime_str" || nm == "fs_exists" || nm == "fs_is_dir" || nm == "fs_mtime" || nm == "dir_list" { return 1; }
+    check nm == "table_keys" { return 1; }   // v1.3.0
     check nm == "sys_os_name" || nm == "sys_os_version" || nm == "sys_arch" || nm == "sys_hostname" || nm == "sys_username" { return 1; }
     check nm == "sys_cpu_count" || nm == "sys_mem_total" || nm == "sys_mem_free" || nm == "sys_pid" || nm == "args" || nm == "args_get" { return 1; }
     return 0;
@@ -1053,6 +1076,8 @@ df is_value_type(t: str) -> i64 {
     check starts(t, "bag<") { return 1; }
     check starts(t, "table<") { return 1; }
     check starts(t, "result<") { return 1; }
+    check starts(t, "task<") { return 1; }   // v1.3.0: raven task handle (inner validated at the decl site)
+    check starts(t, "bridge<") { return 1; } // v1.3.0: typed channel (inner validated at the decl site)
     return 0;
 }
 
@@ -2457,7 +2482,14 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
         an += 1;  // allnames has an entry for this string literal
         set val: str = "";
         set vty: str = "str";
-        check needs_interp(sv) == 1 {
+        // v1.3.0: interpolation is scoped to echo/echo!/fmt. Those compilers set
+        // ctr[2] = 1 immediately before compiling a direct string-literal
+        // argument; the flag is one-shot (consumed here) so literals anywhere
+        // else - assignments, call arguments, returns - are plain data and can
+        // hold braces (CSS, JSON, templates) without escapes or interpolation.
+        set interp_ok: i64 = 0;
+        check len(ctr) > 2 { interp_ok = ctr[2]; ctr[2] = 0; }
+        check interp_ok == 1 && needs_interp(sv) == 1 {
             val = emit_interp(sv, p, ir, ctr, gvals, gnames, var_names, var_types); vty = "str";
         } fallback {
             fixed gn: str = intern_str(sv, gvals, gnames);
@@ -2690,6 +2722,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     fixed nxt_neg: i64 = tok_peek(tokens, p + 2);
                     check nxt_neg == PUNCT_COMMA || nxt_neg == PUNCT_RPAREN { this_lit = str_concat("-", strings[s]); }
                 }
+                check nm == "fmt" && tok_peek(tokens, p) == TOK_STRING && len(ctr) > 2 { ctr[2] = 1; }
                 compile_value(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv, rp, rs, rs_ai, rs_ty, var_names, var_types);
                 check len(rv) > 0 { push(args, rv[0]); }
                 check len(rs_ty) > 0 { push(args_ty, rs_ty[0]); } fallback { push(args_ty, "ptr"); }
@@ -2705,9 +2738,29 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
 
             fixed tmp: str = make_tmp(ctr);
 
-            check nm == "str_concat" && len(args) >= 2 {
-                emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_str_concat(ptr "), args[0]), ", ptr "), str_concat(args[1], ")")));
-                finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
+            check nm == "str_concat" {
+                // v1.3.0: str_concat is variadic - it folds ALL of its arguments
+                // left-to-right, so str_concat(a, b, c, d) works directly with no
+                // nesting. Fewer than two arguments is a located error (silently
+                // concatenating "nothing" would be the exact silent-drop class
+                // that a fixed 2-arg form used to hide when given a third).
+                check len(args) < 2 {
+                    emit_uerr(ir, nm_pos, fmt("str_concat needs at least two strings to join, but got {} - pass the strings to combine: `str_concat(a, b)` or `str_concat(a, b, c, ...)`.", len(args)));
+                    push(out_val, "null"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "str"); return;
+                }
+                // Fold: acc = a0, then acc = concat(acc, aN) for each remaining
+                // argument. Every emitted concat line is discovered by the
+                // Stage-E temp line-scan, so all intermediates are released
+                // exactly once (verified ASAN-clean).
+                set sc_acc: str = args[0];
+                set sc_i: i64 = 1;
+                whilst sc_i < len(args) {
+                    fixed sc_next: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat("  ", sc_next), " = call ptr @torvik_str_concat(ptr "), sc_acc), ", ptr "), str_concat(args[sc_i], ")")));
+                    sc_acc = sc_next;
+                    sc_i += 1;
+                }
+                finish_str_result(tokens, strings, allnames, sc_acc, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
             }
             check nm == "int_to_str" && len(args) >= 1 {
                 set its_arg_ty: str = "ptr";
@@ -2872,6 +2925,18 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 check suppress_chain == 0 && is_cmp_op(_fm_nop) == 1 { p += 1; set rv_fm: list<str> = list_new(); set rp_fm: list<i64> = list_new(); set rs_fm: list<i64> = list_new(); set rs_fm_ai: list<i64> = list_new(); set rs_fm_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fm, rp_fm, rs_fm, rs_fm_ai, rs_fm_ty, var_names, var_types); check len(rp_fm) > 0 { p = rp_fm[0]; } check len(rs_fm) > 0 { s = rs_fm[0]; } check len(rs_fm_ai) > 0 { an = rs_fm_ai[0]; } set rhs_fm: str = "0"; check len(rv_fm) > 0 { rhs_fm = rv_fm[0]; } set rhs_fm_ty: str = "ptr"; check len(rs_fm_ty) > 0 { rhs_fm_ty = rs_fm_ty[0]; } set rv_fm_i: str = rhs_fm; check rhs_fm_ty != "i64" { rv_fm_i = coerce_i64(rhs_fm, ir, ctr); } fixed cmp_fm: str = make_tmp(ctr); check _fm_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp slt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sle i64 "), tmp), str_concat(", ", rv_fm_i))); } check _fm_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fm), " = icmp sge i64 "), tmp), str_concat(", ", rv_fm_i))); } push(out_val, cmp_fm); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
+            check nm == "fs_is_dir" && len(args) >= 1 {
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_fs_is_dir(ptr "), str_concat(args[0], ")")));
+                fixed _fd_nop: i64 = tok_peek(tokens, p);
+                check suppress_chain == 0 && is_cmp_op(_fd_nop) == 1 { p += 1; set rv_fd: list<str> = list_new(); set rp_fd: list<i64> = list_new(); set rs_fd: list<i64> = list_new(); set rs_fd_ai: list<i64> = list_new(); set rs_fd_ty: list<str> = list_new(); compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv_fd, rp_fd, rs_fd, rs_fd_ai, rs_fd_ty, var_names, var_types); check len(rp_fd) > 0 { p = rp_fd[0]; } check len(rs_fd) > 0 { s = rs_fd[0]; } check len(rs_fd_ai) > 0 { an = rs_fd_ai[0]; } set rhs_fd: str = "0"; check len(rv_fd) > 0 { rhs_fd = rv_fd[0]; } set rhs_fd_ty: str = "ptr"; check len(rs_fd_ty) > 0 { rhs_fd_ty = rs_fd_ty[0]; } set rv_fd_i: str = rhs_fd; check rhs_fd_ty != "i64" { rv_fd_i = coerce_i64(rhs_fd, ir, ctr); } fixed cmp_fd: str = make_tmp(ctr); check _fd_nop == OP_EQEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp eq  i64 "), tmp), str_concat(", ", rv_fd_i))); } check _fd_nop == OP_BANGEQ { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp ne  i64 "), tmp), str_concat(", ", rv_fd_i))); } check _fd_nop == OP_LT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp slt i64 "), tmp), str_concat(", ", rv_fd_i))); } check _fd_nop == OP_GT    { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp sgt i64 "), tmp), str_concat(", ", rv_fd_i))); } check _fd_nop == OP_LTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp sle i64 "), tmp), str_concat(", ", rv_fd_i))); } check _fd_nop == OP_GTEQ  { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", cmp_fd), " = icmp sge i64 "), tmp), str_concat(", ", rv_fd_i))); } push(out_val, cmp_fd); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+                // v1.1.3: no trailing comparison - yield a real bool (previously
+                // tagged i64, so `echo!(fs_is_dir(p))` printed 1/0, unlike every
+                // other bool builtin).
+                fixed feb: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", feb), " = icmp ne i64 "), str_concat(tmp, ", 0")));
+                push(out_val, feb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return;
+            }
+            // v1.3.0: fs_is_dir mirrors fs_exists (cloned block above).
             check nm == "fs_exists" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_fs_exists(ptr "), str_concat(args[0], ")")));
                 fixed _fe_nop: i64 = tok_peek(tokens, p);
@@ -2992,6 +3057,21 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "readln" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_readln()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "read" { set rdp: str = ""; check len(args) >= 1 { rdp = args[0]; } fallback { rdp = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_read(ptr "), str_concat(rdp, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "readenv" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_readenv(ptr "), str_concat(args[0], ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            // v1.3.0: dir_list(path) - sorted entry names of a directory.
+            check nm == "dir_list" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_dir_list(ptr "), str_concat(args[0], ")"))); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list"); return; }
+            // v1.3.0: table_keys(t) - every key in the table as a sorted
+            // list<str>. Sorted so loops over a table are reproducible (hash
+            // order shifts as the table resizes). Values come via table_get.
+            check nm == "table_keys" {
+                set tk_ty: str = "";
+                check len(lone_arg_name) > 0 { tk_ty = lookup_var_type(lone_arg_name, var_names, var_types); }
+                check starts(tk_ty, "table") && len(args) >= 1 { } fallback {
+                    emit_uerr(ir, nm_pos, "table_keys takes a table variable - `fixed ks: list<str> = table_keys(t);`");
+                    push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                }
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_table_keys(ptr "), str_concat(args[0], ")")));
+                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list<str>"); return;
+            }
             check nm == "split" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_split_list(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list"); return; }
             // ── Standard library: bag (set of unique strings), v1.0 wiring ──
             check nm == "bag_new" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_bag_new()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
@@ -3047,6 +3127,19 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             }
             check nm == "try_readfile" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_try_readfile(ptr "), str_concat(args[0], ")")));
+                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+            }
+            // v1.3.0: recoverable write-side I/O - err results instead of halts.
+            check nm == "try_writefile" && len(args) >= 2 {
+                emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_try_writefile(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")"))));
+                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+            }
+            check nm == "try_appendline" && len(args) >= 2 {
+                emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_try_appendline(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")"))));
+                push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+            }
+            check nm == "try_fs_copy" && len(args) >= 2 {
+                emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_try_fs_copy(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")"))));
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
             }
             check nm == "try_toint" && len(args) >= 1 {
@@ -3207,6 +3300,144 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "find" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_find(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             check nm == "contains" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_contains(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed ctb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ctb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, ctb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             check nm == "readbool" { set rbp0: str = ""; check len(args) >= 1 { rbp0 = args[0]; } fallback { rbp0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_readbool(ptr "), str_concat(rbp0, ")"))); fixed rbb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rbb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, rbb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+            // v1.3.0: join(h) - wait for a task and take its return value. The
+            // handle's task<T> annotation names the result type, which selects
+            // both the emitted symbol (the _str/_i128 names exist purely so the
+            // line-based temp classifier can tag ownership: the value arrives
+            // OWNED, carrying the task function's +1-on-return claim) and the
+            // downstream finish path. task<void> join is statement-only.
+            // v1.3.0: recv(ch) - take one value off a bridge (blocks while
+            // empty; closed+drained panics with a pointer to try_recv). The
+            // element type selects the symbol (classifier tags ownership -
+            // the value arrives owned, carrying the queue's claim) and the
+            // finish path, exactly mirroring join.
+            check nm == "recv" || nm == "try_recv" {
+                set rcv_bty: str = "";
+                check len(lone_arg_name) > 0 { rcv_bty = lookup_var_type(lone_arg_name, var_names, var_types); }
+                check starts(rcv_bty, "bridge<") && len(args) >= 1 { } fallback {
+                    emit_uerr(ir, nm_pos, fmt("{} takes a bridge variable - `set ch: bridge<T> = bridge_new(cap); ... {}(ch)`", nm, nm));
+                    push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                }
+                fixed rcv_inner: str = substr(rcv_bty, 7, len(rcv_bty) - 1);
+                check nm == "try_recv" {
+                    set trc_bad: i64 = 0;
+                    check line_eq(rcv_inner, "i128") == 1 || line_eq(rcv_inner, "u128") == 1 { trc_bad = 1; }
+                    check is_aett_name(rcv_inner) == 1 { trc_bad = 1; }
+                    check trc_bad == 1 {
+                        emit_uerr(ir, nm_pos, fmt("try_recv cannot carry {} in v1.3.0 (result<{}> does not exist yet) - use recv, or send the value another way", rcv_inner, rcv_inner));
+                        push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                    }
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bridge_try_recv(ptr "), str_concat(args[0], ")")));
+                    // Result boxes ride the uniform ptr slot; the binding's
+                    // result<T> annotation carries the typing (try_readfile's
+                    // exact convention).
+                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+                }
+                check line_eq(rcv_inner, "str") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bridge_recv_str(ptr "), str_concat(args[0], ")")));
+                    finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
+                }
+                check line_eq(rcv_inner, "i128") == 1 || line_eq(rcv_inner, "u128") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bridge_recv_i128(ptr "), str_concat(args[0], ")")));
+                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, rcv_inner); return;
+                }
+                check line_eq(rcv_inner, "f64") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bridge_recv(ptr "), str_concat(args[0], ")")));
+                    fixed rcf_i: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", rcf_i), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                    fixed rcf_d: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", rcf_d), " = bitcast i64 "), str_concat(rcf_i, " to double")));
+                    check suppress_chain == 0 {
+                        chain_tail_f(tokens, strings, allnames, rcf_d, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty);
+                        return;
+                    }
+                    push(out_val, rcf_d); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return;
+                }
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_bridge_recv(ptr "), str_concat(args[0], ")")));
+                check is_aett_name(rcv_inner) == 1 {
+                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+                }
+                fixed rcv_i: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", rcv_i), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                set rcv_u64: i64 = 0;
+                check line_eq(rcv_inner, "u64") == 1 { rcv_u64 = 1; }
+                check suppress_chain == 0 {
+                    chain_tail(tokens, strings, allnames, rcv_i, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, rcv_u64);
+                    return;
+                }
+                set rcv_oty: str = "i64";
+                check rcv_u64 == 1 { rcv_oty = "u64"; }
+                push(out_val, rcv_i); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, rcv_oty); return;
+            }
+            // v1.3.0: bridge_new in expression context - its only legal home is
+            // the initializer of a bridge<T> binding (handled in the decl path,
+            // which knows the element type). Reaching here means it is nested
+            // somewhere else.
+            check nm == "bridge_new" {
+                emit_uerr(ir, nm_pos, "bridge_new can only initialize a bridge<T> binding - `set ch: bridge<str> = bridge_new(cap);` (the annotation fixes the element type)");
+                push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+            }
+            // v1.3.0 note: `join` is context-sensitive. With a task-typed
+            // handle argument it is the task join below; otherwise it falls
+            // through to normal dispatch, so std::list's join(list, sep) (and
+            // any user function named join) keeps working unchanged.
+            set jn_hty: str = "";
+            check nm == "join" && len(lone_arg_name) > 0 { jn_hty = lookup_var_type(lone_arg_name, var_names, var_types); }
+            set jn_is_task: i64 = 0;
+            check starts(jn_hty, "task<") { jn_is_task = 1; }
+            check nm == "join" && jn_is_task == 0 {
+                check starts(lookup_var_type("join", var_names, var_types), "fnret:") { } fallback {
+                    emit_uerr(ir, nm_pos, "join takes a task handle variable - `set h: task<T> = raven worker(); ... join(h)` (the list-joining join(list, sep) needs `apply std::list;`)");
+                    push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                }
+            }
+            check nm == "join" && jn_is_task == 1 {
+                fixed jn_inner: str = substr(jn_hty, 5, len(jn_hty) - 1);
+                check line_eq(jn_inner, "void") == 1 {
+                    emit_uerr(ir, nm_pos, "join of a task<void> yields no value - use it as a statement to wait: `join(h);`");
+                    push(out_val, "0"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
+                }
+                check line_eq(jn_inner, "str") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_task_join_str(ptr "), str_concat(args[0], ")")));
+                    finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
+                }
+                check line_eq(jn_inner, "i128") == 1 || line_eq(jn_inner, "u128") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_task_join_i128(ptr "), str_concat(args[0], ")")));
+                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, jn_inner); return;
+                }
+                check line_eq(jn_inner, "f64") == 1 {
+                    emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_task_join(ptr "), str_concat(args[0], ")")));
+                    fixed jnf_i: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", jnf_i), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                    fixed jnf_d: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", jnf_d), " = bitcast i64 "), str_concat(jnf_i, " to double")));
+                    check suppress_chain == 0 {
+                        chain_tail_f(tokens, strings, allnames, jnf_d, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty);
+                        return;
+                    }
+                    push(out_val, jnf_d); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "f64"); return;
+                }
+                // Scalar integers, bool, and aett values ride the ptr slot as raw
+                // bits (the task function canonicalized narrow widths at return).
+                emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_task_join(ptr "), str_concat(args[0], ")")));
+                check is_aett_name(jn_inner) == 1 {
+                    // An aett value rides the slot as a raw ptr, exactly like a
+                    // direct call of an aett-returning function: the binding's
+                    // annotation carries the type; consumers ptrtoint on load.
+                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
+                }
+                fixed jn_i: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", jn_i), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                set jn_u64: i64 = 0;
+                check line_eq(jn_inner, "u64") == 1 { jn_u64 = 1; }
+                check suppress_chain == 0 {
+                    chain_tail(tokens, strings, allnames, jn_i, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, jn_u64);
+                    return;
+                }
+                set jn_oty: str = "i64";
+                check jn_u64 == 1 { jn_oty = "u64"; }
+                push(out_val, jn_i); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, jn_oty); return;
+            }
             check nm == "trim" && len(args) >= 1 {
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_trim(ptr "), str_concat(args[0], ")")));
                 finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
@@ -3990,6 +4221,348 @@ df compile_value(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos
     compile_tern_tail(tokens, strings, allnames, cond_v, cond_ty, vp, vs, va, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types);
 }
 
+// ── v1.3.0: the self-contained rule ─────────────────────────────────────────
+// A raven carries everything it needs in its claws: a function that is ever
+// raven-spawned, and every function transitively reachable from it, may not
+// read OR write a global variable. Even a read races: touching a global str
+// from a task retains/releases its NON-ATOMIC refcount from another thread.
+// Enforcing self-containment at compile time keeps the entire ARC runtime
+// untouched - no atomics, no immortal-global machinery, no silent races.
+//
+// The pass is a token-level scan (globals resolve through the same var map as
+// locals, so there is no single "global load" site to instrument). Per
+// function it collects: declared locals (set/fixed/each names - which shadow
+// globals, so they are excluded from matching), call edges (IDENT '(' where
+// the name is a user function, plus weave targets and raven targets), the
+// first global touch (an IDENT matching a global that is neither a param nor
+// a declared local and is not a call), and interpolated {name} reads inside
+// echo/echo! string literals (those compile to variable reads too). Then a
+// BFS from every spawn target reports the first reachable global toucher at
+// the spawn site.
+df tvname_in_list(nm: str, xs: list<str>) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(xs) {
+        check line_eq(xs[i], nm) == 1 { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
+df tvname_index(nm: str, xs: list<str>) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(xs) {
+        check line_eq(xs[i], nm) == 1 { return i; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+
+// Scan a string literal for {name} interpolations; push each name.
+df tv_interp_names(lit: str, out: list<str>) -> void {
+    fixed n: i64 = len(lit);
+    set i: i64 = 0;
+    whilst i < n {
+        check byte_at(lit, i) == 123 {
+            set j: i64 = i + 1;
+            set nmb: str = "";
+            set ok: i64 = 1;
+            whilst j < n && byte_at(lit, j) != 125 {
+                fixed c: i64 = byte_at(lit, j);
+                set is_id: i64 = 0;
+                check c >= 97 && c <= 122 { is_id = 1; }
+                check c >= 65 && c <= 90 { is_id = 1; }
+                check c >= 48 && c <= 57 { is_id = 1; }
+                check c == 95 { is_id = 1; }
+                check is_id == 1 { nmb = str_concat(nmb, char_at(lit, j)); } fallback { ok = 0; }
+                j += 1;
+            }
+            check j < n && ok == 1 && len(nmb) > 0 { push(out, nmb); }
+            i = j;
+        }
+        i += 1;
+    }
+}
+
+df raven_check_self_contained(tokens: list<i64>, strings: list<str>, allnames: list<str>, fn_names: list<str>, fn_param_names: list<str>, fn_body_start: list<i64>, fn_body_end: list<i64>, fn_body_an: list<i64>, fn_body_s: list<i64>, global_names: list<str>, err_pos: list<i64>, err_msg: list<str>) -> void {
+    check len(global_names) == 0 { return; }
+    fixed nfn: i64 = len(fn_names);
+    // Per-function first global touch (empty = clean).
+    set fn_gname: list<str> = list_new();
+    // Call edges, flattened.
+    set edge_from: list<i64> = list_new();
+    set edge_to: list<i64> = list_new();
+    // Raven spawn sites: spawn position + target fn index.
+    set spawn_pos: list<i64> = list_new();
+    set spawn_tgt: list<i64> = list_new();
+    set fi: i64 = 0;
+    whilst fi < nfn {
+        set g_touch: str = "";
+        fixed bstart: i64 = fn_body_start[fi];
+        fixed bend: i64 = fn_body_end[fi];
+        set an: i64 = fn_body_an[fi];
+        set si: i64 = fn_body_s[fi];
+        fixed params: list<str> = split_words(fn_param_names[fi]);
+        set locals: list<str> = list_new();
+        set in_echo: i64 = 0;
+        set p: i64 = bstart;
+        whilst p < bend {
+            fixed t: i64 = tok_peek(tokens, p);
+            check t == KW_ECHO || t == KW_ECHO_BANG { in_echo = 1; }
+            check t == PUNCT_SEMI { in_echo = 0; }
+            // A declaration introduces a shadowing local from here on.
+            check t == KW_SET || t == KW_FIXED || t == KW_EACH {
+                check tok_peek(tokens, p + 1) == TOK_IDENT { push(locals, allnames[an]); }
+            }
+            check t == KW_RAVEN {
+                check tok_peek(tokens, p + 1) == TOK_IDENT {
+                    fixed rtgt: i64 = tvname_index(allnames[an], fn_names);
+                    check rtgt >= 0 {
+                        push(spawn_pos, p);
+                        push(spawn_tgt, rtgt);
+                        push(edge_from, fi);
+                        push(edge_to, rtgt);
+                    }
+                }
+            }
+            check t == TOK_IDENT {
+                fixed idn: str = allnames[an];
+                fixed nxt: i64 = tok_peek(tokens, p + 1);
+                check nxt == PUNCT_LPAREN {
+                    fixed cidx: i64 = tvname_index(idn, fn_names);
+                    check cidx >= 0 { push(edge_from, fi); push(edge_to, cidx); }
+                } fallback {
+                    check len(g_touch) == 0 && tvname_in_list(idn, global_names) == 1 {
+                        check tvname_in_list(idn, params) == 0 && tvname_in_list(idn, locals) == 0 {
+                            g_touch = idn;
+                        }
+                    }
+                }
+            }
+            // A bare weave target (`x ~> f`) is a call without parens; the
+            // parenthesized form also lands here harmlessly (duplicate edge).
+            check t == OP_WEAVE && tok_peek(tokens, p + 1) == TOK_IDENT {
+                fixed widx: i64 = tvname_index(allnames[an], fn_names);
+                check widx >= 0 { push(edge_from, fi); push(edge_to, widx); }
+            }
+            // Interpolated {name} reads inside echo string literals resolve as
+            // variable reads; a global name there is a touch like any other.
+            check t == TOK_STRING && in_echo == 1 {
+                set inames: list<str> = list_new();
+                tv_interp_names(strings[si], inames);
+                set ii: i64 = 0;
+                whilst ii < len(inames) {
+                    fixed inm: str = inames[ii];
+                    check len(g_touch) == 0 && tvname_in_list(inm, global_names) == 1 {
+                        check tvname_in_list(inm, params) == 0 && tvname_in_list(inm, locals) == 0 {
+                            g_touch = inm;
+                        }
+                    }
+                    ii += 1;
+                }
+            }
+            check t == TOK_INT || t == TOK_FLOAT { si += 1; }
+            check t == TOK_STRING { si += 1; an += 1; }
+            check t == TOK_IDENT { an += 1; }
+            p += 1;
+        }
+        push(fn_gname, g_touch);
+        fi += 1;
+    }
+    // BFS from each spawn target; report the first reachable global toucher.
+    set sp: i64 = 0;
+    whilst sp < len(spawn_pos) {
+        fixed tgt: i64 = spawn_tgt[sp];
+        set visited: list<i64> = list_new();
+        set vi: i64 = 0;
+        whilst vi < nfn { push(visited, 0); vi += 1; }
+        set queue: list<i64> = list_new();
+        push(queue, tgt);
+        visited[tgt] = 1;
+        set qh: i64 = 0;
+        set offender: i64 = 0 - 1;
+        whilst qh < len(queue) {
+            fixed cur: i64 = queue[qh];
+            qh += 1;
+            check offender < 0 && len(fn_gname[cur]) > 0 { offender = cur; }
+            set ei: i64 = 0;
+            whilst ei < len(edge_from) {
+                check edge_from[ei] == cur {
+                    fixed nb: i64 = edge_to[ei];
+                    check visited[nb] == 0 { visited[nb] = 1; push(queue, nb); }
+                }
+                ei += 1;
+            }
+        }
+        check offender >= 0 {
+            fixed onm: str = fn_names[offender];
+            fixed ognm: str = fn_gname[offender];
+            fixed tnm: str = fn_names[tgt];
+            check offender == tgt {
+                push(err_pos, spawn_pos[sp]);
+                push(err_msg, fmt("cannot spawn '{}': a raven-spawned task must be self-contained, but '{}' reads or writes global '{}' - pass the value as an argument instead", tnm, tnm, ognm));
+            } fallback {
+                push(err_pos, spawn_pos[sp]);
+                push(err_msg, fmt("cannot spawn '{}': a raven-spawned task must be self-contained, but '{}' (reachable from '{}') reads or writes global '{}' - pass the value as an argument instead", tnm, onm, tnm, ognm));
+            }
+        }
+        sp += 1;
+    }
+}
+
+// ── v1.3.0: raven spawn ──────────────────────────────────────────────────────
+// Compiles `raven fname(args...)` starting at the token AFTER the `raven`
+// keyword. wants_handle=1 for the handled form (`set h: task<T> = raven f();`,
+// want_ty = T) and 0 for fire-and-forget (want_ty = ""). Arguments are
+// deep-copied into the spawn pack by the runtime; the kind of each copy is
+// keyed off the CALLEE's parameter type. Emits located errors via emit_uerr
+// and always produces a value ("null" on error) so callers can continue.
+df compile_raven_spawn(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos: i64, si: i64, ani: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>, var_names: list<str>, var_types: list<str>, wants_handle: i64, want_ty: str, out_val: list<str>, out_pos: list<i64>, out_si: list<i64>, out_ani: list<i64>) -> void {
+    set p: i64 = pos;
+    set s: i64 = si;
+    set an: i64 = ani;
+    fixed ntok: i64 = len(tokens);
+    set bail: i64 = 0;
+    set nm: str = "";
+    set nm_pos: i64 = p;
+    check tok_peek(tokens, p) != TOK_IDENT {
+        emit_uerr(ir, p, "raven must be followed by a function call - `raven worker(args);`");
+        bail = 1;
+    }
+    check bail == 0 {
+        nm = allnames[an];
+        nm_pos = p;
+        an += 1; p += 1;
+        fixed nmty: str = lookup_var_type(nm, var_names, var_types);
+        check starts(nmty, "fnret:") { } fallback {
+            emit_uerr(ir, nm_pos, fmt("'{}' is not a user-defined function - raven spawns user `df` functions only. Wrap builtin or expression work in a small `df` function and spawn that.", nm));
+            bail = 1;
+        }
+    }
+    check bail == 0 && tok_peek(tokens, p) != PUNCT_LPAREN {
+        emit_uerr(ir, nm_pos, fmt("expected '(' after '{}' - a raven spawn is a direct call: `raven {}(args);`", nm, nm));
+        bail = 1;
+    }
+    check bail == 1 {
+        // Recover to just before the terminating ';' (caller consumes it),
+        // mirroring the shared cursor discipline exactly.
+        whilst p < ntok && tok_peek(tokens, p) != PUNCT_SEMI && tok_peek(tokens, p) != TOK_EOF {
+            fixed _rk: i64 = tok_peek(tokens, p);
+            check _rk == TOK_INT || _rk == TOK_FLOAT { s += 1; }
+            check _rk == TOK_STRING { s += 1; an += 1; }
+            check _rk == TOK_IDENT { an += 1; }
+            p += 1;
+        }
+        push(out_val, "null"); push(out_pos, p); push(out_si, s); push(out_ani, an);
+        return;
+    }
+    p += 1;   // consume '('
+    // Compile arguments (the statement-call pattern: one compile_expr per arg).
+    set args: list<str> = list_new();
+    set args_ty: list<str> = list_new();
+    whilst tok_peek(tokens, p) != PUNCT_RPAREN && tok_peek(tokens, p) != TOK_EOF && tok_peek(tokens, p) != PUNCT_SEMI {
+        set rv: list<str> = list_new();
+        set rp: list<i64> = list_new();
+        set rs: list<i64> = list_new();
+        set rs_ai: list<i64> = list_new();
+        set rs_ty: list<str> = list_new();
+        compile_expr(tokens, strings, allnames, p, s, an, ir, ctr, gvals, gnames, rv, rp, rs, rs_ai, rs_ty, var_names, var_types);
+        check len(rv) > 0 { push(args, rv[0]); }
+        check len(rs_ty) > 0 { push(args_ty, rs_ty[0]); } fallback { push(args_ty, "ptr"); }
+        check len(rp) > 0 { p = rp[0]; }
+        check len(rs) > 0 { s = rs[0]; }
+        check len(rs_ai) > 0 { an = rs_ai[0]; }
+        check tok_peek(tokens, p) == PUNCT_COMMA { p += 1; }
+    }
+    check tok_peek(tokens, p) == PUNCT_RPAREN { p += 1; } fallback {
+        emit_uerr(ir, nm_pos, fmt("expected ')' to close the arguments of '{}' (a '(' is unclosed).", nm));
+    }
+    // Arity against the callee's declared parameters.
+    fixed sp_ptypes: list<str> = split_words(lookup_var_type(str_concat("@p@", nm), var_names, var_types));
+    check len(args) != len(sp_ptypes) {
+        emit_uerr(ir, nm_pos, fmt("function '{}' expects {} argument(s) but got {}.", nm, len(sp_ptypes), len(args)));
+    }
+    check len(args) > 16 {
+        emit_uerr(ir, nm_pos, "a raven-spawned function may take at most 16 arguments - group values into fewer parameters");
+    }
+    // Spawnability: every parameter must be a value a task can own outright.
+    // Collections and handles cannot cross into a task (v1.3.0) - the deep-copy
+    // story for nested managed elements is deferred with them.
+    set spi: i64 = 0;
+    whilst spi < len(sp_ptypes) {
+        fixed spt: str = sp_ptypes[spi];
+        set sp_bad: i64 = 0;
+        check starts(spt, "list") { sp_bad = 1; }
+        check starts(spt, "bag") { sp_bad = 1; }
+        check starts(spt, "table") { sp_bad = 1; }
+        check starts(spt, "result") { sp_bad = 1; }
+        check starts(spt, "task") { sp_bad = 1; }
+        check sp_bad == 1 {
+            emit_uerr(ir, nm_pos, fmt("cannot spawn '{}': parameter {} is a {} - collections, results, and task handles cannot cross into a task in v1.3.0. Pass scalars and strings, and rebuild collections inside the task.", nm, spi + 1, spt));
+        }
+        // 128-bit box/scalar mixing is the same clean error as a direct call.
+        check spi < len(args_ty) {
+            fixed sat: str = args_ty[spi];
+            set sp_p128: i64 = 0; check line_eq(spt, "i128") == 1 || line_eq(spt, "u128") == 1 { sp_p128 = 1; }
+            set sp_a128: i64 = 0; check sat == "i128" || sat == "u128" { sp_a128 = 1; }
+            check sp_p128 == 1 && sp_a128 == 0 && (sat == "i64" || sat == "i1" || sat == "bool" || sat == "f64") {
+                emit_uerr(ir, nm_pos, "a non-128-bit value cannot be passed to a 128-bit parameter. Bind the value to an i128/u128 variable first, then pass that.");
+            }
+            check sp_p128 == 0 && sp_a128 == 1 && int_width(spt) > 0 {
+                emit_uerr(ir, nm_pos, "a 128-bit value cannot be passed to a non-128-bit integer parameter. Use a matching 128-bit parameter type, or convert explicitly.");
+            }
+        }
+        spi += 1;
+    }
+    // Return-type contract for the handled form.
+    fixed sp_rty: str = substr(lookup_var_type(nm, var_names, var_types), 6, len(lookup_var_type(nm, var_names, var_types)));
+    check wants_handle == 1 {
+        check line_eq(sp_rty, want_ty) == 1 { } fallback {
+            set sp_rdesc: str = fmt("returns {}", sp_rty);
+            check line_eq(sp_rty, "void") == 1 { sp_rdesc = "returns nothing (void)"; }
+            emit_uerr(ir, nm_pos, fmt("this handle is declared task<{}> but '{}' {} - the handle's type parameter must match the spawned function's return type exactly.", want_ty, nm, sp_rdesc));
+        }
+    }
+    // Emit: build the pack, deep-copy each argument in, then spawn.
+    fixed sp_pk: str = make_tmp(ctr);
+    emit(ir, str_concat(str_concat(str_concat("  ", sp_pk), " = call ptr @torvik_spawn_begin(i64 "), str_concat(int_to_str(len(args)), ")")));
+    set sei: i64 = 0;
+    whilst sei < len(args) {
+        set se_ty: str = "ptr";
+        check sei < len(args_ty) { se_ty = args_ty[sei]; }
+        set se_slot: str = args[sei];
+        check se_ty == "i1" || se_ty == "i64" || se_ty == "bool" {
+            fixed se_ip: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", se_ip), " = inttoptr i64 "), str_concat(se_slot, " to ptr")));
+            se_slot = se_ip;
+        }
+        check se_ty == "f64" {
+            fixed se_fb: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", se_fb), " = bitcast double "), str_concat(se_slot, " to i64")));
+            fixed se_fp: str = make_tmp(ctr);
+            emit(ir, str_concat(str_concat(str_concat("  ", se_fp), " = inttoptr i64 "), str_concat(se_fb, " to ptr")));
+            se_slot = se_fp;
+        }
+        set se_kind: str = "0";
+        check sei < len(sp_ptypes) {
+            fixed se_pt: str = sp_ptypes[sei];
+            check line_eq(se_pt, "str") == 1 { se_kind = "1"; }
+            check line_eq(se_pt, "i128") == 1 || line_eq(se_pt, "u128") == 1 { se_kind = "2"; }
+            // A bridge crossing into a task is RETAINED, never copied - the
+            // one deliberate exception (a private copy of a channel would be
+            // useless). Its refcount is the single atomic in the design.
+            check starts(se_pt, "bridge") { se_kind = "3"; }
+        }
+        emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat("  call void @torvik_spawn_arg(ptr ", sp_pk), ", i64 "), str_concat(int_to_str(sei), ", ptr ")), se_slot), str_concat(", i64 ", str_concat(se_kind, ")"))));
+        sei += 1;
+    }
+    set sp_rk: str = "0";
+    check line_eq(sp_rty, "str") == 1 { sp_rk = "1"; }
+    check line_eq(sp_rty, "i128") == 1 || line_eq(sp_rty, "u128") == 1 { sp_rk = "2"; }
+    fixed sp_h: str = make_tmp(ctr);
+    emit(ir, str_concat(str_concat(str_concat(str_concat(str_concat("  ", sp_h), " = call ptr @torvik_raven_spawn(ptr "), str_concat(sp_pk, ", ptr @")), nm), str_concat(str_concat(", i64 ", sp_rk), str_concat(str_concat(", i64 ", int_to_str(wants_handle)), ")"))));
+    push(out_val, sp_h); push(out_pos, p); push(out_si, s); push(out_ani, an);
+}
+
 df check_no_stranded_op(tokens: list<i64>, pos: i64, ir: list<str>) -> i64 {
     fixed t: i64 = tok_peek(tokens, pos);
     set stranded: i64 = 0;
@@ -4104,6 +4677,10 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     fixed _atk: i64 = tok_peek(tokens, pos);
                     check _atk == TOK_STRING { s += 1; an += 1; }
                     check _atk == TOK_IDENT  { vann = str_concat(vann, allnames[an]); an += 1; }
+                    // v1.3.0: `task` is a keyword token, not an IDENT - a task<T>
+                    // annotation contributes its name here. No cursor moves:
+                    // keywords live in neither strings nor allnames.
+                    check _atk == KW_TASK { vann = str_concat(vann, "task"); }
                     check _atk == OP_LT { vann = str_concat(vann, "<"); }
                     check _atk == OP_GT { vann = str_concat(vann, ">"); }
                     check _atk == OP_SHR { vann = str_concat(vann, ">>"); }
@@ -4173,6 +4750,120 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
                 continue;
             }
+            // v1.3.0: task<T> annotation validation. A task's result type must be
+            // something a single value slot can carry back across the join - a
+            // scalar, str, aett value, or void. Collections cannot cross out of
+            // a task (deferred with bridges-of-collections). Also reject task
+            // handles nested inside container types, and a task< left unclosed.
+            check had_colon == 1 && starts(vann, "task<") {
+                set tk_bad: str = "";
+                check ends(vann, ">") { } fallback {
+                    tk_bad = str_concat(str_concat("malformed annotation '", vann), "' - a task type is written task<T>, e.g. task<str> or task<void>");
+                }
+                check len(tk_bad) == 0 {
+                    fixed tk_inner: str = substr(vann, 5, len(vann) - 1);
+                    set tk_ok: i64 = 0;
+                    check line_eq(tk_inner, "void") == 1 { tk_ok = 1; }
+                    check is_aett_name(tk_inner) == 1 { tk_ok = 1; }
+                    check is_value_type(tk_inner) == 1 {
+                        set tk_cont: i64 = 0;
+                        check starts(tk_inner, "list") { tk_cont = 1; }
+                        check starts(tk_inner, "bag") { tk_cont = 1; }
+                        check starts(tk_inner, "table") { tk_cont = 1; }
+                        check starts(tk_inner, "result") { tk_cont = 1; }
+                        check starts(tk_inner, "task") { tk_cont = 1; }
+                        check tk_cont == 0 { tk_ok = 1; }
+                    }
+                    check tk_ok == 0 {
+                        tk_bad = str_concat(str_concat("task<", tk_inner), ">: a task's result type must be a scalar, str, or aett value (or void) - collections cannot cross out of a task in v1.3.0. Have the task build and return the pieces, or restructure with a worker function.");
+                    }
+                }
+                check len(tk_bad) > 0 {
+                    push(err_pos, ann_start);
+                    push(err_msg, tk_bad);
+                    whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                        fixed _ttk: i64 = tok_peek(tokens, pos);
+                        check _ttk == TOK_INT || _ttk == TOK_FLOAT { s += 1; }
+                        check _ttk == TOK_STRING { s += 1; an += 1; }
+                        check _ttk == TOK_IDENT { an += 1; }
+                        pos += 1;
+                    }
+                    check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                    continue;
+                }
+            }
+            // v1.3.0: bridge<T> annotation validation. Elements must be values
+            // a queue slot can own outright and deep-copy: scalars, str,
+            // i128/u128, or aett values. void is meaningless for a channel;
+            // collections cannot cross (deferred); bridges and tasks cannot
+            // nest. Also reject a bridge< left unclosed.
+            check had_colon == 1 && starts(vann, "bridge<") {
+                set bg_bad: str = "";
+                check ends(vann, ">") { } fallback {
+                    bg_bad = str_concat(str_concat("malformed annotation '", vann), "' - a bridge type is written bridge<T>, e.g. bridge<str> or bridge<i64>");
+                }
+                check len(bg_bad) == 0 {
+                    fixed bg_inner: str = substr(vann, 7, len(vann) - 1);
+                    set bg_ok: i64 = 0;
+                    check is_aett_name(bg_inner) == 1 { bg_ok = 1; }
+                    check is_value_type(bg_inner) == 1 {
+                        set bg_cont: i64 = 0;
+                        check starts(bg_inner, "list") { bg_cont = 1; }
+                        check starts(bg_inner, "bag") { bg_cont = 1; }
+                        check starts(bg_inner, "table") { bg_cont = 1; }
+                        check starts(bg_inner, "result") { bg_cont = 1; }
+                        check starts(bg_inner, "task") { bg_cont = 1; }
+                        check starts(bg_inner, "bridge") { bg_cont = 1; }
+                        check bg_cont == 0 { bg_ok = 1; }
+                    }
+                    check bg_ok == 0 {
+                        bg_bad = str_concat(str_concat("bridge<", bg_inner), ">: a bridge carries scalars, str, i128/u128, or aett values - collections cannot cross a bridge in v1.3.0, and void carries nothing. Send the pieces and rebuild on the far side.");
+                    }
+                }
+                check len(bg_bad) > 0 {
+                    push(err_pos, ann_start);
+                    push(err_msg, bg_bad);
+                    whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                        fixed _bgk: i64 = tok_peek(tokens, pos);
+                        check _bgk == TOK_INT || _bgk == TOK_FLOAT { s += 1; }
+                        check _bgk == TOK_STRING { s += 1; an += 1; }
+                        check _bgk == TOK_IDENT { an += 1; }
+                        pos += 1;
+                    }
+                    check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                    continue;
+                }
+            }
+            check had_colon == 1 && str_contains(vann, "bridge<") {
+              check starts(vann, "bridge<") { } fallback {
+                push(err_pos, ann_start);
+                push(err_msg, "bridges cannot be stored inside collections - pass a bridge down through function arguments instead");
+                whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                    fixed _bck: i64 = tok_peek(tokens, pos);
+                    check _bck == TOK_INT || _bck == TOK_FLOAT { s += 1; }
+                    check _bck == TOK_STRING { s += 1; an += 1; }
+                    check _bck == TOK_IDENT { an += 1; }
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                continue;
+              }
+            }
+            check had_colon == 1 && str_contains(vann, "task<") {
+              check starts(vann, "task<") { } fallback {
+                push(err_pos, ann_start);
+                push(err_msg, "task handles cannot be stored inside collections - join tasks individually and store their results instead");
+                whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                    fixed _tck: i64 = tok_peek(tokens, pos);
+                    check _tck == TOK_INT || _tck == TOK_FLOAT { s += 1; }
+                    check _tck == TOK_STRING { s += 1; an += 1; }
+                    check _tck == TOK_IDENT { an += 1; }
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                continue;
+              }
+            }
             // Redeclaring a name with a DIFFERENT type in the same function is
             // memory corruption, not shadowing: both declarations share one slot.
             // Reject cleanly; caret on the variable name. Recover to the ';'.
@@ -4217,6 +4908,120 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 push(err_pos, pos - 1);
                 push(err_msg, "expected an expression after '='");
                 pos += 1;
+                continue;
+            }
+            // v1.3.0: `raven` spawn initializer. A handled spawn is legal ONLY
+            // as the entire initializer of a task<T> binding, and a task<T>
+            // binding accepts ONLY a raven spawn - the two requirements are
+            // checked in both directions here.
+            check had_eq == 1 && tok_peek(tokens, pos) == KW_RAVEN {
+                check starts(vann, "task<") { } fallback {
+                    push(err_pos, pos);
+                    push(err_msg, fmt("a raven spawn produces a task handle - declare it as `set {}: task<T> = raven ...;` where T is the spawned function's return type, or drop the binding for fire-and-forget: `raven worker(args);`", vname));
+                    whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                        fixed _rvnk: i64 = tok_peek(tokens, pos);
+                        check _rvnk == TOK_INT || _rvnk == TOK_FLOAT { s += 1; }
+                        check _rvnk == TOK_STRING { s += 1; an += 1; }
+                        check _rvnk == TOK_IDENT { an += 1; }
+                        pos += 1;
+                    }
+                    check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                    continue;
+                }
+                fixed rvd_inner: str = substr(vann, 5, len(vann) - 1);
+                pos += 1;
+                set rvd_v: list<str> = list_new();
+                set rvd_p: list<i64> = list_new();
+                set rvd_s: list<i64> = list_new();
+                set rvd_a: list<i64> = list_new();
+                compile_raven_spawn(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, var_names, var_types, 1, rvd_inner, rvd_v, rvd_p, rvd_s, rvd_a);
+                check len(rvd_p) > 0 { pos = rvd_p[0]; }
+                check len(rvd_s) > 0 { s = rvd_s[0]; }
+                check len(rvd_a) > 0 { an = rvd_a[0]; }
+                set rvd_h: str = "null";
+                check len(rvd_v) > 0 { rvd_h = rvd_v[0]; }
+                emit(ir, str_concat(str_concat("  %", vname), "_slot = alloca ptr, align 8"));
+                emit(ir, str_concat(str_concat(str_concat(str_concat("  store ptr ", rvd_h), ", ptr %"), vname), "_slot, align 8"));
+                check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
+                continue;
+            }
+            // v1.3.0: bridge<T> initializer. Only bridge_new(cap) may create a
+            // bridge, and only a bridge<T> binding may hold one - the element
+            // kind (deep-copy behavior) is fixed at creation from the
+            // annotation. The slot rides the full generic rc machinery
+            // (rcinit, retain-new/release-old, scope release) as kind bridge.
+            check had_eq == 1 && starts(vann, "bridge<") {
+                set bgd_ok: i64 = 0;
+                check tok_peek(tokens, pos) == TOK_IDENT {
+                    check line_eq(allnames[an], "bridge_new") == 1 { bgd_ok = 1; }
+                }
+                check bgd_ok == 0 {
+                    push(err_pos, pos);
+                    push(err_msg, fmt("a bridge<...> binding can only be initialized with bridge_new - `set {}: {} = bridge_new(cap);`", vname, vann));
+                    whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                        fixed _bdk: i64 = tok_peek(tokens, pos);
+                        check _bdk == TOK_INT || _bdk == TOK_FLOAT { s += 1; }
+                        check _bdk == TOK_STRING { s += 1; an += 1; }
+                        check _bdk == TOK_IDENT { an += 1; }
+                        pos += 1;
+                    }
+                    check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
+                    continue;
+                }
+                fixed bgd_pos: i64 = pos;
+                an += 1; pos += 1;   // consume 'bridge_new'
+                check tok_peek(tokens, pos) == PUNCT_LPAREN { pos += 1; } fallback {
+                    push(err_pos, bgd_pos);
+                    push(err_msg, "expected '(' after bridge_new - `bridge_new(cap)`");
+                }
+                set bgd_v: list<str> = list_new();
+                set bgd_p: list<i64> = list_new();
+                set bgd_s: list<i64> = list_new();
+                set bgd_a: list<i64> = list_new();
+                set bgd_ty: list<str> = list_new();
+                compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, bgd_v, bgd_p, bgd_s, bgd_a, bgd_ty, var_names, var_types);
+                check len(bgd_p) > 0 { pos = bgd_p[0]; }
+                check len(bgd_s) > 0 { s = bgd_s[0]; }
+                check len(bgd_a) > 0 { an = bgd_a[0]; }
+                check tok_peek(tokens, pos) == PUNCT_RPAREN { pos += 1; } fallback {
+                    push(err_pos, bgd_pos);
+                    push(err_msg, "expected ')' to close bridge_new(cap)");
+                }
+                set bgd_cap: str = "1";
+                check len(bgd_v) > 0 { bgd_cap = bgd_v[0]; }
+                set bgd_cap_ty: str = "ptr";
+                check len(bgd_ty) > 0 { bgd_cap_ty = bgd_ty[0]; }
+                set bgd_capi: str = bgd_cap;
+                check bgd_cap_ty != "i64" { bgd_capi = coerce_i64(bgd_cap, ir, ctr); }
+                fixed bgd_inner: str = substr(vann, 7, len(vann) - 1);
+                set bgd_kind: str = "0";
+                check line_eq(bgd_inner, "str") == 1 { bgd_kind = "1"; }
+                check line_eq(bgd_inner, "i128") == 1 || line_eq(bgd_inner, "u128") == 1 { bgd_kind = "2"; }
+                fixed bgd_h: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat(str_concat("  ", bgd_h), " = call ptr @torvik_bridge_new(i64 "), bgd_capi), str_concat(", i64 ", str_concat(bgd_kind, ")"))));
+                fixed bgd_slot: str = str_concat(str_concat("%", vname), "_slot");
+                emit(ir, str_concat(str_concat("  ", bgd_slot), " = alloca ptr, align 8"));
+                fixed bgd_init: str = str_concat(str_concat("  store ptr null, ptr ", bgd_slot), ", align 8 ; tv.rcinit:bridge");
+                check slot_exists(ir, bgd_init) == 0 { emit(ir, bgd_init); }
+                emit(ir, str_concat("  call ptr @torvik_bridge_retain(ptr ", str_concat(bgd_h, ")")));
+                fixed bgd_old: str = make_tmp(ctr);
+                emit(ir, str_concat(str_concat(str_concat("  ", bgd_old), " = load ptr, ptr "), str_concat(bgd_slot, ", align 8")));
+                emit(ir, str_concat("  call void @torvik_bridge_release(ptr ", str_concat(bgd_old, ")")));
+                emit(ir, str_concat(str_concat("  store ptr ", bgd_h), str_concat(", ptr ", str_concat(bgd_slot, ", align 8"))));
+                check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
+                continue;
+            }
+            check had_eq == 1 && starts(vann, "task<") {
+                push(err_pos, pos);
+                push(err_msg, fmt("a task<...> binding can only be initialized with a raven spawn - `set {}: {} = raven worker(args);`", vname, vann));
+                whilst pos < end && pos < ntok && tok_peek(tokens, pos) != PUNCT_SEMI {
+                    fixed _tik: i64 = tok_peek(tokens, pos);
+                    check _tik == TOK_INT || _tik == TOK_FLOAT { s += 1; }
+                    check _tik == TOK_STRING { s += 1; an += 1; }
+                    check _tik == TOK_IDENT { an += 1; }
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; }
                 continue;
             }
             // Reject an out-of-range integer literal for a sized type. Silent
@@ -4392,6 +5197,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             check vann == "i128" || vann == "u128" { rc_kind = "i128"; }
             check starts(vann, "table") { rc_kind = "table"; }
             check starts(vann, "result") { rc_kind = "result"; }
+            check starts(vann, "bridge") { rc_kind = "bridge"; }   // v1.3.0
             // Refcounted slots must start null so release-of-old-contents is safe
             // on the first store. Tagged ; tv.rcinit so hoist_allocas moves it to
             // the entry block — it must run ONCE per function, NOT per loop
@@ -4465,6 +5271,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
 
         // echo(EXPR) — print without a trailing newline (echo! adds one)
         check t == KW_ECHO {
+            raven_echo_pos = pos;
             pos += 1;
             check tok_peek(tokens, pos) == PUNCT_LPAREN { pos += 1; }
             // A bare variable surfaces as "ptr" whether it holds a string or a
@@ -4478,6 +5285,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             set es: list<i64> = list_new();
             set es_ai: list<i64> = list_new();
             set ev_ty: list<str> = list_new();
+            check tok_peek(tokens, pos) == TOK_STRING && len(ctr) > 2 { ctr[2] = 1; }
             compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, ev, ep, es, es_ai, ev_ty, var_names, var_types);
             check len(ep) > 0 { pos = ep[0]; }
             check len(es) > 0 { s   = es[0]; }
@@ -4499,6 +5307,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     effn = lookup_var_type(allnames[an], var_names, var_types);
                 }
                 set nv: list<str> = list_new(); set nps: list<i64> = list_new(); set nss: list<i64> = list_new(); set nsa: list<i64> = list_new(); set nty: list<str> = list_new();
+                check tok_peek(tokens, pos) == TOK_STRING && len(ctr) > 2 { ctr[2] = 1; }
                 compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, nv, nps, nss, nsa, nty, var_names, var_types);
                 check len(nps) > 0 { pos = nps[0]; }
                 check len(nss) > 0 { s = nss[0]; }
@@ -4516,6 +5325,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
         }
         // echo!(EXPR, ...)
         check t == KW_ECHO_BANG {
+            raven_echo_pos = pos;
             pos += 1;
             check tok_peek(tokens, pos) == PUNCT_LPAREN { pos += 1; }
             set eff_pre_b: str = "";
@@ -4527,6 +5337,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             set rs: list<i64> = list_new();
             set rs_ai: list<i64> = list_new();
             set rv_ty: list<str> = list_new();
+            check tok_peek(tokens, pos) == TOK_STRING && len(ctr) > 2 { ctr[2] = 1; }
             compile_value(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, rv, rp, rs, rs_ai, rv_ty, var_names, var_types);
             check len(rp) > 0 { pos = rp[0]; }
             check len(rs) > 0 { s   = rs[0]; }
@@ -4549,6 +5360,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                         effn = lookup_var_type(allnames[an], var_names, var_types);
                     }
                     set nv: list<str> = list_new(); set nps: list<i64> = list_new(); set nss: list<i64> = list_new(); set nsa: list<i64> = list_new(); set nty: list<str> = list_new();
+                    check tok_peek(tokens, pos) == TOK_STRING && len(ctr) > 2 { ctr[2] = 1; }
                     compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, nv, nps, nss, nsa, nty, var_names, var_types);
                     check len(nps) > 0 { pos = nps[0]; }
                     check len(nss) > 0 { s = nss[0]; }
@@ -4914,6 +5726,25 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             continue;
         }
 
+        // v1.3.0: fire-and-forget spawn - `raven worker(args);`. The handled
+        // form rides the declaration path; this is the statement form. The
+        // spawned function's return value (if any) is deliberately discarded
+        // by the runtime trampoline - that is the stated meaning of a
+        // fire-and-forget raven, so no unused_result warning applies.
+        check t == KW_RAVEN {
+            pos += 1;
+            set frv_v: list<str> = list_new();
+            set frv_p: list<i64> = list_new();
+            set frv_s: list<i64> = list_new();
+            set frv_a: list<i64> = list_new();
+            compile_raven_spawn(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, var_names, var_types, 0, "", frv_v, frv_p, frv_s, frv_a);
+            check len(frv_p) > 0 { pos = frv_p[0]; }
+            check len(frv_s) > 0 { s = frv_s[0]; }
+            check len(frv_a) > 0 { an = frv_a[0]; }
+            check tok_peek(tokens, pos) == PUNCT_SEMI { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
+            continue;
+        }
+
         // Function call statement (IDENT(...))
         check t == TOK_IDENT {
             fixed nm: str = allnames[an]; fixed snm_pos: i64 = pos; an += 1; pos += 1;
@@ -4955,6 +5786,84 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 check tok_peek(tokens, pos) == PUNCT_RPAREN { pos += 1; }
                 check tok_peek(tokens, pos) == PUNCT_SEMI   { pos += 1; } fallback { push(err_pos, pos - 1); push(err_msg, "expected a semicolon after this statement"); }
 
+                // v1.3.0: send(ch, v) - deep-copy v across the bridge (blocks
+                // while full; a closed bridge panics). The copy happens on
+                // this thread inside the runtime, keyed off the bridge's
+                // element kind fixed at bridge_new.
+                check nm == "send" {
+                    set snd_bty: str = "";
+                    check len(s_first_arg_name) > 0 { snd_bty = lookup_var_type(s_first_arg_name, var_names, var_types); }
+                    check starts(snd_bty, "bridge<") && len(args) >= 2 { } fallback {
+                        push(err_pos, snm_pos);
+                        push(err_msg, "send takes a bridge and a value - `send(ch, v);` where ch is a bridge<T> variable");
+                        continue;
+                    }
+                    fixed snd_inner: str = substr(snd_bty, 7, len(snd_bty) - 1);
+                    set snd_vty: str = "ptr";
+                    check len(args_ty) >= 2 { snd_vty = args_ty[1]; }
+                    // Element-type checks mirror the spawn-argument rules.
+                    set snd_p128: i64 = 0;
+                    check line_eq(snd_inner, "i128") == 1 || line_eq(snd_inner, "u128") == 1 { snd_p128 = 1; }
+                    set snd_a128: i64 = 0;
+                    check snd_vty == "i128" || snd_vty == "u128" { snd_a128 = 1; }
+                    check snd_p128 == 1 && snd_a128 == 0 && (snd_vty == "i64" || snd_vty == "i1" || snd_vty == "bool" || snd_vty == "f64") {
+                        push(err_pos, snm_pos);
+                        push(err_msg, "a non-128-bit value cannot cross a 128-bit bridge. Bind it to an i128/u128 variable first, then send that.");
+                        continue;
+                    }
+                    check snd_p128 == 0 && snd_a128 == 1 {
+                        push(err_pos, snm_pos);
+                        push(err_msg, fmt("a 128-bit value cannot cross a bridge<{}> - the element type is fixed at bridge_new.", snd_inner));
+                        continue;
+                    }
+                    check line_eq(snd_inner, "str") == 1 && (snd_vty == "i64" || snd_vty == "i1" || snd_vty == "bool" || snd_vty == "f64") {
+                        push(err_pos, snm_pos);
+                        push(err_msg, "a number cannot cross a bridge<str> - convert with tostr() first, or use a numeric bridge.");
+                        continue;
+                    }
+                    set snd_slot: str = args[1];
+                    check snd_vty == "i1" || snd_vty == "i64" || snd_vty == "bool" {
+                        fixed snd_ip: str = make_tmp(ctr);
+                        emit(ir, str_concat(str_concat(str_concat("  ", snd_ip), " = inttoptr i64 "), str_concat(snd_slot, " to ptr")));
+                        snd_slot = snd_ip;
+                    }
+                    check snd_vty == "f64" {
+                        fixed snd_fb: str = make_tmp(ctr);
+                        emit(ir, str_concat(str_concat(str_concat("  ", snd_fb), " = bitcast double "), str_concat(snd_slot, " to i64")));
+                        fixed snd_fp: str = make_tmp(ctr);
+                        emit(ir, str_concat(str_concat(str_concat("  ", snd_fp), " = inttoptr i64 "), str_concat(snd_fb, " to ptr")));
+                        snd_slot = snd_fp;
+                    }
+                    emit(ir, str_concat(str_concat("  call void @torvik_bridge_send(ptr ", args[0]), str_concat(", ptr ", str_concat(snd_slot, ")"))));
+                    continue;
+                }
+                // v1.3.0: bridge_close(ch) - "no more values will cross".
+                // Idempotent; wakes every blocked sender and receiver.
+                check nm == "bridge_close" {
+                    set bcl_bty: str = "";
+                    check len(s_first_arg_name) > 0 { bcl_bty = lookup_var_type(s_first_arg_name, var_names, var_types); }
+                    check starts(bcl_bty, "bridge<") && len(args) >= 1 {
+                        emit(ir, str_concat("  call void @torvik_bridge_close(ptr ", str_concat(args[0], ")")));
+                        continue;
+                    }
+                    push(err_pos, snm_pos);
+                    push(err_msg, "bridge_close takes a bridge variable - `bridge_close(ch);`");
+                    continue;
+                }
+                // v1.3.0: bare `join(h);` - wait for the task, discard its
+                // result. Legal for ALL task types; a managed result (str,
+                // i128) is released inside torvik_task_join_drop so a
+                // deliberately-discarded value never leaks.
+                check nm == "join" && len(args) >= 1 {
+                    set sjn_hty: str = "";
+                    check len(s_first_arg_name) > 0 { sjn_hty = lookup_var_type(s_first_arg_name, var_names, var_types); }
+                    check starts(sjn_hty, "task<") {
+                        emit(ir, str_concat("  call void @torvik_task_join_drop(ptr ", str_concat(args[0], ")")));
+                        continue;
+                    }
+                    // Not a task handle: fall through to normal dispatch (a
+                    // std/user `join` resolves like any other function call).
+                }
                 check nm == "exit" {
                     set code_i: str = "0";
                     check len(args) > 0 {
@@ -4977,6 +5886,12 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 }
                 check nm == "writefile" && len(args) >= 2 {
                     emit(ir, str_concat(str_concat(str_concat("  call void @torvik_writefile(ptr ", args[0]), ", ptr "), str_concat(args[1], ")")));
+                    continue;
+                }
+                // v1.3.0: fs_copy(src, dst) - binary-safe copy for assets
+                // (readfile is NUL-terminated text; this streams raw bytes).
+                check nm == "fs_copy" && len(args) >= 2 {
+                    emit(ir, str_concat(str_concat(str_concat("  call void @torvik_fs_copy(ptr ", args[0]), ", ptr "), str_concat(args[1], ")")));
                     continue;
                 }
                 check nm == "appendline" && len(args) >= 2 {
@@ -5140,6 +6055,14 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                         push(err_pos, snm_pos);
                         push(err_msg, fmt("function '{}' expects {} argument(s) but got {}", nm, len(scp_arity), len(args)));
                         continue;
+                    }
+                    // v1.3.0: a bare statement call of a NON-void function
+                    // silently discards its result - a common source of quiet
+                    // bugs (an ignored error code, a computed value dropped).
+                    fixed _srt: str = lookup_var_type(nm, var_names, var_types);
+                    fixed _srty: str = substr(_srt, 6, len(_srt));
+                    check line_eq(_srty, "void") == 0 {
+                        emit_warn(ir, snm_pos, "unused_result", fmt("the {} result of '{}' is unused - bind it (`fixed r: {} = {}(...);`, or `_r` to discard deliberately), or make the function -> void.", _srty, nm, _srty, nm));
                     }
                 } fallback {
                     // v1.2.1: a bare statement call of a value-returning builtin
@@ -5956,6 +6879,11 @@ df inject_scope_releases(fn_ir: list<str>, ctr: list<i64>, rty: str, pnames: lis
             fixed snm5: str = substr(line, 22, sl5 - 28);
             check slot_exists(rc_slots, snm5) == 0 { push(rc_slots, snm5); push(rc_kinds, "result"); }
         }
+        check ends(line, "; tv.rcinit:bridge") {
+            fixed sl5b: i64 = len(line);
+            fixed snm5b: str = substr(line, 22, sl5b - 28);
+            check slot_exists(rc_slots, snm5b) == 0 { push(rc_slots, snm5b); push(rc_kinds, "bridge"); }
+        }
         check ends(line, "; tv.rcinit:i128") {
             fixed sl6: i64 = len(line);
             fixed snm6: str = substr(line, 22, sl6 - 26);
@@ -5986,6 +6914,12 @@ df inject_scope_releases(fn_ir: list<str>, ctr: list<i64>, rty: str, pnames: lis
     check rty == "str" { rkind = "str"; }
     check starts(rty, "result") { rkind = "result"; }
     check rty == "i128" || rty == "u128" { rkind = "i128"; }
+    // v1.3.0 fix: table- and bag-returning functions were missing from this
+    // list, so the returned value got NO +1-on-return retain while the scope
+    // release still dropped the slot's claim - the caller received a dangling
+    // pointer (segfault on first use). Same generic retain path as the rest.
+    check starts(rty, "table") { rkind = "table"; }
+    check starts(rty, "bag") { rkind = "bag"; }
     set out: list<str> = list_new();
     set j: i64 = 0;
     whilst j < n {
@@ -6058,6 +6992,11 @@ df temp_producer_code(line: str, upats: list<str>, ucodes: list<str>) -> str {
     check str_contains(line, " = call ptr @torvik_int_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_uint_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_i128_box(") { return "a:i128"; }
+    check str_contains(line, " = call ptr @torvik_task_join_str(") { return "b:str"; }
+    check str_contains(line, " = call ptr @torvik_task_join_i128(") { return "b:i128"; }
+    check str_contains(line, " = call ptr @torvik_bridge_recv_str(") { return "b:str"; }
+    check str_contains(line, " = call ptr @torvik_bridge_recv_i128(") { return "b:i128"; }
+    check str_contains(line, " = call ptr @torvik_bridge_try_recv(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_i128_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_u128_to_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_substr(") { return "a:str"; }
@@ -6082,11 +7021,16 @@ df temp_producer_code(line: str, upats: list<str>, ucodes: list<str>) -> str {
     check str_contains(line, " = call ptr @torvik_read(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_readenv(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_split_list(") { return "a:list"; }
+    check str_contains(line, " = call ptr @torvik_dir_list(") { return "a:list"; }
+    check str_contains(line, " = call ptr @torvik_table_keys(") { return "a:list"; }
     check str_contains(line, " = call ptr @torvik_bag_new(") { return "a:bag"; }
     check str_contains(line, " = call ptr @torvik_table_new(") { return "a:table"; }
     check str_contains(line, " = call ptr @torvik_result_ok(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_result_err(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_readfile(") { return "a:result"; }
+    check str_contains(line, " = call ptr @torvik_try_writefile(") { return "a:result"; }
+    check str_contains(line, " = call ptr @torvik_try_appendline(") { return "a:result"; }
+    check str_contains(line, " = call ptr @torvik_try_fs_copy(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_toint(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_tofloat(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_float_to_str(") { return "a:str"; }
@@ -6290,6 +7234,8 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     set global_init_an:  list<i64> = list_new();
 
     parse_program(tokens, allnames, strings, fn_names, fn_param_names, fn_param_types, fn_ret_types, fn_body_start, fn_body_end, fn_body_an, fn_body_s, global_names, global_values, global_types, global_init_pos, global_init_s, global_init_an, err_pos, err_msg);
+    // v1.3.0: enforce the self-contained rule for raven-spawned tasks.
+    raven_check_self_contained(tokens, strings, allnames, fn_names, fn_param_names, fn_body_start, fn_body_end, fn_body_an, fn_body_s, global_names, err_pos, err_msg);
 
     // ── Semantic check: duplicate function definitions ──
     // Two functions with the same name would emit two LLVM @defs and surface as
@@ -6324,6 +7270,10 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         check rt_ok == 0 {
             push(err_pos, rt_caret);
             push(err_msg, str_concat(str_concat("unknown return type '", rt), "' - expected i64, f64, str, bool, void, or a list/bag/table/result type"));
+        }
+        check starts(rt, "bridge") {
+            push(err_pos, rt_caret);
+            push(err_msg, "functions cannot return a bridge in v1.3.0 - create the bridge in the caller and pass it down as an argument");
         }
         // Parameter types must each be a valid (non-void) value type. An unknown
         // annotation (e.g. `df f(x: zorp)`) would otherwise reach codegen and emit
@@ -6403,6 +7353,7 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     set lctr: list<i64> = list_new();
     push(ctr, 0);
     push(ctr, 0);  // ctr[1] = chain-suppression flag (stage 2 operand eval)
+    push(ctr, 0);  // ctr[2] = interpolation-allowed flag (v1.3.0: one-shot, set by echo/echo!/fmt for a direct string-literal argument)
     push(lctr, 0);
     push(lctr, -1);
     push(lctr, -1);
@@ -6495,6 +7446,10 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare ptr @torvik_read(ptr)");
     emit(ir, "declare ptr @torvik_readenv(ptr)");
     emit(ir, "declare ptr @torvik_split_list(ptr, ptr)");
+    emit(ir, "declare ptr @torvik_dir_list(ptr)");
+    emit(ir, "declare ptr @torvik_table_keys(ptr)");
+    emit(ir, "declare i64 @torvik_fs_is_dir(ptr)");
+    emit(ir, "declare void @torvik_fs_copy(ptr, ptr)");
     emit(ir, "declare ptr @torvik_float_to_str(double)");
     emit(ir, "declare double @torvik_to_float(ptr)");
     emit(ir, "declare double @torvik_rand()");
@@ -6542,6 +7497,25 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare ptr @torvik_result_retain(ptr)");
     emit(ir, "declare void @torvik_result_release(ptr)");
     emit(ir, "declare ptr @torvik_try_readfile(ptr)");
+    emit(ir, "declare ptr @torvik_try_writefile(ptr, ptr)");
+    emit(ir, "declare ptr @torvik_spawn_begin(i64)");
+    emit(ir, "declare void @torvik_spawn_arg(ptr, i64, ptr, i64)");
+    emit(ir, "declare ptr @torvik_raven_spawn(ptr, ptr, i64, i64)");
+    emit(ir, "declare ptr @torvik_task_join(ptr)");
+    emit(ir, "declare ptr @torvik_task_join_str(ptr)");
+    emit(ir, "declare ptr @torvik_task_join_i128(ptr)");
+    emit(ir, "declare void @torvik_task_join_drop(ptr)");
+    emit(ir, "declare ptr @torvik_bridge_new(i64, i64)");
+    emit(ir, "declare ptr @torvik_bridge_retain(ptr)");
+    emit(ir, "declare void @torvik_bridge_release(ptr)");
+    emit(ir, "declare void @torvik_bridge_send(ptr, ptr)");
+    emit(ir, "declare ptr @torvik_bridge_recv(ptr)");
+    emit(ir, "declare ptr @torvik_bridge_recv_str(ptr)");
+    emit(ir, "declare ptr @torvik_bridge_recv_i128(ptr)");
+    emit(ir, "declare ptr @torvik_bridge_try_recv(ptr)");
+    emit(ir, "declare void @torvik_bridge_close(ptr)");
+    emit(ir, "declare ptr @torvik_try_appendline(ptr, ptr)");
+    emit(ir, "declare ptr @torvik_try_fs_copy(ptr, ptr)");
     emit(ir, "declare ptr @torvik_try_toint(ptr)");
     emit(ir, "declare ptr @torvik_try_tofloat(ptr)");
     emit(ir, "declare void @torvik_list_mark_managed(ptr)");
@@ -6601,6 +7575,8 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         check urty == "str" { ucode = "b:str"; }
         check starts(urty, "result") { ucode = "b:result"; }
         check urty == "i128" || urty == "u128" { ucode = "b:i128"; }
+        check starts(urty, "table") { ucode = "b:table"; }   // v1.3.0 fix (paired
+        check starts(urty, "bag") { ucode = "b:bag"; }       //  with return-retain)
         check len(ucode) > 0 {
             push(upats, str_concat(str_concat(" = call ptr @", uirn), "("));
             push(ucodes, ucode);

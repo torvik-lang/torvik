@@ -13,3 +13,4 @@ apply std::math;
 apply std::strings;
 apply std::list;
 apply std::path;
+apply std::convert;

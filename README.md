@@ -6,10 +6,12 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.2.1-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
+
+**[torvik-lang.github.io](https://torvik-lang.github.io)** — the Torvik website
 
 ```torvik
 df main() -> void {
@@ -41,7 +43,13 @@ there is no virtual machine and no garbage collector.
 - **A compiler that talks to you** — clean located errors for every invalid program, and
   a warnings system (unused variables, unreachable code, deprecations) that never fails
   a build and can be tuned per file with `!@` directives.
+- **Concurrency without data races** — spawn tasks with **`raven`**, pass values between
+  them over typed **`bridge`** channels. Values copy as they cross a thread boundary, so
+  tasks share no mutable state and the model is safe by construction.
 - **`rune` project tool** — create, build, and run projects with one command.
+- **Proven on real software** — [Vefna](https://github.com/torvik-lang/vefna), a parallel
+  static site generator, is written entirely in Torvik (the
+  [Torvik website](https://torvik-lang.github.io) is woven with it).
 
 ---
 
@@ -195,6 +203,7 @@ df main() -> void {
 
 Check out our **[Wiki page](https://github.com/torvik-lang/torvik/wiki)** for more info regarding Torvik. You can also read docs in the source below.
 
+- **[The Torvik website](https://torvik-lang.github.io)** — the language at a glance, install, and a tour.
 - **[The Torvik Guide](docs/GUIDE.md)** — full tutorial and language reference.
 - **[Tooling](docs/TOOLING.md)** — the `torvc` compiler and the `rune` project tool.
 - **[Standard library](docs/STDLIB.md)** — built-in function reference.

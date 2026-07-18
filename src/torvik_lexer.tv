@@ -82,6 +82,7 @@ fixed KW_CONTINUE: i64 = 123;
 fixed KW_BREAK:    i64 = 124;
 fixed KW_UNSAFE:     i64 = 125;
 fixed KW_AETT:       i64 = 126;   // aett - a family of named values (v1.2.0)
+fixed KW_RAVEN:      i64 = 127;   // raven - spawn a concurrent task (v1.3.0)
 
 df is_digit(c: i64) -> bool { return c >= 48 && c <= 57; }
 df is_alpha(c: i64) -> bool {
@@ -93,6 +94,7 @@ df is_space(c: i64) -> bool { return c == 32 || c == 9 || c == 10 || c == 13; }
 df keyword_for(word: str) -> i64 {
     check word == "df"       { return KW_DF; }
     check word == "task"     { return KW_TASK; }
+    check word == "raven"    { return KW_RAVEN; }
     check word == "set"      { return KW_SET; }
     check word == "fixed"    { return KW_FIXED; }
     check word == "return"   { return KW_RETURN; }
@@ -479,33 +481,14 @@ df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
 // Only words that keyword_for() returns non-TOK_IDENT for
 // Everything else (extern, from, str, i64, list, etc.) is TOK_IDENT
 df is_keyword(s: str) -> bool {
-    // KEEP IN LOCKSTEP with keyword_for() above - a word known to one but not
-    // the other shifts the allnames cursor off by one for the whole file.
-    check s == "aett"     { return true; }
-    check s == "df"       { return true; }
-    check s == "task"     { return true; }
-    check s == "set"      { return true; }
-    check s == "fixed"    { return true; }
-    check s == "return"   { return true; }
-    check s == "check"    { return true; }
-    check s == "fallback" { return true; }
-    check s == "each"     { return true; }
-    check s == "in"       { return true; }
-    check s == "whilst"   { return true; }
-    check s == "when"     { return true; }
-    check s == "shape"    { return true; }
-    check s == "apply"    { return true; }
-    check s == "guard"    { return true; }
-    check s == "echo"     { return true; }
-    check s == "halt"     { return true; }
-    check s == "vow"      { return true; }
-    check s == "rune"     { return true; }
-    check s == "true"     { return true; }
-    check s == "false"    { return true; }
-    check s == "continue" { return true; }
-    check s == "break"    { return true; }
-    check s == "unsafe"   { return true; }
-    return false;
+    // v1.3.0: single-sourced from keyword_for(). These two views of the
+    // keyword set previously had to be maintained in lockstep by hand (a
+    // word known to one but not the other shifted the allnames cursor off
+    // by one for the whole file - the TVC-1001 drift class). Deriving this
+    // predicate makes that disagreement impossible: keyword_for() returns
+    // TOK_IDENT for any non-keyword word, so "is a keyword" is exactly
+    // "keyword_for says something other than TOK_IDENT".
+    return keyword_for(s) != TOK_IDENT;
 }
 
 // Extract all user-defined names (string literals + non-keyword identifiers)

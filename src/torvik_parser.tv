@@ -222,13 +222,30 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                     fixed sk: i64 = tok_peek(tokens, pos);
                     check sk == TOK_IDENT { decl_type = str_concat(decl_type, strings[str_idx]); str_idx += 1; }
                     check sk == TOK_STRING { str_idx += 1; }
+                    check sk == KW_TASK { decl_type = str_concat(decl_type, "task"); }   // v1.3.0
                     check sk == OP_LT { decl_type = str_concat(decl_type, "<"); }
                     check sk == OP_GT { decl_type = str_concat(decl_type, ">"); }
                     pos += 1;
                 }
             }
+            // v1.3.0: a task handle cannot live in a global. Global initializers
+            // run in main's prologue where a spawn's ordering against other
+            // globals is undefined, and previously this compiled to a silent
+            // null handle - the exact silent-garbage class Torvik forbids.
+            check starts(decl_type, "task") {
+                push(err_pos, pos);
+                push(err_msg, "a task handle cannot be a global - spawn inside a function and pass results where they are needed");
+            }
+            check starts(decl_type, "bridge") {
+                push(err_pos, pos);
+                push(err_msg, "a bridge cannot be a global - create it in main and pass it down as an argument (a raven-spawned task could not reach it anyway: tasks are self-contained)");
+            }
             // Skip =
             check tok_peek(tokens, pos) == OP_EQ { pos += 1; }
+            check tok_peek(tokens, pos) == KW_RAVEN {
+                push(err_pos, pos);
+                push(err_msg, "raven cannot spawn from a global initializer - spawn inside a function instead (no user code runs before main)");
+            }
             // Reject an out-of-range integer literal for a sized global (unless
             // 'unsafe' was given). Same rule locals use — no silent truncation.
             check g_unsafe == 0 && tok_peek(tokens, pos) == TOK_INT && tok_peek(tokens, pos + 1) == PUNCT_SEMI {
@@ -467,6 +484,9 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                 }
                 check sk == TOK_STRING { str_idx += 1; }
                 // Generic brackets are part of the type: list<str>
+                // v1.3.0: `task` is a keyword token - a task<T> param type
+                // contributes its name here (no strings/allnames cursor moves).
+                check sk == KW_TASK { check reading_type == 1 { cur_type = str_concat(cur_type, "task"); } }
                 check sk == OP_LT { check reading_type == 1 { cur_type = str_concat(cur_type, "<"); } }
                 check sk == OP_GT { check reading_type == 1 { cur_type = str_concat(cur_type, ">"); } }
                 // Param boundary: comma ends the current param's type.
@@ -495,6 +515,7 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                 whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_LBRACE {
                     fixed sk: i64 = tok_peek(tokens, pos);
                     check sk == TOK_IDENT || sk == TOK_STRING { rt_built = str_concat(rt_built, strings[str_idx]); str_idx += 1; }
+                    check sk == KW_TASK { rt_built = str_concat(rt_built, "task"); }   // v1.3.0
                     check sk == OP_LT { rt_built = str_concat(rt_built, "<"); }
                     check sk == OP_GT { rt_built = str_concat(rt_built, ">"); }
                     check sk == OP_SHR { rt_built = str_concat(rt_built, ">>"); }

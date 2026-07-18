@@ -1,0 +1,8 @@
+df f() -> i64 { return 1; }
+
+df main() -> void {
+    set h: task<i64> = raven f();
+    echo!(h);
+    fixed x: i64 = join(h);
+    echo!(x);
+}

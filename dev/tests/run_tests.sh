@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# run_tests.sh - Torvik v1.2.x end-to-end test suite (Linux).
+# run_tests.sh - Torvik v1.3.x end-to-end test suite (Linux).
 # Usage: sh run_tests.sh [path-to-torvc] [path-to-rune]
 #   Defaults to `torvc` / `rune` on PATH.
 # All work happens in ./tv-test-work (NOT /tmp - safe for hardened noexec /tmp).
@@ -301,7 +301,16 @@ if [ $? = 1 ] && grep -q "unknown warning directive" w7.log; then
     PASS=$((PASS+1)); note "ok    warns/typo_directive_errors"
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/typo_directive_errors"; note "FAIL  warns/typo_directive_errors"; fi
 
-# apply line translation: an error below `apply std;` reports the USER's line
+# unused-result warning + apply line translation
+cat > ur.tv <<'TVEOF'
+df init(code: i64) -> i64 { return code; }
+df main() -> void { init(1); echo!("ran"); }
+TVEOF
+"$TORVC" ur.tv -o ur > w8.log 2>&1
+if [ $? = 0 ] && grep -q "unused_result\|result of 'init' is unused" w8.log; then
+    PASS=$((PASS+1)); note "ok    warns/unused_result"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/unused_result"; note "FAIL  warns/unused_result"; fi
+
 printf 'apply std;\ndf main() -> void {\n    nosuchfn();\n}\n' > lineoff.tv
 "$TORVC" lineoff.tv -o lo > w9.log 2>&1
 if [ $? = 1 ] && grep -q "lineoff.tv:3:" w9.log; then

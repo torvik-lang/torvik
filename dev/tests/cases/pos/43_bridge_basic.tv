@@ -1,0 +1,29 @@
+// v1.3.0: bridges - producer task, consumer main, the try_recv worker loop.
+// Ordering is forced by bridge blocking and end-of-stream; no sleeps.
+df producer(ch: bridge<str>, n: i64) -> void {
+    set i: i64 = 0;
+    whilst i < n {
+        send(ch, str_concat("msg-", tostr(i)));
+        i += 1;
+    }
+    bridge_close(ch);
+}
+
+df main() -> void {
+    // Same-thread first: a bridge is an ordinary FIFO queue.
+    set q: bridge<i64> = bridge_new(4);
+    send(q, 10);
+    send(q, 32);
+    echo!("fifo: ", recv(q) + recv(q));
+
+    // Producer task feeding main through a small buffer (cap 2 with 3
+    // messages also exercises the sender-blocks-while-full path).
+    set ch: bridge<str> = bridge_new(2);
+    raven producer(ch, 3);
+    whilst true {
+        set r: result<str> = try_recv(ch);
+        check is_err(r) { break; }
+        echo!("got: ", unwrap(r));
+    }
+    echo!("stream ended");
+}

@@ -1,29 +1,149 @@
 # Changelog
 
-## [1.2.1]
+## [1.3.0] — 2026-07
+
+### Added
+
+- **Table iteration: `table_keys(t)`.** Returns every key currently in a table
+  as a sorted `list<str>` (sorted because hash order shifts as a table resizes —
+  loops over a table must be reproducible). Iterate the keys and fetch values
+  with `table_get`; the captured list is independent of later table mutation.
+
+- **Bridges: typed channels between tasks.** `set ch: bridge<T> = bridge_new(cap);`
+  creates a buffered, thread-safe queue (cap ≥ 1); `send(ch, v)` deep-copies the
+  value in (blocking while full); `recv(ch)` takes one out (blocking while
+  empty); `bridge_close(ch)` says "no more values" (idempotent, wakes everyone).
+  A closed-and-drained bridge panics on `recv` and turns into
+  `err(0, "bridge closed")` under `try_recv(ch) -> result<T>` — the worker-loop
+  primitive, mirroring `try_readfile`. Elements: every integer width, `f64`,
+  `bool`, `str`, `i128`/`u128`, and aett values (`try_recv` covers what
+  `result<T>` covers today: ints, `f64`, `str`). Multiple producers and
+  consumers on one bridge are fully supported.
+- **A bridge is the only object two threads share.** Passing a bridge into a
+  raven-spawned task passes *the bridge*, retained — the one deliberate
+  exception to arguments-are-deep-copied (a private copy of a channel would be
+  useless). Every touch of its interior goes through its own lock, and its
+  refcount is the single atomic operation in the entire concurrency design;
+  element refcounts stay non-atomic because only one thread ever owns an
+  element. Bridges live in bindings and flow down through arguments: no bridge
+  globals, no bridges in collections, no returning bridges (clean errors).
+- **Ravens: concurrent tasks.** `raven f(args);` runs a user function on its own
+  OS thread, fire-and-forget; `set h: task<T> = raven f(args);` keeps a handle,
+  and `join(h)` blocks until the task finishes and yields its return value
+  (composing in expressions like any call: `check join(h) == "done"`). A bare
+  `join(h);` statement waits and discards — legal for every task type, releasing
+  a managed result so nothing leaks. Every crossable type works: all integer
+  widths, `u64`, `f64`, `bool`, `str`, `i128`/`u128`, and aett values;
+  `task<void>` tasks join as statements. Each handle joins exactly once (a
+  second join is a clean runtime panic). `join` stays context-sensitive:
+  `std::list`'s `join(list, sep)` is untouched.
+- **Arguments deep-copy at spawn.** The copy is taken synchronously in the spawn
+  statement, on the spawner's thread — after that line, the two threads share no
+  object, so the existing non-atomic ARC runtime needed zero changes and data
+  races are impossible by construction. Collections, results, and task handles
+  cannot cross into a task (clean located error naming the parameter);
+  `task<...>` cannot nest in collection types or live in a global.
+- **The self-contained rule.** A raven-spawned function — and everything it
+  transitively calls — may not read *or* write a global (even a read races a
+  global string's non-atomic refcount). Enforced at compile time by a
+  reachability pass that names the spawn, the offending function, and the
+  global; reads through `echo` interpolation (`"{g}"`) are caught too. A raven
+  carries everything it needs in its claws.
+- **Panics in tasks halt the process** immediately with the usual message —
+  never deferred to `join`, never swallowed. Recoverable failure in tasks is
+  what `result<T>` returns are for, same as everywhere else.
+- Printing a task handle (`echo!(h)` or `"{h}"`) is a clean compile error
+  instead of raw pointer garbage.
+
+### Changed
+
+- **String interpolation is now scoped to `echo`, `echo!`, and `fmt`.** A string
+  literal written directly as an argument of those three interpolates exactly as
+  before (`{name}`, expressions, `{{` escapes). A string literal anywhere else —
+  assignments, ordinary call arguments, returns — is now plain data: braces are
+  ordinary characters, so CSS, JSON, and template text no longer need `{{`
+  escapes (and no longer trip "undefined variable" on things like
+  `".a{color:red}"`). This matches what the guide always documented as the
+  idiom; code that kept interpolated literals inside `echo`/`fmt` is unaffected.
+
+- **`str_concat` is now variadic.** It folds any number of arguments (two or
+  more) left-to-right, so `str_concat(a, b, c, d)` works directly with no
+  nesting. Crucially, calling it with **one** argument is now a clean located
+  compile error — previously a fixed two-argument form silently dropped any
+  extra arguments, which could hide real bugs (a three-argument call quietly
+  lost its third piece). Every intermediate is released exactly once
+  (ASAN-clean).
+- **The lexer's two keyword lists are now one.** `is_keyword()` is derived from
+  `keyword_for()` instead of hand-maintained in lockstep, eliminating the
+  TVC-1001 cursor-drift class (a word known to one list but not the other) at
+  the root. New keywords are added in exactly one place.
+
+### Standard library (v1.1.0 → v1.2.0)
+
+Additive growth across the opt-in `apply std` layer; no breaking changes.
+
+- **`std::strings`** — `strip_prefix`, `strip_suffix`, `is_digits`, `is_alpha`,
+  `center`, `truncate`.
+- **`std::list`** — `contains_int`, `contains_str_in`, `count_int`, `unique`,
+  `take`, `drop`, `mean`.
+- **`std::math`** — `pow_checked` (overflow-signalling power, returns
+  `result<i64>`), `digit_count`, `at_least`, `at_most`, `ilog2`.
+- **`std::convert`** (new module) — `to_hex`, `to_bin`, `from_hex`, `to_int`.
+  Base conversions and safe parsing; the parsers return `result<i64>` so bad
+  input is recoverable rather than a halt.
 
 ### Fixed
 
-- **Warnings now reach `rune run` users — and stay visible on cached runs.** Two
-  compounding bugs hid the entire v1.2.0 warnings system from anyone building through
-  rune: rune compiles with `-q`, and `-q` implied `--no-warn`; and on cache hits no
-  compiler ran at all, so nothing could print. `-q` now suppresses only the
-  informational build output — **warnings are diagnostics, like errors, and always
-  show** unless `--no-warn` or a `!@` directive silences them — and rune captures the
-  compiler's diagnostics to `build/.diag.log` and replays them on every cached run
-  until the code is fixed or a suppressor is used.
+- **Functions returning a `table` or `bag` handed back freed memory.** The
+  +1-on-return retain covered `str`, `list`, `result`, and 128-bit values but
+  not tables or bags, so `fixed cfg: table<str, str> = read_config(path);`
+  received a dangling pointer and crashed on first use. Both kinds now retain
+  on return and release correctly at the call site (ASAN-verified, including
+  discarded results).
+
+### Added
+
+- **File-system surface for real tools**: `dir_list(path)` — the entry names of a
+  directory as a `list<str>`, sorted bytewise for deterministic output on every
+  platform and filesystem (`.`/`..` excluded; an unopenable path halts with a clean
+  message, matching `readfile`); `fs_is_dir(path)`; and `fs_copy(src, dst)` — a
+  binary-safe copy (`readfile` is NUL-terminated text, so images could not
+  round-trip through it). `fs_mkdir`'s docs now say what it always did: create
+  parents like `mkdir -p`. Cross-platform (POSIX dirent / Win32 FindFirstFile),
+  ASAN-clean, covered by pos/39_fs_walk.
+
+### Fixed
+
 - **Unannotated declarations no longer compile silently broken.** `set v = trim(x);`
-  produced garbage aliasing unrelated memory, and `set b = a;` segfaulted — both are
-  now clean located errors. The guide has always required type annotations; only the
+  produced garbage aliasing unrelated memory, and `set b = a;` segfaulted — both now
+  clean located errors. The guide has always required type annotations; only the
   documented `set xs = list_new();` inference may omit one.
 - **Bare statement calls of value-returning builtins get a truthful error.**
   `trim(s);` as a statement previously claimed "call to undefined function 'trim'";
   it now explains the real situation and shows the fix.
 - **Diagnostics under `apply` report the user's real line numbers.** Applied modules
-  are prepended to the compilation unit, so an error on the user's line 3 was
-  reported as line 330-something of their file. Offsets past the prelude now
-  subtract its lines; diagnostics inside an applied module say so instead of
-  mislabeling the user's file.
+  are prepended to the compilation unit, so an error on the user's line 11 was
+  reported as line 337 of their file. Offsets past the prelude now subtract its
+  lines; diagnostics inside an applied module say so instead of mislabeling the
+  user's file.
+
+- **Warnings now reach `rune run` users.** rune builds with `-q`, and `-q` implied
+  `--no-warn` — so the entire warnings system was invisible through rune, the way
+  most programs are built. `-q` now suppresses only the informational build output;
+  **warnings are diagnostics, like errors, and always show** unless `--no-warn`
+  (or a `!@` directive) explicitly silences them. The suite now asserts warnings
+  survive `-q` builds.
+
+### Added (warnings & I/O)
+
+- **`unused_result` warning** — a bare statement call of a non-void function
+  discards its return value silently; the compiler now says so (bind it, or use an
+  `_name` to discard deliberately). New `!@ALLOW[unused_result];` category.
+- **Recoverable write-side I/O**: `try_writefile(path, data)`,
+  `try_appendline(path, line)`, and `try_fs_copy(src, dst)` — each returns
+  `result<i64>` (`ok(0)` on success, an `err` carrying the OS message on failure)
+  so a program can inspect and continue instead of halting. Completes the family
+  started by `try_readfile`. ASAN-clean.
 
 ## [1.2.0]
 

@@ -1,0 +1,97 @@
+// std/convert.tv — Torvik standard library: conversions
+//
+// Part of the standard library. Bring in with `apply std::convert;` or `apply std;`.
+// Pure Torvik over core builtins. Numeric <-> string helpers beyond the core
+// `tostr` builtin: base conversions and safe parsing.
+
+// A single hex digit (0-15) as its lowercase character.
+df _hex_digit(d: i64) -> str {
+    check d < 10 { return tostr(d); }
+    check d == 10 { return "a"; }
+    check d == 11 { return "b"; }
+    check d == 12 { return "c"; }
+    check d == 13 { return "d"; }
+    check d == 14 { return "e"; }
+    return "f";
+}
+
+// A non-negative integer as a lowercase hex string (no "0x" prefix). Negative
+// input is rendered with a leading '-'.
+df to_hex(n: i64) -> str {
+    check n == 0 { return "0"; }
+    set neg: i64 = 0;
+    set m: i64 = n;
+    check m < 0 { neg = 1; m = 0 - m; }
+    set out: str = "";
+    whilst m > 0 {
+        out = str_concat(_hex_digit(m - (m / 16) * 16), out);
+        m = m / 16;
+    }
+    check neg == 1 { return str_concat("-", out); }
+    return out;
+}
+
+// A non-negative integer as a binary string (no "0b" prefix). Negative input is
+// rendered with a leading '-'.
+df to_bin(n: i64) -> str {
+    check n == 0 { return "0"; }
+    set neg: i64 = 0;
+    set m: i64 = n;
+    check m < 0 { neg = 1; m = 0 - m; }
+    set out: str = "";
+    whilst m > 0 {
+        out = str_concat(tostr(m - (m / 2) * 2), out);
+        m = m / 2;
+    }
+    check neg == 1 { return str_concat("-", out); }
+    return out;
+}
+
+// Value of a single hex digit character, or -1 if it isn't one.
+df _hex_val(c: i64) -> i64 {
+    check c >= 48 && c <= 57 { return c - 48; }
+    check c >= 97 && c <= 102 { return c - 97 + 10; }
+    check c >= 65 && c <= 70 { return c - 65 + 10; }
+    return -1;
+}
+
+// Parse a hex string (optional leading '-', no "0x") into an integer. Returns
+// err on an empty string or any non-hex character - the recoverable parsing
+// primitive, mirroring try_tofloat.
+df from_hex(s: str) -> result<i64> {
+    check len(s) == 0 { return err(1, "from_hex: empty string"); }
+    set neg: i64 = 0;
+    set start: i64 = 0;
+    check byte_at(s, 0) == 45 { neg = 1; start = 1; }
+    check start >= len(s) { return err(1, "from_hex: no digits after sign"); }
+    set acc: i64 = 0;
+    set i: i64 = start;
+    whilst i < len(s) {
+        fixed v: i64 = _hex_val(byte_at(s, i));
+        check v < 0 { return err(1, str_concat("from_hex: not a hex digit: ", char_at(s, i))); }
+        acc = acc * 16 + v;
+        i += 1;
+    }
+    check neg == 1 { return ok(0 - acc); }
+    return ok(acc);
+}
+
+// Parse a decimal string (optional leading '-') into an integer. Returns err on
+// an empty string or any non-digit character.
+df to_int(s: str) -> result<i64> {
+    check len(s) == 0 { return err(1, "to_int: empty string"); }
+    set neg: i64 = 0;
+    set start: i64 = 0;
+    check byte_at(s, 0) == 45 { neg = 1; start = 1; }
+    check start >= len(s) { return err(1, "to_int: no digits after sign"); }
+    set acc: i64 = 0;
+    set i: i64 = start;
+    whilst i < len(s) {
+        fixed c: i64 = byte_at(s, i);
+        check c < 48 || c > 57 { return err(1, str_concat("to_int: not a digit: ", char_at(s, i))); }
+        acc = acc * 10 + (c - 48);
+        i += 1;
+    }
+    check neg == 1 { return ok(0 - acc); }
+    return ok(acc);
+}

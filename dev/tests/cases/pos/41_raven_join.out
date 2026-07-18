@@ -1,0 +1,7 @@
+str:  hohoho
+i64:  42
+f64:  10.75
+expr join ok
+void join ok
+drop join ok
+done

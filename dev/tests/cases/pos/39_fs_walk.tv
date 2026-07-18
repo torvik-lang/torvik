@@ -1,0 +1,29 @@
+df main() -> void {
+    fs_mkdir("walk_demo/content/posts");
+    fs_mkdir("walk_demo/static");
+    writefile("walk_demo/content/index.md", "home");
+    writefile("walk_demo/content/posts/one.md", "post one");
+    writefile("walk_demo/content/posts/two.md", "post two");
+    writefile("walk_demo/static/site.css", "body{}");
+
+    fixed entries: list<str> = dir_list("walk_demo/content");
+    each e in entries { echo!(e); }
+
+    echo!(fs_is_dir("walk_demo/content"));
+    echo!(fs_is_dir("walk_demo/content/index.md"));
+    echo!(fs_is_dir("walk_demo/nope"));
+
+    fixed posts: list<str> = dir_list("walk_demo/content/posts");
+    each pe in posts {
+        check ends(pe, ".md") { echo!("post: {pe}"); }
+    }
+
+    fs_mkdir("walk_demo/out/posts/2026");
+    echo!(fs_is_dir("walk_demo/out/posts/2026"));
+
+    fs_copy("walk_demo/static/site.css", "walk_demo/out/site.css");
+    echo!(readfile("walk_demo/out/site.css"));
+
+    fs_remove("walk_demo");
+    echo!(fs_exists("walk_demo"));
+}
