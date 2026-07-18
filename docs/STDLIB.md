@@ -21,7 +21,7 @@ it is reported as a clean compile error, never a crash.
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `len(s)` | `i64` | Length of a string (also works on lists) |
-| `str_concat(a, b)` | `str` | Concatenate two strings |
+| `str_concat(a, b, ...)` | `str` | Concatenate two **or more** strings, left to right (v1.3.0: variadic; one argument is a compile error) |
 | `substr(s, start, end)` | `str` | Substring from `start` up to (not including) `end` |
 | `char_at(s, i)` | `str` | The character at index `i`, as a one-character string |
 | `byte_at(s, i)` | `i64` | The raw byte value at index `i` |
@@ -39,7 +39,8 @@ it is reported as a clean compile error, never a crash.
 | `fmt(template, ...)` | `str` | Build a string with named `{var}` or positional `{}` interpolation. For printing, `echo` interpolates directly — see [the guide](GUIDE.md#strings-and-interpolation) |
 
 ```torvik
-echo!(str_concat("Hello, ", "Torvik"));   // Hello, Torvik
+echo!(str_concat("Hello, ", "Torvik"));            // Hello, Torvik
+echo!(str_concat(key, " = ", value, "\n"));        // any number of parts - no nesting
 echo!(substr("hello", 0, 4));             // hell
 echo!(replace("a.b.c", ".", "/"));        // a/b/c
 set parts: list<str> = split("x,y,z", ","); // ["x", "y", "z"]
@@ -120,6 +121,7 @@ echo!(len(xs));        // 2
 | `table_has(t, k)` | `bool` | Whether key `k` is present |
 | `table_del(t, k)` | — | Remove key `k` |
 | `table_len(t)` | `i64` | Number of entries |
+| `table_keys(t)` | `list<str>` | Every key, sorted — iterate these and fetch values with `table_get` (v1.3.0) |
 
 ```torvik
 set scores: table<str, i64> = table_new();
@@ -174,7 +176,10 @@ echo!("Hello, {name}!");
 | `writefile(path, content)` | — | Write a string to a file |
 | `appendline(path, line)` | — | Append a line (with newline) to a file |
 | `fs_exists(path)` | `bool` | Whether a path exists |
-| `fs_mkdir(path)` | — | Create a directory |
+| `fs_is_dir(path)` | `bool` | Whether a path exists **and** is a directory |
+| `dir_list(path)` | `list<str>` | Entry names in a directory, sorted bytewise (`.`/`..` excluded); an unopenable path halts with a clean message, like `readfile`. Bind before iterating: `fixed xs: list<str> = dir_list(p); each e in xs { ... }` |
+| `fs_mkdir(path)` | — | Create a directory, parents included (like `mkdir -p`) |
+| `fs_copy(src, dst)` | — | Binary-safe file copy — images and other non-text assets round-trip exactly (`readfile` is text) |
 | `fs_mtime(path)` | `i64` | Modification time |
 | `fs_remove(path)` | — | Remove a file or directory |
 
@@ -197,6 +202,9 @@ for the full walkthrough.
 | `err_msg(r)` | `str` | The failure message (`""` for an ok) |
 | `err_code(r)` | `i64` | The failure code (`0` for an ok) |
 | `try_readfile(path)` | `result<str>` | `readfile` that signals failure instead of halting |
+| `try_writefile(path, data)` | `result<i64>` | `writefile` that signals failure (an `err` with the OS message) instead of halting; `ok(0)` on success |
+| `try_appendline(path, line)` | `result<i64>` | `appendline`, recoverable |
+| `try_fs_copy(src, dst)` | `result<i64>` | `fs_copy`, recoverable |
 | `try_toint(s)` | `result<i64>` | `toint` that signals failure instead of halting |
 | `try_tofloat(s)` | `result<f64>` | `tofloat` that signals failure instead of halting |
 
@@ -299,6 +307,11 @@ says to run `rune update`.
 | `is_odd(n)` | `i64` | `1` if `n` is odd, else `0` |
 | `sign(n)` | `i64` | `-1`, `0`, or `1` by the sign of `n` |
 | `isqrt(n)` | `i64` | Integer square root: largest `r` with `r*r <= n` (halts on negative input) |
+| `pow_checked(base, exp)` | `result<i64>` | `base**exp`, or `err` if it would overflow i64 or `exp < 0` |
+| `digit_count(n)` | `i64` | Number of base-10 digits in `n` (sign ignored; `0` has `1`) |
+| `at_least(n, lo)` | `i64` | `n` raised to at least `lo` (one-sided clamp) |
+| `at_most(n, hi)` | `i64` | `n` lowered to at most `hi` (one-sided clamp) |
+| `ilog2(n)` | `i64` | Integer base-2 log (highest set bit); `-1` for `n <= 0` |
 
 ### `std::strings`
 
@@ -312,6 +325,12 @@ says to run `rune update`.
 | `count_str(s, sub)` | `i64` | Non-overlapping occurrences of `sub` in `s` |
 | `reverse_str(s)` | `str` | The string reversed (bytewise) |
 | `capitalize(s)` | `str` | First character uppercased, rest unchanged |
+| `strip_prefix(s, prefix)` | `str` | `s` with `prefix` removed from the front if present |
+| `strip_suffix(s, suffix)` | `str` | `s` with `suffix` removed from the end if present |
+| `is_digits(s)` | `bool` | Whether `s` is non-empty and all ASCII digits |
+| `is_alpha(s)` | `bool` | Whether `s` is non-empty and all ASCII letters |
+| `center(s, width, pad)` | `str` | Center `s` within `width` using `pad` |
+| `truncate(s, width, ellipsis)` | `str` | Shorten `s` to `width`, appending `ellipsis` if cut |
 
 ### `std::list`
 
@@ -326,6 +345,13 @@ says to run `rune update`.
 | `reverse_list(xs)` | — | Reverse a `list<i64>` in place |
 | `index_of(xs, v)` | `i64` | Index of the first element equal to `v`, or `-1` |
 | `index_of_str(xs, s)` | `i64` | Index of the first element equal to `s` (content), or `-1` |
+| `contains_int(xs, v)` | `bool` | Whether `xs` contains `v` |
+| `contains_str_in(xs, s)` | `bool` | Whether the `list<str>` `xs` contains `s` |
+| `count_int(xs, v)` | `i64` | How many times `v` appears in `xs` |
+| `unique(xs)` | `list<i64>` | A new list with duplicates removed, first-seen order |
+| `take(xs, n)` | `list<i64>` | The first `n` elements of `xs` |
+| `drop(xs, n)` | `list<i64>` | `xs` with its first `n` elements dropped |
+| `mean(xs)` | `i64` | Integer mean (floor division; `0` for an empty list) |
 
 ### `std::path`
 
@@ -338,6 +364,19 @@ which every supported platform accepts.
 | `path_dir(p)` | `str` | Directory part: `"a/b"`; `"."` when there is no separator |
 | `path_ext(p)` | `str` | Extension with the dot (`".tv"`), `""` if none; a lone leading dot is a hidden name, not an extension |
 | `path_join(a, b)` | `str` | Join two segments with exactly one separator |
+
+### `std::convert`
+
+Numeric-and-string conversions beyond the core `tostr` builtin: base conversions and
+safe parsing. The parsing functions return `result<i64>` so bad input is recoverable
+rather than a halt.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `to_hex(n)` | `str` | `n` as a lowercase hex string (no `0x`; leading `-` if negative) |
+| `to_bin(n)` | `str` | `n` as a binary string (no `0b`; leading `-` if negative) |
+| `from_hex(s)` | `result<i64>` | Parse a hex string (optional `-`), or `err` on bad input |
+| `to_int(s)` | `result<i64>` | Parse a decimal string (optional `-`), or `err` on bad input |
 
 ```torvik
 apply std;
