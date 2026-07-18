@@ -1,0 +1,8 @@
+df make() -> bridge<i64> {
+    set c: bridge<i64> = bridge_new(1);
+    return c;
+}
+
+df main() -> void {
+    echo!("no");
+}

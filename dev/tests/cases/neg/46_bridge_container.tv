@@ -1,0 +1,4 @@
+df main() -> void {
+    set xs: list<bridge<i64>> = list_new();
+    echo!(len(xs));
+}

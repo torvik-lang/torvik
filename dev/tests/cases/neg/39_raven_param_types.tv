@@ -1,0 +1,7 @@
+df work(xs: list<i64>) -> i64 { return len(xs); }
+
+df main() -> void {
+    set xs: list<i64> = list_new();
+    push(xs, 1);
+    raven work(xs);
+}

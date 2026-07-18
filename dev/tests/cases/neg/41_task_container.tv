@@ -1,0 +1,4 @@
+df main() -> void {
+    set bad: list<task<str>> = list_new();
+    echo!(len(bad));
+}

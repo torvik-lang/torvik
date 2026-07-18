@@ -1,0 +1,4 @@
+df main() -> void {
+    set ch: bridge<void> = bridge_new(1);
+    bridge_close(ch);
+}

@@ -1,0 +1,6 @@
+df good(n: i64) -> i64 { return n; }
+
+df main() -> void {
+    set h: task<str> = raven good(5);
+    echo!(join(h));
+}

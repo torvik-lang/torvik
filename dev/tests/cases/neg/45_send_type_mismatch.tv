@@ -1,0 +1,5 @@
+df main() -> void {
+    set ch: bridge<str> = bridge_new(2);
+    send(ch, 42);
+    echo!(recv(ch));
+}

@@ -1,0 +1,5 @@
+df main() -> void {
+    set ch: bridge<i64> = bridge_new(1);
+    echo!(ch);
+    bridge_close(ch);
+}
