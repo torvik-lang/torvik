@@ -194,7 +194,13 @@ for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do d
 dl "$RAW_REF/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
 dl "$RAW_REF/VERSION" "$LIB_DIR/VERSION"
 mkdir -p "$LIB_DIR/std"
-for a in math strings list path; do dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"; done
+# Derive the module list from the umbrella (std.tv) we just installed, so a new
+# module ships automatically once it's added to `apply std::X;` there. A
+# hardcoded list silently skipped new modules (v1.2.0's std::convert), and this
+# runs over HTTP where a directory glob isn't available.
+for a in $(grep -oE '^apply std::[a-z_]+' "$LIB_DIR/std.tv" | sed 's/^apply std:://'); do
+    dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"
+done
 
 # --- icons + .tv file type (Linux only; macOS/Windows association: v1.1.0) ---
 if [ "$OS" = "linux" ]; then
