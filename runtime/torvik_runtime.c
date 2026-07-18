@@ -57,6 +57,7 @@
   #include <dirent.h>
   #include <fcntl.h>
   #include <termios.h>
+  #include <pthread.h>
   #include <sys/time.h>
   #include <sys/utsname.h>
   #include <sys/sysinfo.h>
@@ -1512,7 +1513,7 @@ int64_t torvik_sys_pid(void) {
 }
 
 int64_t torvik_sys_run(const char *cmd) {
-    /* v1.2.1: the child writes to the inherited fds immediately, while our own
+    /* v1.3.0: the child writes to the inherited fds immediately, while our own
        buffered stdio may still be holding earlier output (rune's replayed
        diagnostics, for one) - flush so parent output always precedes the
        child's. */
@@ -1575,6 +1576,184 @@ void torvik_fs_mkdir(const char *path) {
         if (torvik_is_sep(*q)) { char sep = *q; *q = '\0'; torvik_mkdir_one(tmp); *q = sep; }
     }
     torvik_mkdir_one(tmp);
+}
+
+/* fs_is_dir — 1 if the path exists and is a directory (v1.3.0) */
+int64_t torvik_fs_is_dir(const char *path) {
+#if defined(_WIN32)
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) return 0;
+    return (a & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+#endif
+}
+
+/* dir_list — the entry NAMES in a directory as a managed list<str>, sorted
+   bytewise for deterministic output across platforms and filesystems ("." and
+   ".." excluded). An unopenable path is a clean panic, matching readfile:
+   pointing a tool at the wrong directory should be loud, not an empty list
+   (v1.3.0). */
+static int torvik_dl_cmp(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+/* table_keys — every key currently in the table, as a sorted list<str>
+   (v1.3.0). Sorted because hash order shifts as the table resizes: loops over
+   a table must be reproducible run to run. The list adopts fresh dups of the
+   keys, so mutating the table afterward cannot disturb a captured key list. */
+TorvikList *torvik_table_keys(void *p) {
+    TorvikTable *t = (TorvikTable *)p;
+    if (!t || t->magic != TORVIK_TABLE_MAGIC) torvik_panic("table_keys: this value is not a table");
+    char **names = (char **)tv_malloc(sizeof(char *) * (size_t)(t->len > 0 ? t->len : 1));
+    int64_t n = 0;
+    for (int64_t i = 0; i < t->cap; i++) {
+        if (t->entries[i].used) names[n++] = torvik_str_dup(t->entries[i].key);
+    }
+    if (n > 1) qsort(names, (size_t)n, sizeof(char *), torvik_dl_cmp);
+    TorvikList *l = torvik_list_new();
+    torvik_list_mark_managed(l);
+    for (int64_t i = 0; i < n; i++) torvik_push(l, names[i]);   /* push adopts */
+    free(names);
+    return l;
+}
+
+TorvikList *torvik_dir_list(const char *path) {
+    char  **names = NULL;
+    int64_t n = 0, cap = 0;
+#if defined(_WIN32)
+    char pat[4096];
+    size_t plen = strlen(path);
+    if (plen == 0 || plen + 3 >= sizeof(pat)) torvik_panic("dir_list: path too long");
+    memcpy(pat, path, plen);
+    if (pat[plen-1] != '/' && pat[plen-1] != '\\') pat[plen++] = '\\';
+    pat[plen] = '*'; pat[plen+1] = '\0';
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "dir_list: cannot open '%s'", path);
+        torvik_panic(msg);
+    }
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 16; names = tv_realloc(names, (size_t)cap * sizeof(char *)); }
+        names[n++] = torvik_str_dup(fd.cFileName);   /* header'd - the list adopts it */
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *d = opendir(path);
+    if (!d) {
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "dir_list: cannot open '%s': %s", path, strerror(errno));
+        torvik_panic(msg);
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 16; names = tv_realloc(names, (size_t)cap * sizeof(char *)); }
+        names[n++] = torvik_str_dup(e->d_name);   /* header'd - the list adopts it */
+    }
+    closedir(d);
+#endif
+    if (n > 1) qsort(names, (size_t)n, sizeof(char *), torvik_dl_cmp);
+    TorvikList *l = torvik_list_new();
+    torvik_list_mark_managed(l);
+    /* push ADOPTS each string (mirrors torvik_split_list: the strings transfer
+       to the list; only the scratch array is freed). */
+    for (int64_t i = 0; i < n; i++) torvik_push(l, names[i]);
+    free(names);
+    return l;
+}
+
+/* fs_copy — binary-safe file copy (v1.3.0). readfile is NUL-terminated text,
+   so images and other binary assets cannot round-trip through it; this streams
+   raw bytes. Failures are clean panics, matching readfile/writefile. */
+void torvik_fs_copy(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "fs_copy: cannot open '%s': %s", src, strerror(errno));
+        torvik_panic(msg);
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "fs_copy: cannot create '%s': %s", dst, strerror(errno));
+        torvik_panic(msg);
+    }
+    char buf[65536];
+    size_t r;
+    while ((r = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, r, out) != r) {
+            fclose(in); fclose(out);
+            torvik_panic("fs_copy: short write (disk full?)");
+        }
+    }
+    fclose(in);
+    if (fclose(out) != 0) torvik_panic("fs_copy: close failed (disk full?)");
+}
+
+/* try_writefile / try_appendline / try_fs_copy — recoverable forms of the
+   matching builtins (v1.3.0): a failure is an err result the program can
+   inspect and continue from, instead of a halt. Success is ok(0). */
+void *torvik_try_writefile(const char *path, const char *data) {
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        char m[4200];
+        snprintf(m, sizeof m, "cannot open '%s': %s", path, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    if (fputs(data, f) < 0 || fclose(f) != 0) {
+        char m[4200];
+        snprintf(m, sizeof m, "write to '%s' failed: %s", path, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    return torvik_result_ok((void *)(intptr_t)0);
+}
+
+void *torvik_try_appendline(const char *path, const char *line) {
+    FILE *f = fopen(path, "ab");
+    if (!f) {
+        char m[4200];
+        snprintf(m, sizeof m, "cannot open '%s': %s", path, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    if (fputs(line, f) < 0 || fputc('\n', f) == EOF || fclose(f) != 0) {
+        char m[4200];
+        snprintf(m, sizeof m, "append to '%s' failed: %s", path, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    return torvik_result_ok((void *)(intptr_t)0);
+}
+
+void *torvik_try_fs_copy(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        char m[4200];
+        snprintf(m, sizeof m, "cannot open '%s': %s", src, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        char m[4200];
+        snprintf(m, sizeof m, "cannot create '%s': %s", dst, strerror(errno));
+        return torvik_result_err((int64_t)errno, torvik_str_dup(m));
+    }
+    char buf[65536];
+    size_t r;
+    while ((r = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, r, out) != r) {
+            fclose(in); fclose(out);
+            return torvik_result_err(1, torvik_str_dup("short write (disk full?)"));
+        }
+    }
+    fclose(in);
+    if (fclose(out) != 0) return torvik_result_err(1, torvik_str_dup("close failed (disk full?)"));
+    return torvik_result_ok((void *)(intptr_t)0);
 }
 
 /* fs_remove — recursively delete a file or directory (like `rm -rf`) */
@@ -1803,4 +1982,474 @@ char *torvik_str_concat(const char *a, const char *b) {
 
 int torvik_str_eq(const char *a, const char *b) {
     return strcmp(a, b) == 0;
+}
+
+
+/* ── 10. Concurrency — raven tasks ────────────────────────────────────────────
+   Phase A of the v1.3.0 concurrency model (see docs/GUIDE.md "Ravens & Bridges").
+
+   Design invariants (do not weaken):
+   - No object is ever shared between threads. Arguments are DEEP-COPIED at
+     spawn (tv_spawn_copy); the return value's +1-on-return claim transfers
+     wholesale to the joiner. The non-atomic ARC therefore stays correct with
+     zero atomic operations.
+   - The pack owns its copies exactly like a caller owns statement temps: copy
+     is retained to rc1 at spawn_arg; the callee entry-retains/exit-releases as
+     usual; the trampoline drops the pack's claim after the call returns.
+   - A panic on any thread is torvik_panic -> exit(1): the whole process halts,
+     matching main-thread behavior. Background failures never vanish.
+   - Task structs live in a registry (reachable from a global) for the life of
+     the process: LeakSanitizer sees them as reachable, double-join is a clean
+     panic instead of a use-after-free, and no atexit teardown races a still-
+     running detached thread.
+
+   Slot kinds (must match codegen's spawn emission):
+     0 = raw scalar bits (all integer widths, bool, f64 bit-packed, aett)
+     1 = str  (torvik heap string; copied with torvik_str_dup)
+     2 = i128/u128 heap box (copied via load + re-box)                        */
+
+#define TORVIK_TASK_MAX_ARGS 16
+/* Defined in Section 11 (bridges); used by the spawn-kind helpers below. */
+void *torvik_bridge_retain(void *p);
+void torvik_bridge_release(void *p);
+
+#define TV_SPAWN_RAW    0
+#define TV_SPAWN_STR    1
+#define TV_SPAWN_I128   2
+#define TV_SPAWN_BRIDGE 3   /* retained, not copied - the one shared object */
+
+typedef struct TorvikTask TorvikTask;
+struct TorvikTask {
+#if defined(_WIN32)
+    HANDLE th;
+#else
+    pthread_t th;
+#endif
+    void *ret;
+    int64_t ret_kind;
+    int64_t joined;
+    TorvikTask *next;     /* task registry chain */
+};
+
+typedef struct {
+    void *fn;
+    int64_t nargs;
+    int64_t ret_kind;
+    TorvikTask *task;     /* NULL for a detached (fire-and-forget) spawn */
+    void *args[TORVIK_TASK_MAX_ARGS];
+    int64_t kinds[TORVIK_TASK_MAX_ARGS];
+} TorvikSpawnPack;
+
+/* Registry: keeps every handled task reachable for the process lifetime.
+   Guarded because nested ravens may register from task threads.             */
+static TorvikTask *tv_task_registry = NULL;
+#if defined(_WIN32)
+static SRWLOCK tv_task_reg_mu = SRWLOCK_INIT;
+static void tv_task_reg_lock(void)   { AcquireSRWLockExclusive(&tv_task_reg_mu); }
+static void tv_task_reg_unlock(void) { ReleaseSRWLockExclusive(&tv_task_reg_mu); }
+#else
+static pthread_mutex_t tv_task_reg_mu = PTHREAD_MUTEX_INITIALIZER;
+static void tv_task_reg_lock(void)   { pthread_mutex_lock(&tv_task_reg_mu); }
+static void tv_task_reg_unlock(void) { pthread_mutex_unlock(&tv_task_reg_mu); }
+#endif
+
+static void *tv_spawn_copy(void *slot, int64_t kind) {
+    if (kind == TV_SPAWN_STR) {
+        if (!slot) return NULL;
+        char *c = torvik_str_dup((const char *)slot);
+        return torvik_str_retain(c);            /* the pack's claim (rc1) */
+    }
+    if (kind == TV_SPAWN_I128) {
+        if (!slot) return NULL;
+        __int128 v;
+        torvik_i128_load(slot, &v);
+        return torvik_i128_retain(torvik_i128_box(&v));
+    }
+    if (kind == TV_SPAWN_BRIDGE) {
+        return torvik_bridge_retain(slot);       /* shared, never copied */
+    }
+    return slot;                                 /* raw bits, no ownership */
+}
+
+static void tv_spawn_release(void *slot, int64_t kind) {
+    if (kind == TV_SPAWN_STR)         torvik_str_release(slot);
+    else if (kind == TV_SPAWN_I128)   torvik_i128_release(slot);
+    else if (kind == TV_SPAWN_BRIDGE) torvik_bridge_release(slot);
+}
+
+/* Call a compiled Torvik function through the uniform ptr(ptr,...) convention.
+   i64/ptr share argument registers on both target ABIs (x86-64 SysV, Win64),
+   which is the same convention torvc's call sites already rely on.          */
+typedef void *(*TvF0)(void);
+typedef void *(*TvF1)(void *);
+typedef void *(*TvF2)(void *, void *);
+typedef void *(*TvF3)(void *, void *, void *);
+typedef void *(*TvF4)(void *, void *, void *, void *);
+typedef void *(*TvF5)(void *, void *, void *, void *, void *);
+typedef void *(*TvF6)(void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF7)(void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF8)(void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF9)(void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF10)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF11)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF12)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF13)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF14)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF15)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+typedef void *(*TvF16)(void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+
+static void *tv_task_call(void *fn, int64_t n, void **a) {
+    switch (n) {
+        case 0:  return ((TvF0)fn)();
+        case 1:  return ((TvF1)fn)(a[0]);
+        case 2:  return ((TvF2)fn)(a[0], a[1]);
+        case 3:  return ((TvF3)fn)(a[0], a[1], a[2]);
+        case 4:  return ((TvF4)fn)(a[0], a[1], a[2], a[3]);
+        case 5:  return ((TvF5)fn)(a[0], a[1], a[2], a[3], a[4]);
+        case 6:  return ((TvF6)fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 7:  return ((TvF7)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        case 8:  return ((TvF8)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+        case 9:  return ((TvF9)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+        case 10: return ((TvF10)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
+        case 11: return ((TvF11)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10]);
+        case 12: return ((TvF12)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+        case 13: return ((TvF13)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12]);
+        case 14: return ((TvF14)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13]);
+        case 15: return ((TvF15)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14]);
+        case 16: return ((TvF16)fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
+        default: torvik_panic("raven: internal error - unsupported argument count"); return NULL;
+    }
+}
+
+/* Thread entry. Runs the spawned function, settles ownership, frees the pack. */
+#if defined(_WIN32)
+static unsigned __stdcall tv_task_tramp(void *arg) {
+#else
+static void *tv_task_tramp(void *arg) {
+#endif
+    TorvikSpawnPack *p = (TorvikSpawnPack *)arg;
+    void *ret = tv_task_call(p->fn, p->nargs, p->args);
+    /* Drop the pack's claim on each copied argument (the callee's entry
+       retain / exit release balanced its own use, exactly as with a normal
+       caller's statement temps). */
+    for (int64_t i = 0; i < p->nargs; i++) tv_spawn_release(p->args[i], p->kinds[i]);
+    if (p->task) {
+        p->task->ret = ret;                     /* owned: the callee's +1-on-return */
+    } else if (p->ret_kind != TV_SPAWN_RAW) {
+        tv_spawn_release(ret, p->ret_kind);     /* detached: drop the unread result */
+    }
+    free(p);
+#if defined(_WIN32)
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+/* --- builtins ------------------------------------------------------------ */
+
+void *torvik_spawn_begin(int64_t nargs) {
+    if (nargs < 0 || nargs > TORVIK_TASK_MAX_ARGS)
+        torvik_panic("raven: a spawned function may take at most 16 arguments");
+    TorvikSpawnPack *p = (TorvikSpawnPack *)tv_malloc(sizeof(TorvikSpawnPack));
+    memset(p, 0, sizeof(*p));
+    p->nargs = nargs;
+    return p;
+}
+
+void torvik_spawn_arg(void *pack, int64_t idx, void *slot, int64_t kind) {
+    TorvikSpawnPack *p = (TorvikSpawnPack *)pack;
+    if (idx < 0 || idx >= p->nargs)
+        torvik_panic("raven: internal error - spawn argument index out of range");
+    p->args[idx]  = tv_spawn_copy(slot, kind);
+    p->kinds[idx] = kind;
+}
+
+void *torvik_raven_spawn(void *pack, void *fn, int64_t ret_kind, int64_t wants_handle) {
+    TorvikSpawnPack *p = (TorvikSpawnPack *)pack;
+    p->fn = fn;
+    p->ret_kind = ret_kind;
+    TorvikTask *t = NULL;
+    if (wants_handle) {
+        t = (TorvikTask *)tv_malloc(sizeof(TorvikTask));
+        memset(t, 0, sizeof(*t));
+        t->ret_kind = ret_kind;
+        p->task = t;
+        tv_task_reg_lock();
+        t->next = tv_task_registry;
+        tv_task_registry = t;
+        tv_task_reg_unlock();
+    }
+#if defined(_WIN32)
+    uintptr_t h = _beginthreadex(NULL, 0, tv_task_tramp, p, 0, NULL);
+    if (h == 0) torvik_panic("raven: the operating system could not create a task thread");
+    if (t) t->th = (HANDLE)h;
+    else CloseHandle((HANDLE)h);                 /* detached */
+#else
+    pthread_t th;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    if (!t) pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&th, &at, tv_task_tramp, p);
+    pthread_attr_destroy(&at);
+    if (rc != 0) torvik_panic("raven: the operating system could not create a task thread");
+    if (t) t->th = th;
+#endif
+    return t;
+}
+
+/* Wait for a task and take its return value. The join_str / join_i128 names
+   exist so codegen's line-based temp classifier can tag the result's kind
+   ("b:str" / "b:i128" — the value arrives owned, carrying the task function's
+   +1-on-return claim). All three share one implementation.                  */
+static void *tv_task_join_impl(void *task) {
+    TorvikTask *t = (TorvikTask *)task;
+    if (!t) torvik_panic("join: this handle is not a running task");
+    if (t->joined) torvik_panic("join: this task was already joined - a task's result can be taken once. Bind it to a variable at the first join if it is needed twice");
+#if defined(_WIN32)
+    WaitForSingleObject(t->th, INFINITE);
+    CloseHandle(t->th);
+#else
+    pthread_join(t->th, NULL);
+#endif
+    t->joined = 1;
+    return t->ret;
+}
+
+void *torvik_task_join(void *task)      { return tv_task_join_impl(task); }
+void *torvik_task_join_str(void *task)  { return tv_task_join_impl(task); }
+void *torvik_task_join_i128(void *task) { return tv_task_join_impl(task); }
+
+/* Statement-form `join(h);` — wait, then drop a managed result so nothing
+   leaks when the value is deliberately discarded.                           */
+void torvik_task_join_drop(void *task) {
+    TorvikTask *t = (TorvikTask *)task;
+    void *ret = tv_task_join_impl(task);
+    if (t->ret_kind != TV_SPAWN_RAW) tv_spawn_release(ret, t->ret_kind);
+}
+
+/* ── 11. Concurrency — bridges ────────────────────────────────────────────────
+   Phase B of the v1.3.0 concurrency model. A bridge is a typed, buffered,
+   thread-safe queue: the ONLY object two threads ever share, with every touch
+   of its interior behind its own lock.
+
+   Ownership invariants (mirror the raven task rules):
+   - Values DEEP-COPY on send, on the sender's thread, before the enqueue.
+     After a send, sender and receiver share no object.
+   - The queue holds one claim (rc1) on each managed element. recv hands that
+     claim to the receiver wholesale — the value "arrives owned", so codegen
+     classifies recv results class b, exactly like join results.
+   - The bridge's OWN refcount is the single atomic in the entire design: a
+     task's exit releases its retained bridge argument from another thread.
+     Element refcounts stay non-atomic — only one thread ever holds a given
+     element.
+   - Destruction (last release) drains remaining managed elements, tears down
+     the primitives, and frees.
+   - close() is idempotent; it wakes every blocked sender and receiver.
+     send on a closed bridge panics. recv on a closed AND drained bridge
+     panics (that is a programming error); try_recv turns exactly that one
+     condition into err(0, "bridge closed") - the worker-loop primitive.    */
+
+#define TORVIK_BRIDGE_MAGIC 0x5456425247ll   /* "TVBRG" */
+
+typedef struct {
+    int64_t magic;
+    volatile int64_t refcount;   /* atomic: crosses threads by design */
+    int64_t elem_kind;           /* TV_SPAWN_RAW / _STR / _I128 (fixed per bridge) */
+    int64_t cap;
+    int64_t count;
+    int64_t head;
+    int64_t closed;
+    void **slots;
+#if defined(_WIN32)
+    CRITICAL_SECTION mu;
+    CONDITION_VARIABLE not_full;
+    CONDITION_VARIABLE not_empty;
+#else
+    pthread_mutex_t mu;
+    pthread_cond_t not_full;
+    pthread_cond_t not_empty;
+#endif
+} TorvikBridge;
+
+static void tv_bridge_lock(TorvikBridge *b) {
+#if defined(_WIN32)
+    EnterCriticalSection(&b->mu);
+#else
+    pthread_mutex_lock(&b->mu);
+#endif
+}
+static void tv_bridge_unlock(TorvikBridge *b) {
+#if defined(_WIN32)
+    LeaveCriticalSection(&b->mu);
+#else
+    pthread_mutex_unlock(&b->mu);
+#endif
+}
+static void tv_bridge_wait_not_full(TorvikBridge *b) {
+#if defined(_WIN32)
+    SleepConditionVariableCS(&b->not_full, &b->mu, INFINITE);
+#else
+    pthread_cond_wait(&b->not_full, &b->mu);
+#endif
+}
+static void tv_bridge_wait_not_empty(TorvikBridge *b) {
+#if defined(_WIN32)
+    SleepConditionVariableCS(&b->not_empty, &b->mu, INFINITE);
+#else
+    pthread_cond_wait(&b->not_empty, &b->mu);
+#endif
+}
+static void tv_bridge_wake_all(TorvikBridge *b) {
+#if defined(_WIN32)
+    WakeAllConditionVariable(&b->not_full);
+    WakeAllConditionVariable(&b->not_empty);
+#else
+    pthread_cond_broadcast(&b->not_full);
+    pthread_cond_broadcast(&b->not_empty);
+#endif
+}
+
+void *torvik_bridge_new(int64_t cap, int64_t elem_kind) {
+    if (cap < 1) torvik_panic("bridge_new: capacity must be at least 1");
+    TorvikBridge *b = (TorvikBridge *)tv_malloc(sizeof(TorvikBridge));
+    memset(b, 0, sizeof(*b));
+    b->magic = TORVIK_BRIDGE_MAGIC;
+    b->refcount = 0;             /* floating; codegen retains at production */
+    b->elem_kind = elem_kind;
+    b->cap = cap;
+    b->slots = (void **)tv_malloc(sizeof(void *) * (size_t)cap);
+#if defined(_WIN32)
+    InitializeCriticalSection(&b->mu);
+    InitializeConditionVariable(&b->not_full);
+    InitializeConditionVariable(&b->not_empty);
+#else
+    pthread_mutex_init(&b->mu, NULL);
+    pthread_cond_init(&b->not_full, NULL);
+    pthread_cond_init(&b->not_empty, NULL);
+#endif
+    return b;
+}
+
+void *torvik_bridge_retain(void *p) {
+    if (!p) return p;
+    TorvikBridge *b = (TorvikBridge *)p;
+    if (b->magic != TORVIK_BRIDGE_MAGIC) return p;
+    __atomic_add_fetch(&b->refcount, 1, __ATOMIC_SEQ_CST);
+    return p;
+}
+
+void torvik_bridge_release(void *p) {
+    if (!p) return;
+    TorvikBridge *b = (TorvikBridge *)p;
+    if (b->magic != TORVIK_BRIDGE_MAGIC) return;
+    if (__atomic_sub_fetch(&b->refcount, 1, __ATOMIC_SEQ_CST) > 0) return;
+    /* Last claim gone: no thread can reach the bridge any more, so plain
+       (unlocked) teardown is safe. Drain the queue's claims first. */
+    for (int64_t i = 0; i < b->count; i++) {
+        tv_spawn_release(b->slots[(b->head + i) % b->cap], b->elem_kind);
+    }
+#if defined(_WIN32)
+    DeleteCriticalSection(&b->mu);
+#else
+    pthread_mutex_destroy(&b->mu);
+    pthread_cond_destroy(&b->not_full);
+    pthread_cond_destroy(&b->not_empty);
+#endif
+    b->magic = 0;
+    free(b->slots);
+    free(b);
+}
+
+static TorvikBridge *tv_bridge_check(void *p, const char *who) {
+    TorvikBridge *b = (TorvikBridge *)p;
+    if (!b || b->magic != TORVIK_BRIDGE_MAGIC) {
+        torvik_panic(who);
+    }
+    return b;
+}
+
+void torvik_bridge_send(void *p, void *slot) {
+    TorvikBridge *b = tv_bridge_check(p, "send: this value is not a bridge");
+    /* Deep-copy on the SENDER's thread, before the lock: the copy touches
+       only sender-owned objects. The copy carries the queue's claim (rc1). */
+    void *copy = tv_spawn_copy(slot, b->elem_kind);
+    tv_bridge_lock(b);
+    while (b->count == b->cap && !b->closed) tv_bridge_wait_not_full(b);
+    if (b->closed) {
+        tv_bridge_unlock(b);
+        tv_spawn_release(copy, b->elem_kind);
+        torvik_panic("send: this bridge is closed - nothing can cross it any more");
+    }
+    b->slots[(b->head + b->count) % b->cap] = copy;
+    b->count++;
+#if defined(_WIN32)
+    WakeConditionVariable(&b->not_empty);
+#else
+    pthread_cond_signal(&b->not_empty);
+#endif
+    tv_bridge_unlock(b);
+}
+
+/* Shared dequeue: blocks while empty and open. Returns 1 with the value in
+   *out (ownership transfers to the caller), or 0 when closed AND drained.  */
+static int tv_bridge_take(TorvikBridge *b, void **out) {
+    tv_bridge_lock(b);
+    while (b->count == 0 && !b->closed) tv_bridge_wait_not_empty(b);
+    if (b->count == 0) {   /* closed and drained */
+        tv_bridge_unlock(b);
+        return 0;
+    }
+    *out = b->slots[b->head];
+    b->head = (b->head + 1) % b->cap;
+    b->count--;
+#if defined(_WIN32)
+    WakeConditionVariable(&b->not_full);
+#else
+    pthread_cond_signal(&b->not_full);
+#endif
+    tv_bridge_unlock(b);
+    return 1;
+}
+
+/* recv variants: one implementation, three symbols so codegen's line-based
+   temp classifier can tag ownership of the result ("b:str" / "b:i128"). */
+static void *tv_bridge_recv_impl(void *p) {
+    TorvikBridge *b = tv_bridge_check(p, "recv: this value is not a bridge");
+    void *v = NULL;
+    if (!tv_bridge_take(b, &v)) {
+        torvik_panic("recv: this bridge is closed and drained - loop with try_recv to stop cleanly at end-of-stream");
+    }
+    return v;
+}
+void *torvik_bridge_recv(void *p)      { return tv_bridge_recv_impl(p); }
+void *torvik_bridge_recv_str(void *p)  { return tv_bridge_recv_impl(p); }
+void *torvik_bridge_recv_i128(void *p) { return tv_bridge_recv_impl(p); }
+
+/* try_recv: blocks exactly like recv, but closed+drained becomes
+   err(0, "bridge closed") instead of a panic - the worker-loop primitive.
+   The ok value's queue claim transfers into the result box: for str elements
+   the box is marked managed WITHOUT an extra retain (mark_managed would
+   retain again, so the claim is handed over by construction instead).      */
+void *torvik_bridge_try_recv(void *p) {
+    TorvikBridge *b = tv_bridge_check(p, "try_recv: this value is not a bridge");
+    void *v = NULL;
+    if (!tv_bridge_take(b, &v)) {
+        char *m = torvik_str_dup("bridge closed");
+        void *r = torvik_result_err(0, m);   /* err retains m (rc1) */
+        return r;
+    }
+    TorvikResult *r = torvik_result_ok(v);
+    if (b->elem_kind == TV_SPAWN_STR) {
+        r->managed = 1;   /* box adopts the queue's claim on v (already rc1) */
+    }
+    return r;
+}
+
+void torvik_bridge_close(void *p) {
+    TorvikBridge *b = tv_bridge_check(p, "bridge_close: this value is not a bridge");
+    tv_bridge_lock(b);
+    b->closed = 1;       /* idempotent */
+    tv_bridge_wake_all(b);
+    tv_bridge_unlock(b);
 }
