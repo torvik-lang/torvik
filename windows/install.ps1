@@ -195,15 +195,21 @@ Install-Binary $runeTmp  (Join-Path $BinDir 'rune.exe')
 # --- runtime + standard library --------------------------------------------
 Download "$RawRef/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
 Download "$RawRef/VERSION"                   (Join-Path $LibDir 'VERSION')
-# v1.1.3: also install the compiler library sources and the std umbrella module,
-# matching the Linux installer. std.tv in particular was missing, which broke
-# `apply std;` on every Windows install.
+# Compiler library sources + the std umbrella module, matching the Linux
+# installer. std.tv in particular must be present or `apply std;` fails.
 foreach ($a in @('torvik_lexer.tv','torvik_parser.tv','torvik_codegen.tv','diag.tv','std.tv')) {
     try { Download "$RawRef/src/$a" (Join-Path $LibDir $a) } catch { }
 }
 $stdDir = Join-Path $LibDir 'std'
 New-Item -ItemType Directory -Force -Path $stdDir | Out-Null
-foreach ($a in @('math','strings','list','path')) {
+# Derive the module list from the umbrella (std.tv) we just installed, so a new
+# module ships automatically once it's added to `apply std::X;` there. A
+# hardcoded list silently skipped new modules (v1.2.0's std::convert), and this
+# runs over HTTP where a directory glob isn't available.
+$stdUmbrella = Join-Path $LibDir 'std.tv'
+$mods = Select-String -Path $stdUmbrella -Pattern '^apply std::([a-z_]+)' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value }
+foreach ($a in $mods) {
     try { Download "$RawRef/src/std/$a.tv" (Join-Path $stdDir "$a.tv") } catch { }
 }
 
