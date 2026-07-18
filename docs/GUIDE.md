@@ -1,13 +1,13 @@
 # The Torvik Guide
 
-A complete tutorial and reference for the Torvik programming language, version 1.2.
+A complete tutorial and reference for the Torvik programming language, version 1.3.
 
 Torvik is a compiled, statically-typed, general-purpose language with a Norse-inspired
 keyword set. It compiles to native binaries through LLVM (emitting LLVM IR that is linked
 with `clang`), and its own compiler (`torvc`) and package manager (`rune`) are written in
 Torvik itself.
 
-This guide describes **only what version 1.2 actually implements**. Features planned for
+This guide describes **only what version 1.3 actually implements**. Features planned for
 later versions are listed in [Roadmap & limitations](#roadmap--limitations) so you always
 know where the edges are.
 
@@ -23,7 +23,7 @@ know where the edges are.
 6. [Printing: `echo` and `echo!`](#printing-echo-and-echo)
 7. [Strings and interpolation](#strings-and-interpolation)
 8. [Conditionals: `check` / `fallback`](#conditionals-check--fallback)
-9. [The ternary: `?>` / `!>`](#the-ternary---)
+9. [The ternary: `?>` / `!>`](#the-ternary----)
 10. [Guards: `guard` / `fallback`](#guards-guard--fallback)
 11. [Aetts and pattern matching: `aett` / `when`](#aetts-and-pattern-matching-aett--when)
 12. [Loops: `whilst` and `each`](#loops-whilst-and-each)
@@ -31,13 +31,14 @@ know where the edges are.
 14. [Collections: `list`, `table`, `bag`](#collections-list-table-bag)
 15. [Assertions and aborts: `vow` and `halt`](#assertions-and-aborts-vow-and-halt)
 16. [Error handling: `result<T>`, `ok`, and `err`](#error-handling-resultt-ok-and-err)
-17. [Compile warnings](#compile-warnings)
-18. [The `unsafe` prefix](#the-unsafe-prefix)
-19. [Modules: `apply`](#modules-apply)
-20. [Memory model](#memory-model)
-21. [Roadmap & limitations](#roadmap--limitations)
-22. [Keyword reference](#keyword-reference)
-23. [Operator reference](#operator-reference)
+17. [Concurrency: ravens and bridges](#concurrency-ravens-and-bridges)
+18. [Compile warnings](#compile-warnings)
+19. [The `unsafe` prefix](#the-unsafe-prefix)
+20. [Modules: `apply`](#modules-apply)
+21. [Memory model](#memory-model)
+22. [Roadmap & limitations](#roadmap--limitations)
+23. [Keyword reference](#keyword-reference)
+24. [Operator reference](#operator-reference)
 
 ---
 
@@ -280,6 +281,27 @@ a full expression (`fmt("sum={a + b}")`, `fmt("y={f(x)}")`).
 
 > In short: reach for `echo`'s own interpolation when you're printing, and for `fmt` when you
 > need the resulting **string** as a value or want **positional** placeholders.
+
+### Everywhere else, a string is just a string
+
+Interpolation belongs to `echo`, `echo!`, and `fmt` — and only to a string literal written
+**directly** as one of their arguments. A string literal anywhere else is plain data: braces
+are ordinary characters, nothing is read from scope, and no escapes are needed. That's what
+lets CSS, JSON, or template text sit in an ordinary string untouched:
+
+```torvik
+fixed css: str = ".a{color:red}";          // exactly this text
+fixed slot: str = "{{title}}";             // exactly {{title}} — no collapse
+fixed msg: str = fmt("Hi {name}");         // fmt interpolates: Hi Odin
+echo!(slot);                                // prints {{title}} — the variable's
+                                            // contents are never re-scanned
+```
+
+The last line shows the flip side: interpolation happens at **compile time on literals**,
+never at run time on values — printing a variable that happens to contain braces prints them
+exactly as they are. (Before v1.3.0, every string literal interpolated; brace-heavy data
+needed `{{` escapes everywhere. Code that kept interpolated literals inside `echo`/`fmt` —
+the documented idiom — is unaffected.)
 
 Common string builtins include `len`, `str_concat`, `substr`, `trim` / `triml` / `trimr`,
 `replace`, `contains`, `starts`, `ends`, and `split`. They are documented with examples in
@@ -584,6 +606,20 @@ echo!(table_has(ages, "Ivar"));      // (a bool)
 echo!(table_len(ages));              // 1
 ```
 
+To iterate a table, take its keys — `table_keys(t)` returns them as a **sorted**
+`list<str>` (sorted so loops are reproducible; a hash table's internal order shifts as it
+grows) — and fetch each value with `table_get`:
+
+```tv
+fixed ks: list<str> = table_keys(ages);
+set i: i64 = 0;
+whilst i < len(ks) {
+    fixed k: str = ks[i];
+    echo!("{k} is {table_get(ages, k)}");
+    i += 1;
+}
+```
+
 A lookup for a missing key returns a zero value (for an integer-valued table, `0`).
 
 > When you pull a value out of a `table` to use it in arithmetic, bind it to a typed
@@ -731,6 +767,167 @@ counterparts, but a failure is an `err` you can inspect instead of a halt.
 
 ---
 
+## Concurrency: ravens and bridges
+
+Torvik runs work on more than one thread with two ideas that fit together. A **raven**
+carries a task out to its own thread and comes back with what it found. A **bridge** is a
+typed channel that carries values between tasks. The whole model is built on one rule that
+makes it safe by construction: **tasks share no mutable state.** Values are copied when they
+cross a thread boundary, so the reference-counting runtime stays correct without locks on
+every object, and data races are not something you *avoid* — they are something the language
+gives you no way to write.
+
+### Ravens: spawning tasks
+
+`raven` prefixes a call to one of your `df` functions and runs it on a new OS thread. There
+are two forms. Fire-and-forget runs the function and moves on:
+
+```tv
+raven log_event("started");     // runs on its own thread; main does not wait
+```
+
+Or capture a **handle** so you can collect the result later. A handle has the type
+`task<T>`, where `T` is the spawned function's return type, and `join` blocks until the task
+finishes and hands back its value:
+
+```tv
+df fetch(url: str) -> str { /* ... slow work ... */ return body; }
+
+df main() -> void {
+    set h: task<str> = raven fetch("https://example.com");
+    // ... do other work here while fetch runs ...
+    fixed page: str = join(h);      // wait for the task, take its result
+    echo!("got {len(page)} bytes");
+}
+```
+
+`join(h)` is an ordinary expression — it composes like any call, so `check join(h) == "ok"`
+works. A `task<void>` (spawning a function that returns nothing) is joined as a *statement*:
+`join(h);` waits and yields nothing. Every handle may be joined **exactly once**; a second
+join is a clean panic, because the result has already been taken. A bare `join(h);` on a
+value-returning task is also fine — it waits and discards the result.
+
+Every crossable type can be a task result: all the integer widths, `f64`, `bool`, `str`,
+`i128`/`u128`, and `aett` values.
+
+### Arguments are copied at the spawn
+
+When you spawn `raven fetch(url)`, the argument is **deep-copied at the moment the spawn
+statement runs**, on your thread. After that line, the task owns its own copy and you own
+yours — reassigning your variable afterward cannot affect the task, and the task cannot
+affect you:
+
+```tv
+set name: str = "original";
+set h: task<str> = raven greet(name);
+name = "changed";               // the task already has its own copy
+echo!(join(h));                 // greeted "original", not "changed"
+```
+
+This is why the model needs no locks on ordinary values: there is only ever one thread that
+can see any given string, list, or box. (Collections — `list`, `table`, `bag` — and
+`result` cannot cross into a task in this version; pass the scalars and strings a task needs
+and rebuild structure inside it. The one exception is a bridge, below, which is *shared* on
+purpose.)
+
+### The self-contained rule
+
+A raven carries everything it needs in its claws. **A function that is ever spawned, and
+every function it transitively calls, may not read or write a global variable.** The
+compiler checks this and reports the spawn, the offending function, and the global by name:
+
+```tv
+set counter: i64 = 0;
+
+df tick() -> i64 { return counter; }    // reads a global
+
+df main() -> void {
+    set h: task<i64> = raven tick();    // error: 'tick' is not self-contained
+    echo!(join(h));
+}
+```
+
+The reason is precise: even *reading* a global string from two threads races on its
+reference count, which is not atomic. Rather than make every refcount in the language pay
+for atomics, Torvik requires tasks to be self-contained and keeps the runtime lock-free.
+Pass what the task needs as arguments. (This rule can only loosen in future versions, never
+tighten — so code that compiles today keeps compiling.)
+
+### Panics in tasks
+
+If a task panics — an out-of-bounds index, a failed `vow`, a `halt` — the **whole process
+stops immediately** with the usual message, exactly as it would on the main thread. A
+background failure is never silently swallowed or deferred until you happen to join. For
+failure you want to *handle*, return a `result<T>` from the task and inspect it after the
+join, the same as anywhere else in Torvik.
+
+### Bridges: channels between tasks
+
+A **bridge** is a typed, buffered queue that more than one thread can use at once. It is the
+one object tasks share — and everything that touches its interior goes through its own lock,
+so sharing it is safe. Create one with a capacity, then `send` and `recv`:
+
+```tv
+set ch: bridge<str> = bridge_new(8);    // capacity 8 (must be >= 1)
+
+send(ch, "hello");                       // copies the value in; blocks if full
+fixed msg: str = recv(ch);               // takes one out; blocks if empty
+```
+
+Values **deep-copy on send**, the same guarantee as spawn arguments: once a value crosses
+the bridge, sender and receiver own independent copies. Bridges carry the same types tasks
+do — every integer width, `f64`, `bool`, `str`, `i128`/`u128`, and `aett` values.
+
+A bridge is passed *into* a task as an argument — and unlike every other argument, the task
+receives **the bridge itself**, not a copy (a private copy of a channel would be pointless).
+That makes a bridge the one shared object in a Torvik program; its own lock protects it.
+
+### Closing a bridge and the worker loop
+
+`bridge_close(ch)` says "no more values will be sent." It is idempotent and wakes anyone
+waiting. After a bridge is closed *and* emptied, `recv` panics — reading past the end of a
+finished stream is a mistake. To drain a stream to its natural end, use `try_recv`, which
+returns a `result<T>`: an ok value while data remains, and a single `err` when the bridge is
+closed and drained. That err is the loop's stop signal:
+
+```tv
+df produce(ch: bridge<i64>, n: i64) -> void {
+    set i: i64 = 0;
+    whilst i < n { send(ch, i); i += 1; }
+    bridge_close(ch);                    // done producing
+}
+
+df main() -> void {
+    set ch: bridge<i64> = bridge_new(4);
+    raven produce(ch, 10);               // producer runs on its own thread
+    set total: i64 = 0;
+    whilst true {
+        set r: result<i64> = try_recv(ch);
+        check is_err(r) { break; }       // closed and drained: stop cleanly
+        total += unwrap(r);
+    }
+    echo!("sum: {total}");
+}
+```
+
+`send` into a closed bridge panics — closing means you promised not to. Multiple producers
+and multiple consumers on one bridge are fully supported; the bridge's lock serializes them,
+and each value is received exactly once by exactly one consumer.
+
+### What crosses, and what waits
+
+A quick reference for this version:
+
+- **Cross a spawn or a bridge:** every integer width, `u64`, `f64`, `bool`, `str`,
+  `i128`/`u128`, and `aett` values. Collections and `result` do not cross yet.
+- **`bridge_new(cap)`** needs `cap >= 1` (unbuffered rendezvous channels are a later
+  addition); a smaller capacity panics.
+- **Ordering** is whatever `join` and bridge blocking impose — there is no hidden ordering,
+  and no sleeps are ever needed to make concurrent Torvik deterministic. Force the ordering
+  you want by joining, or by the sequence of sends and receives.
+
+---
+
 ## Compile warnings
 
 The compiler warns about code that is legal but probably not what you meant. Warnings
@@ -744,12 +941,17 @@ same line-and-caret display as errors:
 - **Unreachable code** — a statement after a `return`, `break`, `continue`, `halt`, or
   `exit` in the same block. One exception: a `return` right after `halt`/`exit` is the
   sanctioned idiom for satisfying the all-paths-return check and never warns.
+- **Unused result** — a bare statement call of a non-void function (`init(1);`)
+  silently discards its return value, a common source of quiet bugs. Bind it —
+  `fixed r: i64 = init(1);` — or use an underscore name (`_r`) to say the discard
+  is deliberate.
 - **Deprecations** — builtins scheduled for removal warn at every call site with the
   replacement to use. (Nothing is deprecated today; the channel ships so future
   deprecations are visible immediately.)
 
-`torvc --no-warn` suppresses them (`-q` does not — warnings are diagnostics, shown even in quiet builds, which is how they reach you through `rune run`). Loop variables and function
-parameters are never flagged.
+`torvc --no-warn` suppresses them (`-q` does not — warnings are diagnostics, shown
+even in quiet builds, which is how they reach you through `rune run`). Loop variables
+and function parameters are never flagged.
 
 ### `!@` warning directives
 
@@ -760,7 +962,7 @@ Warnings can also be controlled from inside the file, at the top:
 !@ALLOW[unused_variable];     // suppress one category (stackable - one per line)
 ```
 
-The categories are `unused_variable`, `unreachable_code`, and `deprecated`. A typo'd
+The categories are `unused_variable`, `unreachable_code`, `deprecated`, and `unused_result`. A typo'd
 directive or unknown category is a clean compile error, not a silent no-op — a
 directive that silently did nothing would be exactly the bug class Torvik hunts.
 Because `apply` inlines modules into one compilation unit, a directive covers the
@@ -861,17 +1063,21 @@ What this guarantees:
 - **No reference cycles.** Reference counting cannot reclaim cycles, but Torvik
   has no construct that can create one (that would require nested mutable containers, which
   arrive in a later version alongside a cycle strategy).
+- **Lock-free across threads.** Concurrency (see [Ravens and bridges](#concurrency-ravens-and-bridges))
+  copies values as they cross thread boundaries, so ordinary refcounts never need atomics. The
+  single exception is a bridge's own refcount — a bridge is deliberately shared between threads,
+  so that one count is atomic; nothing else in the language is.
 
 ---
 
 ## Roadmap & limitations
 
-Torvik is deliberately focused. The following are **not** in the language yet. `task`
-(async) is planned for **v1.3.0**; the rest — including official macOS support, which is
-waiting on real Apple hardware for credible testing — are planned for future versions (see
-[ROADMAP.md](../ROADMAP.md) for the full plan and reasoning):
+Torvik is deliberately focused. The following are **not** in the language yet — including
+official macOS support, which is waiting on real Apple hardware for credible testing. All
+are planned for future versions (see [ROADMAP.md](../ROADMAP.md) for the full plan and
+reasoning):
 
-- **Structs (`shape`)** and **async / concurrent tasks (`task`)**.
+- **Structs (`shape`)**.
 - **A `pub`** visibility keyword.
 - **Additional numeric types**: `f32` and a dedicated `char` type (today, character literals
   are one-character strings).
@@ -891,11 +1097,16 @@ Known limitations:
   expression — lead or not, variable or call result — selects unsigned division, modulo,
   shifts, and comparison from that operand onward.)
 
+Concurrency has its own documented edges (see [Ravens and bridges](#concurrency-ravens-and-bridges)):
+collections and `result` values don't cross spawns or bridges yet, `bridge_new` needs a
+capacity of at least 1 (no unbuffered channels), and there is no `select` over multiple
+bridges — each is a clean compile error or panic today and a candidate for a future version.
+
 Every one of these is a clean compile error or a documented narrow case, never a silent wrong
 answer or a crash. The full plan is in [ROADMAP.md](../ROADMAP.md). Windows support landed in
 v1.1.0 and macOS is not yet supported (planned for a future version once real Apple hardware
 is available for testing). The warnings system, `aett` + `when` pattern matching, and Result
-types all landed in v1.2.0; `task` (async) is planned for v1.3.0.
+types landed in v1.2.0; concurrency — `raven` tasks and `bridge` channels — landed in v1.3.0.
 
 ---
 
@@ -914,6 +1125,8 @@ types all landed in v1.2.0; `task` (async) is planned for v1.3.0.
 | `each`      | Range loop (`each i in START..END`)                            |
 | `aett`      | Declare a family of named values (an enumeration)              |
 | `when`      | Pattern matching over an aett or integers (`fallback` arm as default) |
+| `raven`     | Spawn a `df` function as a concurrent task (fire-and-forget, or bind a `task<T>` handle) |
+| `task`      | The type of a raven handle: `task<T>` where `T` is the spawned function's return type |
 | `in`        | Separates the loop variable from its range in `each`           |
 | `break`     | Exit the current loop                                          |
 | `continue`  | Skip to the next loop iteration                                |
@@ -963,5 +1176,5 @@ check "apple" < "banana" { echo!("sorted"); }
 
 ---
 
-*This guide tracks Torvik v1.1. For the compiler and project tooling, see
+*This guide tracks Torvik v1.3. For the compiler and project tooling, see
 [TOOLING.md](TOOLING.md); for the built-in function library, see [STDLIB.md](STDLIB.md).*
