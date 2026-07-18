@@ -88,3 +88,61 @@ df index_of_str(xs: list<str>, s: str) -> i64 {
     whilst i < len(xs) { check xs[i] == s { return i; } i += 1; }
     return -1;
 }
+
+// True if xs contains v.
+df contains_int(xs: list<i64>, v: i64) -> bool {
+    return index_of(xs, v) != -1;
+}
+
+// True if the string list xs contains s.
+df contains_str_in(xs: list<str>, s: str) -> bool {
+    return index_of_str(xs, s) != -1;
+}
+
+// The first n elements of xs (fewer if xs is shorter; n <= 0 gives an empty list).
+df take(xs: list<i64>, n: i64) -> list<i64> {
+    set out: list<i64> = list_new();
+    set i: i64 = 0;
+    whilst i < n && i < len(xs) { push(out, xs[i]); i += 1; }
+    return out;
+}
+
+// xs with its first n elements dropped (empty if n >= len; n <= 0 copies xs).
+df drop(xs: list<i64>, n: i64) -> list<i64> {
+    set out: list<i64> = list_new();
+    set i: i64 = n;
+    check i < 0 { i = 0; }
+    whilst i < len(xs) { push(out, xs[i]); i += 1; }
+    return out;
+}
+
+// The integer mean of xs (floor division; 0 for an empty list).
+df mean(xs: list<i64>) -> i64 {
+    check len(xs) == 0 { return 0; }
+    set total: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(xs) { total += xs[i]; i += 1; }
+    return total / len(xs);
+}
+
+// Count how many times v appears in xs.
+df count_int(xs: list<i64>, v: i64) -> i64 {
+    set n: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(xs) {
+        check xs[i] == v { n += 1; }
+        i += 1;
+    }
+    return n;
+}
+
+// A new list with duplicate values removed, keeping first-seen order.
+df unique(xs: list<i64>) -> list<i64> {
+    set out: list<i64> = list_new();
+    set i: i64 = 0;
+    whilst i < len(xs) {
+        check index_of(out, xs[i]) == -1 { push(out, xs[i]); }
+        i += 1;
+    }
+    return out;
+}
