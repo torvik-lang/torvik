@@ -1,0 +1,40 @@
+// v1.3.0: bridges - every crossable type, plus the deep-copy guarantee.
+aett Signal { go, stop }
+
+df pump_big(ch: bridge<i128>) -> void {
+    fixed v: i128 = 170141183460469231731687303715884105727;
+    send(ch, v);
+}
+
+df pump_f(ch: bridge<f64>) -> void { send(ch, 2.5); }
+
+df pump_sig(ch: bridge<Signal>) -> void {
+    send(ch, Signal::go);
+    send(ch, Signal::stop);
+}
+
+df main() -> void {
+    set big: bridge<i128> = bridge_new(1);
+    raven pump_big(big);
+    echo!("i128: ", recv(big));
+
+    set fs: bridge<f64> = bridge_new(1);
+    raven pump_f(fs);
+    echo!("f64: ", recv(fs));
+
+    set sig: bridge<Signal> = bridge_new(2);
+    raven pump_sig(sig);
+    fixed s1: Signal = recv(sig);
+    fixed s2: Signal = recv(sig);
+    when s1 { Signal::go => { echo!("sig1: go"); } fallback => { echo!("sig1: ?"); } }
+    when s2 { Signal::stop => { echo!("sig2: stop"); } fallback => { echo!("sig2: ?"); } }
+
+    // Deep-copy on send: the copy is taken inside the send statement, so a
+    // later reassignment cannot reach the queue.
+    set msgs: bridge<str> = bridge_new(1);
+    set m: str = "original";
+    send(msgs, m);
+    m = "changed";
+    echo!("copy: ", recv(msgs));
+    echo!("caller: ", m);
+}

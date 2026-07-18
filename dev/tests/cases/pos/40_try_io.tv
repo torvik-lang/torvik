@@ -1,0 +1,14 @@
+df main() -> void {
+    set bad: result<i64> = try_writefile("no_such_dir_xyz/f.txt", "data");
+    echo!(is_err(bad));
+    set ok1: result<i64> = try_writefile("try_io_probe.txt", "hello");
+    check is_ok(ok1) { echo!(readfile("try_io_probe.txt")); }
+    set ap: result<i64> = try_appendline("try_io_probe.txt", "line2");
+    echo!(is_ok(ap));
+    set cp1: result<i64> = try_fs_copy("try_io_probe.txt", "try_io_copy.txt");
+    check is_ok(cp1) { echo!(contains(readfile("try_io_copy.txt"), "line2")); }
+    set cp2: result<i64> = try_fs_copy("missing_xyz.bin", "out.bin");
+    echo!(is_err(cp2));
+    fs_remove("try_io_probe.txt");
+    fs_remove("try_io_copy.txt");
+}

@@ -1,0 +1,10 @@
+index.md
+posts
+true
+false
+false
+post: one.md
+post: two.md
+true
+body{}
+false

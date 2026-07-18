@@ -1,0 +1,48 @@
+// std v1.2.0 additions: strings, list, math, and the new convert module.
+apply std;
+
+df main() -> void {
+    // strings
+    echo!(strip_prefix("unhappy", "un"));
+    echo!(strip_suffix("running", "ing"));
+    echo!(strip_prefix("plain", "xyz"));
+    echo!(tostr(is_digits("12345")));
+    echo!(tostr(is_digits("12a45")));
+    echo!(tostr(is_alpha("abcXYZ")));
+    echo!(tostr(is_alpha("")));
+    echo!(center("hi", 6, "*"));
+    echo!(truncate("hello world", 8, "..."));
+    echo!(truncate("short", 8, "..."));
+
+    // list
+    set xs: list<i64> = list_new();
+    push(xs, 3); push(xs, 1); push(xs, 3); push(xs, 2); push(xs, 3);
+    echo!(tostr(contains_int(xs, 2)));
+    echo!(tostr(contains_int(xs, 9)));
+    echo!(count_int(xs, 3));
+    echo!(len(unique(xs)));
+    set tk: list<i64> = take(xs, 2);
+    echo!(tk[0], tk[1]);
+    echo!(len(drop(xs, 3)));
+    echo!(mean(xs));
+
+    // math
+    set pw: result<i64> = pow_checked(2, 10);
+    echo!(unwrap(pw));
+    set ov: result<i64> = pow_checked(10, 40);
+    echo!(tostr(is_err(ov)));
+    echo!(digit_count(-12345));
+    echo!(ilog2(1000));
+    echo!(at_least(3, 10));
+    echo!(at_most(99, 50));
+
+    // convert
+    echo!(to_hex(255));
+    echo!(to_hex(0));
+    echo!(to_bin(10));
+    set h: result<i64> = from_hex("ff");
+    echo!(unwrap(h));
+    set n: result<i64> = to_int("-42");
+    echo!(unwrap(n));
+    echo!(tostr(is_err(to_int("4x2"))));
+}

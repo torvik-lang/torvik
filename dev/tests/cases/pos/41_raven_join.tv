@@ -1,0 +1,49 @@
+// v1.3.0: raven tasks - spawn forms, join forms, deterministic ordering.
+df shout(w: str, n: i64) -> str {
+    set out: str = "";
+    set i: i64 = 0;
+    whilst i < n {
+        out = str_concat(out, w);
+        i += 1;
+    }
+    return out;
+}
+
+df addup(a: i64, b: i64) -> i64 { return a + b; }
+
+df halfof(x: f64) -> f64 { return x / 2.0; }
+
+df tick(n: i64) -> i64 { return n * 2; }
+
+df quiet(n: i64) -> void {
+    fixed _x: i64 = n + 1;
+}
+
+df main() -> void {
+    // Handled spawns: every result is forced through join, so output
+    // ordering is fully deterministic - no timing, no sleeps.
+    set h1: task<str> = raven shout("ho", 3);
+    set h2: task<i64> = raven addup(40, 2);
+    set h3: task<f64> = raven halfof(21.5);
+    echo!("str: ", join(h1));
+    echo!("i64: ", join(h2));
+    echo!("f64: ", join(h3));
+
+    // join composes in expressions (stage-2 chaining).
+    set h4: task<i64> = raven tick(10);
+    check join(h4) + 1 == 21 { echo!("expr join ok"); }
+
+    // task<void>: statement join waits, yields nothing.
+    set h5: task<void> = raven quiet(1);
+    join(h5);
+    echo!("void join ok");
+
+    // Statement join on a value task: waits, discards (drop releases).
+    set h6: task<str> = raven shout("x", 2);
+    join(h6);
+    echo!("drop join ok");
+
+    // Fire-and-forget: no handle; main's exit does not depend on it.
+    raven quiet(7);
+    echo!("done");
+}

@@ -1,0 +1,44 @@
+// v1.3.0: raven tasks - 128-bit and aett results, u64, deep-copy proof.
+aett Verdict { pass, fail, retry }
+
+df bigmul(a: i128, b: i128) -> i128 { return a * b; }
+
+df umax(a: u64, b: u64) -> u64 {
+    check a > b { return a; }
+    return b;
+}
+
+df judge(score: i64) -> Verdict {
+    check score >= 90 { return Verdict::pass; }
+    check score >= 50 { return Verdict::retry; }
+    return Verdict::fail;
+}
+
+df echo_back(s: str) -> str { return s; }
+
+df main() -> void {
+    fixed big: i128 = 170141183460469231731687303715884105727;
+    fixed one: i128 = 1;
+    set hb: task<i128> = raven bigmul(big, one);
+    echo!("i128: ", join(hb));
+
+    unsafe fixed u: u64 = 18446744073709551615;
+    set hu: task<u64> = raven umax(u, 5);
+    echo!("u64: ", join(hu));
+
+    set hv: task<Verdict> = raven judge(95);
+    fixed v: Verdict = join(hv);
+    when v {
+        Verdict::pass => { echo!("aett: pass"); }
+        Verdict::retry => { echo!("aett: retry"); }
+        fallback => { echo!("aett: fail"); }
+    }
+
+    // Deep-copy proof: the copy is taken synchronously AT the spawn
+    // statement, so a later reassignment cannot leak into the task.
+    set s: str = "original";
+    set hc: task<str> = raven echo_back(s);
+    s = "changed";
+    echo!("copy: ", join(hc));
+    echo!("caller: ", s);
+}
