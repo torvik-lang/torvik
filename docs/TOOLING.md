@@ -50,6 +50,12 @@ self-hosting, the same `torvc` that builds your programs is itself built from To
 `rune` is the easiest way to work on anything larger than a single file. It uses a simple
 convention: a project has a `torvik.rune` manifest and a `src/main.tv` entry point.
 
+> As of v1.4.0 `rune` lives in its own repository
+> ([torvik-lang/rune](https://github.com/torvik-lang/rune)) and carries its own version
+> number and changelog. It is still part of the Torvik toolchain and installs alongside
+> `torvc` — the split just lets it evolve on its own cadence. `rune version` reports both
+> its version and the language/std versions.
+
 ### Creating a project
 
 ```bash
@@ -104,6 +110,7 @@ are fast. The build timer reports how long compilation took.
 | `rune clean`     | Remove the `build/` directory                           |
 | `rune version`   | Show tool and language versions                         |
 | `rune update`    | Update the toolchain to the latest release (or a pinned version) |
+| `rune self-update` | Update just `rune` itself, from its own repository    |
 | `rune uninstall` | Remove the Torvik toolchain (`~/.torvik`)               |
 | `rune help`      | Show usage                                              |
 
@@ -123,6 +130,11 @@ The version accepts an optional leading `v` and one, two, or three components. A
 version (`v1`, `v1.0`) resolves to the newest matching release. If the version doesn't exist,
 `rune` reports it cleanly and leaves your current toolchain in place. Add `--yes` to skip the
 confirmation prompt.
+
+Since v1.4.0, `rune` and Torvik release from separate repositories, so `rune update`
+checks each **independently** and updates whichever has moved — the toolchain, `rune`
+itself, or both. To update only `rune` without touching the toolchain, use
+`rune self-update`.
 
 A bare `rune update` first checks whether a newer release exists. If you're already on the
 latest, it says so and does nothing — pass `--force` to reinstall anyway. If the latest is a
