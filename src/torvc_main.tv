@@ -573,13 +573,17 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     // self-hosting fixpoint report a false "binaries differ".
     set reproflag: str = "";
     check line_eq(sys_os_name(), "windows") == 1 { reproflag = " -Wl,--no-insert-timestamp "; }
+    // std::net's socket primitives need Winsock at link time on Windows; POSIX
+    // sockets are in libc, so no extra library elsewhere.
+    set libflags: str = "";
+    check line_eq(sys_os_name(), "windows") == 1 { libflags = " -lws2_32 "; }
     check line_eq(sys_os_name(), "macos") == 1 {
         gcflag = " -Wl,-dead_strip ";
         check final == 1 { optflags = "-O3"; }
     } fallback {
         check final == 1 { optflags = "-O3"; stripflag = " -Wl,-s "; }
     }
-    fixed cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("clang", tgt), " "), str_concat(optflags, " -Wno-override-module")), gcflag), stripflag), reproflag), str_concat(ir_path, str_concat(" ", rt_obj))), str_concat(" -o ", out));
+    fixed cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("clang", tgt), " "), str_concat(optflags, " -Wno-override-module")), gcflag), stripflag), reproflag), str_concat(ir_path, str_concat(" ", str_concat(rt_obj, libflags)))), str_concat(" -o ", out));
     fixed result: i64 = sys_run(cmd);
     check result == 0 {
         check verbose == 1 { echo!(str_concat("   BIN -> ", out)); }
