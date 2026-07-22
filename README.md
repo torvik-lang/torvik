@@ -6,7 +6,7 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
@@ -46,6 +46,12 @@ there is no virtual machine and no garbage collector.
 - **Concurrency without data races** — spawn tasks with **`raven`**, pass values between
   them over typed **`bridge`** channels. Values copy as they cross a thread boundary, so
   tasks share no mutable state and the model is safe by construction.
+- **Flexible function signatures** — mark a parameter **optional** with `^` (callers may
+  omit it) or **variadic** with `*` (it gathers the remaining arguments into a `list`), and
+  every argument is type-checked at the call site with a clear error on a mismatch.
+- **Networking, opt-in** — `apply std::net;` adds a small HTTP layer (request parsing, MIME
+  types, binary-safe file serving) over transport primitives that dead-strip out of programs
+  that never use them.
 - **`rune` project tool** — create, build, and run projects with one command.
 - **Proven on real software** — [Vefna](https://github.com/torvik-lang/vefna), a parallel
   static site generator, is written entirely in Torvik (the
