@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.4.0] — 2026-07
+
+### Added
+
+- **Optional parameters (`^`).** A parameter marked `^` may be omitted by the
+  caller: `df greet(name: str, ^count: i64, ^tag: str)`. An omitted optional
+  takes a type-appropriate zero (`0` / `0.0` / `false` / `""`). Required
+  parameters must precede optional ones (positional calls stay unambiguous).
+  Calling with too few or too many arguments is a clean, located range error
+  (`expects 1 to 3 argument(s) but got 0`). Optional parameters are scalar or
+  `str` (containers and 128-bit types are rejected with a clear message).
+- **Variadic parameters (`*`).** A trailing `*` parameter gathers zero or more
+  extra arguments into a `list<T>`, iterated like any list:
+  `df join(sep: str, *words: str) { each w in words { ... } }`. A variadic must
+  be the last parameter (at most one), and combines with optional parameters in
+  the order required → optional → variadic. Element type is `str` or an
+  integer-family type.
+- **`std::net` — a minimal HTTP layer.** Opt-in with `apply std::net;` (or
+  `apply std;`). The transport primitives — `net_listen`, `net_accept`,
+  `net_recv`, `net_send`, `net_send_file`, `net_close` — are provided by the
+  compiler and runtime and dead-strip out of programs that never call them.
+  `net_send_file` streams a file's bytes verbatim, so binary assets (images,
+  fonts, archives) serve intact even though Torvik strings are NUL-terminated.
+  On top, the module adds request parsing (`http_method`, `http_path`,
+  `http_target`, `url_decode`), `path_is_safe` (rejects `..` traversal),
+  `mime_type`, and response builders (`send_text`, `send_file_response`,
+  `send_status`) — enough to serve a static site or a small localhost API.
+- **`chr(code)` builtin.** Returns the 1-character string for a byte code — the
+  inverse of `byte_at`.
+- **`fs_size(path)` builtin.** Returns a file's size in bytes.
+
+### Changed
+
+- **Boolean chaining is limit-free.** `&&` and `||` now work as *value*
+  expressions bound to a variable — `fixed ok: bool = a && b;`, including
+  three-way `a && b && c` — not only inside `check`/`return`/`whilst`
+  conditions. A boolean-returning builtin (`contains`, `starts`, `ends`) or user
+  function can be compared to a literal: `check contains(s, "x") == false { ... }`.
+- **Comprehensive argument type-checking.** Passing an argument whose type
+  cannot match the parameter is now a clean, located error instead of silent
+  garbage or a crash. Covered in both directions: string vs number, container vs
+  scalar, `f64` vs integer (same register, different representation — previously
+  printed garbage), and string-element vs raw-element lists. Ambiguous cases are
+  left alone, so valid code is never rejected.
+- **`rune` moved to its own repository and versions independently.** The package
+  manager is still part of the Torvik toolchain and installs alongside `torvc`;
+  it simply carries its own version number and changelog now.
+
+### Fixed
+
+- Exhaustive `when` no longer trips a flow-checker false positive.
+- A boolean literal passed as an argument no longer produces malformed IR.
+- A `bool` (or narrow-int) value returned from a user function is now stored
+  correctly (`fixed b: bool = predicate();` previously mangled the result).
+- **Single-character function names now resolve everywhere.** A function named
+  `a`, `g`, `p`, … was wrongly reported "undefined" whenever `apply std;` was
+  present, because another function's single-character *parameter* shadowed its
+  registration. Callees are now resolved unambiguously.
+
 ## [1.3.0] — 2026-07
 
 ### Added

@@ -14,3 +14,4 @@ apply std::strings;
 apply std::list;
 apply std::path;
 apply std::convert;
+apply std::net;

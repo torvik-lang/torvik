@@ -1,0 +1,4 @@
+df label(base: str, ^suffix: str) -> void { echo!(base); }
+df main() -> void {
+    label();
+}

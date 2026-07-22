@@ -1,0 +1,21 @@
+// v1.4.0: a user function returning bool can have its result stored in a
+// variable. The call returns a ptr (uniform ABI); the bool result is now
+// ptrtoint'd to match its "bool" tag, so the binding store is well-formed
+// (previously it double-converted an already-ptr value and clang rejected it).
+df is_even(n: i64) -> bool {
+    fixed h: i64 = n / 2;
+    check h * 2 == n { return true; }
+    return false;
+}
+df main() -> void {
+    fixed a: bool = is_even(4);
+    check a { echo!("4 even"); }
+    fixed b: bool = is_even(7);
+    check b == false { echo!("7 odd"); }
+    // bound bool used in a compound condition
+    fixed c: bool = is_even(10);
+    check a && c { echo!("both even"); }
+    // and passed onward / echoed
+    echo!(a);
+    echo!(b);
+}

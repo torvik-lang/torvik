@@ -1,0 +1,4 @@
+df scale(factor: f64) -> void { echo!(factor); }
+df main() -> void {
+    scale(3);
+}

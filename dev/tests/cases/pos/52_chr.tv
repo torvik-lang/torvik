@@ -1,0 +1,22 @@
+// v1.4.0: chr(code) - the byte code as a 1-char string, inverse of byte_at.
+df main() -> void {
+    echo!(chr(65));            // A
+    echo!(chr(97));            // a
+    echo!(chr(48));            // 0
+    echo!(fmt("[{}]", chr(32)));   // a space
+    // round-trips with byte_at
+    fixed s: str = "Torvik";
+    echo!(chr(byte_at(s, 0))); // T
+    echo!(chr(byte_at(s, 5))); // k
+    // out-of-range yields ""
+    echo!(fmt("[{}]", chr(0)));
+    echo!(fmt("[{}]", chr(300)));
+    // build a small string from codes
+    set out: str = "";
+    set c: i64 = 72;
+    whilst c <= 74 {
+        out = str_concat(out, chr(c));
+        c += 1;
+    }
+    echo!(out);                // HIJ
+}

@@ -5,6 +5,10 @@ set -e
 INSTALL_DIR="$HOME/.torvik"; BIN_DIR="$INSTALL_DIR/bin"; LIB_DIR="$INSTALL_DIR/lib"
 ORG="https://github.com/torvik-lang/torvik"
 RAW="https://raw.githubusercontent.com/torvik-lang/torvik/main"
+# rune is versioned and released independently from its own repo now; the Torvik
+# installer still fetches it so a fresh install stays one step (see install_rune).
+RUNE_ORG="https://github.com/torvik-lang/rune"
+RUNE_RAW="https://raw.githubusercontent.com/torvik-lang/rune/main"
 fetch() { if command -v curl >/dev/null 2>&1; then curl -fsSL "$1"; else wget -qO- "$1"; fi; }
 dl() { if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"; else wget -qO "$2" "$1"; fi; }
 
@@ -180,16 +184,13 @@ if [ -f "$_existing_vf" ]; then
 fi
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$INSTALL_DIR/cache" "$INSTALL_DIR/runes"
 # Verify the binaries exist for this release before overwriting anything.
-if ! dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc.new" 2>/dev/null; then
+dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc.new" 2>/dev/null || {
     echo "error: Torvik v$V has no $OS/$ARCH build (could not download torvc)."
     echo "  Pick another version from https://github.com/torvik-lang/torvik/releases"
-    rm -f "$BIN_DIR/torvc.new"
-    exit 1
-fi
-dl "$REL/rune-$OS-$ARCH" "$BIN_DIR/rune.new" || { echo "error: could not download rune for v$V."; rm -f "$BIN_DIR/torvc.new" "$BIN_DIR/rune.new"; exit 1; }
+    rm -f "$BIN_DIR/torvc.new"; exit 1
+}
 mv "$BIN_DIR/torvc.new" "$BIN_DIR/torvc"
-mv "$BIN_DIR/rune.new"  "$BIN_DIR/rune"
-chmod +x "$BIN_DIR/torvc" "$BIN_DIR/rune"
+chmod +x "$BIN_DIR/torvc"
 for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW_REF/src/$a" "$LIB_DIR/$a"; done
 dl "$RAW_REF/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
 dl "$RAW_REF/VERSION" "$LIB_DIR/VERSION"
@@ -201,6 +202,27 @@ mkdir -p "$LIB_DIR/std"
 for a in $(grep -oE '^apply std::[a-z_]+' "$LIB_DIR/std.tv" | sed 's/^apply std:://'); do
     dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"
 done
+
+# --- rune (package manager) -------------------------------------------------
+# rune now lives in its own repo (torvik-lang/rune) with its own version line, so
+# it can ship on its own cadence. We still fetch the latest rune here so a fresh
+# Torvik install is one step (option B). Non-fatal: torvc is fully usable without
+# it, and we tell the user how to add it later if this step can't reach GitHub.
+install_rune() {
+    _rv="$(fetch "$RUNE_RAW/VERSION" 2>/dev/null | grep -E '^[[:space:]]*rune' | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    [ -n "$_rv" ] || return 1
+    if dl "$RUNE_ORG/releases/download/v$_rv/rune-$OS-$ARCH" "$BIN_DIR/rune.new" 2>/dev/null; then
+        mv "$BIN_DIR/rune.new" "$BIN_DIR/rune"; chmod +x "$BIN_DIR/rune"
+        printf 'rune = %s\n' "$_rv" > "$INSTALL_DIR/rune.VERSION"
+        echo "Installed rune v$_rv (from torvik-lang/rune)."
+        return 0
+    fi
+    rm -f "$BIN_DIR/rune.new"; return 1
+}
+if ! install_rune; then
+    echo "note: rune (the package manager) wasn't installed - couldn't reach its repo."
+    echo "  Add it any time with:  curl -fsSL $RUNE_RAW/linux/install.sh | sh"
+fi
 
 # --- icons + .tv file type (Linux only; macOS/Windows association: v1.1.0) ---
 if [ "$OS" = "linux" ]; then

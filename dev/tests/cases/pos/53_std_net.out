@@ -1,0 +1,20 @@
+GET
+/posts/a%20b.html?tag=x
+/posts/a b.html
+/plain/path
+a/b.c
+100%
+true
+false
+false
+text/html; charset=utf-8
+text/css; charset=utf-8
+text/javascript; charset=utf-8
+image/png
+application/octet-stream
+OK
+Not Found
+Internal Server Error
+OK
+hdr_ok=1
+has_len=1

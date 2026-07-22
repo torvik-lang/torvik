@@ -1,0 +1,17 @@
+// v1.4.0: optional (^) parameters. Callers may omit trailing optional args; an
+// omitted optional takes a type-appropriate zero (0 / 0.0 / false / ""). Required
+// params must precede optional ones. Missing a required arg, or passing too many,
+// is a clean located error (covered by the neg suite).
+df greet(name: str, ^count: i64, ^tag: str) -> void {
+    echo!("hi {name} x{count} [{tag}]");
+}
+df total(base: i64, ^bonus: i64) -> i64 {
+    return base + bonus;
+}
+df main() -> void {
+    greet("alpha");
+    greet("beta", 3);
+    greet("gamma", 5, "vip");
+    echo!(total(10));
+    echo!(total(10, 5));
+}

@@ -43,6 +43,8 @@
   #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN
   #endif
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
   #include <windows.h>
   #include <direct.h>
   #include <io.h>
@@ -62,6 +64,11 @@
   #include <sys/utsname.h>
   #include <sys/sysinfo.h>
   #include <sys/wait.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
+  #include <arpa/inet.h>
+  #include <signal.h>
   #define torvik_getcwd getcwd
   #define torvik_access access
 #endif
@@ -1546,6 +1553,15 @@ int64_t torvik_fs_mtime(const char *path) {
     return (int64_t)st.st_mtime;
 }
 
+/* fs_size — file size in bytes, or -1 if the path is missing or not a file.
+   std::net uses it for a byte-exact Content-Length, but it is generally useful. */
+int64_t torvik_fs_size(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    if ((st.st_mode & S_IFMT) == S_IFDIR) return -1;
+    return (int64_t)st.st_size;
+}
+
 /* Create a single directory. On Windows _mkdir takes one argument; elsewhere
    mkdir takes a mode. A path separator is '/' on POSIX and either '/' or '\\'
    on Windows (the shell and APIs accept both). */
@@ -2452,4 +2468,249 @@ void torvik_bridge_close(void *p) {
     b->closed = 1;       /* idempotent */
     tv_bridge_wake_all(b);
     tv_bridge_unlock(b);
+}
+
+/* ── 12. Networking — std::net backing (TCP + minimal HTTP transport) ──────────
+   A small, blocking TCP layer that lets Torvik programs run a local HTTP server
+   without shelling out. The protocol (HTTP request parsing, responses, MIME) is
+   written in Torvik in std/net.tv; this file provides only the transport:
+   listen / accept / recv / send / send_file / close, plus lazy Winsock init.
+
+   Sockets bind to 127.0.0.1 only — a preview/dev server should never be exposed
+   to the network by accident. File descriptors cross into Torvik as plain i64
+   (an int fd on POSIX, a cast SOCKET on Windows). */
+
+#if defined(_WIN32)
+  typedef SOCKET tv_sock_t;
+  #define TV_BAD_SOCK   INVALID_SOCKET
+  #define TV_SENDFLAGS  0
+
+  /* Winsock is resolved at RUNTIME (LoadLibrary + GetProcAddress) rather than
+     linked against ws2_32 at build time. The runtime object therefore carries no
+     Winsock imports and links no matter what flags the invoking compiler passes -
+     including an OLDER torvc that predates the -lws2_32 link flag. That is exactly
+     the situation when bootstrapping a new compiler on Windows from a previous
+     release, and it keeps every future runtime addition from breaking that path.
+     Only kernel32 (LoadLibrary/GetProcAddress) is needed, and it is always linked. */
+  typedef SOCKET (WSAAPI *tv_pfn_socket)(int, int, int);
+  typedef int    (WSAAPI *tv_pfn_bind)(SOCKET, const struct sockaddr *, int);
+  typedef int    (WSAAPI *tv_pfn_listen)(SOCKET, int);
+  typedef SOCKET (WSAAPI *tv_pfn_accept)(SOCKET, struct sockaddr *, int *);
+  typedef int    (WSAAPI *tv_pfn_recv)(SOCKET, char *, int, int);
+  typedef int    (WSAAPI *tv_pfn_send)(SOCKET, const char *, int, int);
+  typedef int    (WSAAPI *tv_pfn_closesocket)(SOCKET);
+  typedef int    (WSAAPI *tv_pfn_setsockopt)(SOCKET, int, int, const char *, int);
+  typedef int    (WSAAPI *tv_pfn_wsastartup)(WORD, LPWSADATA);
+  typedef int    (WSAAPI *tv_pfn_wsalasterr)(void);
+
+  static tv_pfn_socket      tv_p_socket      = 0;
+  static tv_pfn_bind        tv_p_bind        = 0;
+  static tv_pfn_listen      tv_p_listen      = 0;
+  static tv_pfn_accept      tv_p_accept      = 0;
+  static tv_pfn_recv        tv_p_recv        = 0;
+  static tv_pfn_send        tv_p_send        = 0;
+  static tv_pfn_closesocket tv_p_closesocket = 0;
+  static tv_pfn_setsockopt  tv_p_setsockopt  = 0;
+  static tv_pfn_wsastartup  tv_p_wsastartup  = 0;
+  static tv_pfn_wsalasterr  tv_p_wsalasterr  = 0;
+
+  static int tv_wsa_started = 0;
+  static void tv_wsa_init(void) {
+      if (tv_wsa_started) return;
+      tv_wsa_started = 1;               /* attempt once, succeed or not */
+      {
+          HMODULE h = LoadLibraryA("ws2_32.dll");
+          if (!h) return;
+          tv_p_socket      = (tv_pfn_socket)(void *)GetProcAddress(h, "socket");
+          tv_p_bind        = (tv_pfn_bind)(void *)GetProcAddress(h, "bind");
+          tv_p_listen      = (tv_pfn_listen)(void *)GetProcAddress(h, "listen");
+          tv_p_accept      = (tv_pfn_accept)(void *)GetProcAddress(h, "accept");
+          tv_p_recv        = (tv_pfn_recv)(void *)GetProcAddress(h, "recv");
+          tv_p_send        = (tv_pfn_send)(void *)GetProcAddress(h, "send");
+          tv_p_closesocket = (tv_pfn_closesocket)(void *)GetProcAddress(h, "closesocket");
+          tv_p_setsockopt  = (tv_pfn_setsockopt)(void *)GetProcAddress(h, "setsockopt");
+          tv_p_wsastartup  = (tv_pfn_wsastartup)(void *)GetProcAddress(h, "WSAStartup");
+          tv_p_wsalasterr  = (tv_pfn_wsalasterr)(void *)GetProcAddress(h, "WSAGetLastError");
+          if (tv_p_wsastartup) { WSADATA w; tv_p_wsastartup(MAKEWORD(2, 2), &w); }
+      }
+  }
+
+  /* Null-safe shims: if ws2_32 could not be loaded, every call fails cleanly
+     instead of jumping through a null pointer. */
+  static SOCKET tv_ws_socket(int a, int b, int c) { tv_wsa_init(); return tv_p_socket ? tv_p_socket(a, b, c) : INVALID_SOCKET; }
+  static int tv_ws_bind(SOCKET s, const struct sockaddr *a, int l) { return tv_p_bind ? tv_p_bind(s, a, l) : SOCKET_ERROR; }
+  static int tv_ws_listen(SOCKET s, int b) { return tv_p_listen ? tv_p_listen(s, b) : SOCKET_ERROR; }
+  static SOCKET tv_ws_accept(SOCKET s, struct sockaddr *a, int *l) { return tv_p_accept ? tv_p_accept(s, a, l) : INVALID_SOCKET; }
+  static int tv_ws_recv(SOCKET s, char *b, int n, int f) { return tv_p_recv ? tv_p_recv(s, b, n, f) : SOCKET_ERROR; }
+  static int tv_ws_send(SOCKET s, const char *b, int n, int f) { return tv_p_send ? tv_p_send(s, b, n, f) : SOCKET_ERROR; }
+  static int tv_ws_closesocket(SOCKET s) { return tv_p_closesocket ? tv_p_closesocket(s) : 0; }
+  static int tv_ws_setsockopt(SOCKET s, int lv, int nm, const char *v, int l) { return tv_p_setsockopt ? tv_p_setsockopt(s, lv, nm, v, l) : SOCKET_ERROR; }
+  /* Byte-order helpers are pure arithmetic - no need to import them at all. */
+  static unsigned short tv_ws_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
+  static unsigned long  tv_ws_htonl(unsigned long v) {
+      return ((v & 0x000000FFUL) << 24) | ((v & 0x0000FF00UL) << 8) |
+             ((v & 0x00FF0000UL) >> 8)  | ((v & 0xFF000000UL) >> 24);
+  }
+
+  #undef socket
+  #undef bind
+  #undef listen
+  #undef accept
+  #undef recv
+  #undef send
+  #undef closesocket
+  #undef setsockopt
+  #undef htons
+  #undef htonl
+  #define socket(a, b, c)          tv_ws_socket((a), (b), (c))
+  #define bind(s, a, l)            tv_ws_bind((s), (a), (l))
+  #define listen(s, b)             tv_ws_listen((s), (b))
+  #define accept(s, a, l)          tv_ws_accept((s), (a), (l))
+  #define recv(s, b, n, f)         tv_ws_recv((s), (b), (n), (f))
+  #define send(s, b, n, f)         tv_ws_send((s), (b), (n), (f))
+  #define closesocket(s)           tv_ws_closesocket((s))
+  #define setsockopt(s, l, n, v, z) tv_ws_setsockopt((s), (l), (n), (v), (z))
+  #define htons(x)                 tv_ws_htons((unsigned short)(x))
+  #define htonl(x)                 tv_ws_htonl((unsigned long)(x))
+  #define tv_closesock  closesocket
+
+  static int tv_sock_errno(void) { return tv_p_wsalasterr ? tv_p_wsalasterr() : (int)GetLastError(); }
+#else
+  typedef int tv_sock_t;
+  #define TV_BAD_SOCK   (-1)
+  #define tv_closesock  close
+  #ifdef MSG_NOSIGNAL
+    #define TV_SENDFLAGS MSG_NOSIGNAL
+  #else
+    #define TV_SENDFLAGS 0
+  #endif
+  static void tv_wsa_init(void) {}
+  static int tv_sock_errno(void) { return errno; }
+#endif
+
+/* net_listen(port) -> result<i64>. Bind + listen on 127.0.0.1:port; the ok value
+   is the listening socket fd, err carries a human message (the common case being
+   a port already in use). */
+void *torvik_net_listen(int64_t port) {
+    tv_wsa_init();
+#if !defined(_WIN32)
+    /* A client that hangs up mid-response must not kill the whole server with a
+       SIGPIPE. Ignore it once here (idempotent); sends also pass MSG_NOSIGNAL. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
+    if (port < 1 || port > 65535) {
+        return torvik_result_err(1, torvik_str_dup("net_listen: port must be between 1 and 65535"));
+    }
+    tv_sock_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == TV_BAD_SOCK) {
+        return torvik_result_err((int64_t)tv_sock_errno(), torvik_str_dup("net_listen: could not create a socket"));
+    }
+    int yes = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons((unsigned short)port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* 127.0.0.1 only */
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "net_listen: could not bind to port %lld (is it already in use?)",
+                 (long long)port);
+        tv_closesock(s);
+        return torvik_result_err((int64_t)tv_sock_errno(), torvik_str_dup(msg));
+    }
+    if (listen(s, 16) != 0) {
+        tv_closesock(s);
+        return torvik_result_err((int64_t)tv_sock_errno(), torvik_str_dup("net_listen: could not listen on the socket"));
+    }
+    return torvik_result_ok((void *)(intptr_t)s);
+}
+
+/* net_accept(server_fd) -> i64. Block for the next client; return its fd, or -1
+   on error. */
+int64_t torvik_net_accept(int64_t server_fd) {
+    tv_sock_t s = (tv_sock_t)(intptr_t)server_fd;
+    tv_sock_t c = accept(s, NULL, NULL);
+    if (c == TV_BAD_SOCK) return -1;
+    return (int64_t)(intptr_t)c;
+}
+
+/* True once the buffer contains the end-of-headers marker CRLF-CRLF. Scans the
+   raw bytes (not strstr) so an embedded NUL can't cut the search short. */
+static int tv_has_header_end(const char *buf, size_t n) {
+    if (n < 4) return 0;
+    for (size_t i = 0; i + 3 < n; i++) {
+        if (buf[i] == '\r' && buf[i+1] == '\n' && buf[i+2] == '\r' && buf[i+3] == '\n')
+            return 1;
+    }
+    return 0;
+}
+
+/* net_recv(client_fd) -> str. Read the request (up to 64 KB) into a Torvik
+   string, stopping once the header terminator CRLF-CRLF is seen or the peer
+   stops sending. Text-oriented: HTTP request lines and headers are ASCII, which
+   is all a static server needs to route on. Returns "" on immediate error/EOF. */
+char *torvik_net_recv(int64_t client_fd) {
+    tv_sock_t s = (tv_sock_t)(intptr_t)client_fd;
+    size_t cap = 64 * 1024;
+    char *buf = torvik_str_alloc(cap);
+    size_t total = 0;
+    for (;;) {
+        if (total >= cap) break;
+        int n = (int)recv(s, buf + total, (int)(cap - total), 0);
+        if (n <= 0) break;
+        total += (size_t)n;
+        buf[total] = '\0';
+        /* Stop as soon as the full header block has arrived. */
+        if (tv_has_header_end(buf, total)) break;
+    }
+    buf[total] = '\0';
+    return buf;
+}
+
+/* net_send(client_fd, data) -> i64. Send the whole NUL-terminated string,
+   looping over partial writes; return bytes sent, or -1 on error. Suitable for
+   response headers and text bodies (HTML/CSS/JS/SVG/JSON). */
+int64_t torvik_net_send(int64_t client_fd, const char *data) {
+    tv_sock_t s = (tv_sock_t)(intptr_t)client_fd;
+    size_t len = strlen(data);
+    size_t sent = 0;
+    while (sent < len) {
+        int n = (int)send(s, data + sent, (int)(len - sent), TV_SENDFLAGS);
+        if (n <= 0) return -1;
+        sent += (size_t)n;
+    }
+    return (int64_t)sent;
+}
+
+/* net_send_file(client_fd, path) -> i64. Stream a file's raw bytes to the socket,
+   binary-safe (no strlen), for images and other assets a text string can't carry.
+   Returns bytes sent, or -1 if the file can't be opened or a write fails. */
+int64_t torvik_net_send_file(int64_t client_fd, const char *path) {
+    tv_sock_t s = (tv_sock_t)(intptr_t)client_fd;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    char chunk[64 * 1024];
+    int64_t total = 0;
+    for (;;) {
+        size_t got = fread(chunk, 1, sizeof(chunk), f);
+        if (got == 0) break;
+        size_t sent = 0;
+        while (sent < got) {
+            int n = (int)send(s, chunk + sent, (int)(got - sent), TV_SENDFLAGS);
+            if (n <= 0) { fclose(f); return -1; }
+            sent += (size_t)n;
+        }
+        total += (int64_t)got;
+    }
+    fclose(f);
+    return total;
+}
+
+/* net_close(fd) — close a listening or client socket. */
+void torvik_net_close(int64_t fd) {
+    tv_sock_t s = (tv_sock_t)(intptr_t)fd;
+    tv_closesock(s);
 }

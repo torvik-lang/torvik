@@ -1,10 +1,11 @@
 # Torvik end-to-end test suite
 
-49 positive cases covering the language surface (values, operators, control flow,
-functions, collections, weave, membership, std lib, files, system, stdin,
-concurrency: raven tasks + bridge channels, table iteration, interpolation scoping),
-50 expected-clean-error cases, 9 rune project-tool cases, 9 warning-system
-cases, and 6 torvc flag cases — 123 in all.
+57 positive cases covering the language surface (values, operators, control flow,
+functions incl. optional/variadic parameters, collections, weave, membership, std lib,
+files, system, stdin, concurrency: raven tasks + bridge channels, table iteration,
+interpolation scoping, boolean chaining, argument type-checking),
+54 expected-clean-error cases, 9 rune project-tool cases, 9 warning-system
+cases, and 6 torvc flag cases — 135 in all.
 
 ## Run
 

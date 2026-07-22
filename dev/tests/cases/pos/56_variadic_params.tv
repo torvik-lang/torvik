@@ -1,0 +1,33 @@
+// v1.4.0: variadic (*) parameters gather zero or more trailing args into a
+// list<T>, iterated like any list. A variadic must be the last parameter. It
+// combines with required and optional (^) params: required, then optional, then
+// the variadic. Element type is str or an integer family type.
+df join_words(sep: str, *words: str) -> str {
+    set out: str = "";
+    set first: bool = true;
+    each w in words {
+        check first { out = w; first = false; } fallback { out = str_concat(out, sep, w); }
+    }
+    return out;
+}
+df sum_all(*nums: i64) -> i64 {
+    set total: i64 = 0;
+    each n in nums { total = total + n; }
+    return total;
+}
+df log_line(level: str, ^tag: str, *parts: str) -> str {
+    set msg: str = str_concat("[", level, "]");
+    check tag != "" { msg = str_concat(msg, "(", tag, ")"); }
+    each p in parts { msg = str_concat(msg, " ", p); }
+    return msg;
+}
+df main() -> void {
+    echo!(join_words(", "));
+    echo!(join_words(", ", "alpha"));
+    echo!(join_words(", ", "alpha", "beta", "gamma"));
+    echo!(sum_all());
+    echo!(sum_all(3, 4, 5));
+    echo!(log_line("INFO"));
+    echo!(log_line("WARN", "net"));
+    echo!(log_line("ERR", "disk", "read", "failed"));
+}

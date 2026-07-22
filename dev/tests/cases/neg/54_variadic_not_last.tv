@@ -1,0 +1,4 @@
+df bad(first: str, *rest: str, last: i64) -> void { echo!(first); }
+df main() -> void {
+    bad("x", 1);
+}

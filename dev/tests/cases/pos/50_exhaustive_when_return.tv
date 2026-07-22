@@ -1,0 +1,49 @@
+// v1.3.1: an exhaustive `when` whose every arm returns is a valid function body
+// on its own - no trailing `return` needed. The flow checker credits the returns.
+aett Status { Draft, Published, Archived }
+aett Color { Red, Green, Blue }
+
+// aett-exhaustive, block arms, all return - was wrongly "must return a value".
+df describe(s: Status) -> str {
+    when s {
+        Status::Draft     => { return "carved"; }
+        Status::Published => { return "raised"; }
+        Status::Archived  => { return "weathered"; }
+    }
+}
+
+// aett-exhaustive, single-statement arms, returns an aett value.
+df next(c: Color) -> Color {
+    when c {
+        Color::Red   => return Color::Green;
+        Color::Green => return Color::Blue;
+        Color::Blue  => return Color::Red;
+    }
+}
+
+// non-aett scrutinee closed by a fallback, all arms return.
+df grade(n: i64) -> str {
+    when n {
+        1 => { return "one"; }
+        2 => { return "two"; }
+        fallback => { return "many"; }
+    }
+}
+
+// aett + fallback, all arms return.
+df short(c: Color) -> str {
+    when c {
+        Color::Red => { return "r"; }
+        fallback   => { return "?"; }
+    }
+}
+
+df main() -> void {
+    echo!(describe(Status::Draft));
+    echo!(describe(Status::Archived));
+    echo!(next(Color::Blue) == Color::Red);
+    echo!(grade(2));
+    echo!(grade(9));
+    echo!(short(Color::Red));
+    echo!(short(Color::Blue));
+}

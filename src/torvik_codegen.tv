@@ -827,6 +827,23 @@ df lookup_var_type(name: str, var_names: list<str>, var_types: list<str>) -> str
     return "";
 }
 
+// Resolve a CALLEE's registered return type ("fnret:<ty>") by name. Only the
+// pre-pass function registrations use a "fnret:"-prefixed type, so this skips a
+// same-named parameter/local left resident from another function's body. Without
+// this, a single-char user function (e.g. `df g(...)`) is shadowed by another
+// function's single-char parameter (std uses many), and the callee is wrongly
+// reported "undefined". Returns "" when nm names no function.
+df lookup_fn_ret(nm: str, var_names: list<str>, var_types: list<str>) -> str {
+    set i: i64 = len(var_names) - 1;
+    whilst i >= 0 {
+        check line_eq(var_names[i], nm) == 1 {
+            check starts(var_types[i], "fnret:") { return var_types[i]; }
+        }
+        i -= 1;
+    }
+    return "";
+}
+
 // v1.1.3: is `nm` a `fixed` binding in the CURRENT function? Declarations
 // record an `@fixed@NAME` marker; the backward scan stops at the "@fn@"
 // sentinel pushed at each function's start, so another function's fixed
@@ -996,6 +1013,8 @@ df is_expr_builtin(nm: str) -> i64 {
     check nm == "unwrap" || nm == "unwrap_or" || nm == "err_msg" || nm == "err_code" { return 1; }
     check nm == "table_get" || nm == "table_has" || nm == "bag_has" || nm == "table_new" || nm == "bag_new" || nm == "list_new" { return 1; }
     check nm == "time_ms" || nm == "datetime_str" || nm == "fs_exists" || nm == "fs_is_dir" || nm == "fs_mtime" || nm == "dir_list" { return 1; }
+    check nm == "fs_size" || nm == "net_listen" || nm == "net_accept" || nm == "net_recv" || nm == "net_send" || nm == "net_send_file" { return 1; }   // v1.3.0 std::net
+    check nm == "chr" { return 1; }   // v1.4.0: byte code -> 1-char string (inverse of byte_at)
     check nm == "table_keys" { return 1; }   // v1.3.0
     check nm == "sys_os_name" || nm == "sys_os_version" || nm == "sys_arch" || nm == "sys_hostname" || nm == "sys_username" { return 1; }
     check nm == "sys_cpu_count" || nm == "sys_mem_total" || nm == "sys_mem_free" || nm == "sys_pid" || nm == "args" || nm == "args_get" { return 1; }
@@ -1057,6 +1076,202 @@ df ty_kind(t: str) -> str {
 // True if `t` names a valid Torvik value type (any type usable for a variable,
 // parameter, or non-void return). `void` is intentionally excluded — it is only
 // valid as a return type, handled separately at the return-type validator.
+// v1.4.0 param modifiers. The parser folds an optional/variadic marker onto a
+// param's type string as a prefix: "?T" (optional) or "...T" (variadic). These
+// helpers read and strip that marker so the rest of the compiler sees the real
+// underlying type.
+df param_is_opt(t: str) -> bool {
+    return starts(t, "?");
+}
+df param_is_variadic(t: str) -> bool {
+    return starts(t, "...");
+}
+// The type actually used for the parameter binding: an optional "?T" binds as T;
+// a variadic "...T" binds as list<T> (it gathers its args into a list); a plain
+// type is returned unchanged.
+df param_bind_type(t: str) -> str {
+    check starts(t, "...") { return str_concat("list<", str_concat(substr(t, 3, len(t)), ">")); }
+    check starts(t, "?") { return substr(t, 1, len(t)); }
+    return t;
+}
+// The variadic element type: "...str" -> "str".
+df param_variadic_elem(t: str) -> str {
+    check starts(t, "...") { return substr(t, 3, len(t)); }
+    return t;
+}
+
+// v1.4.0 variadic packing. Gather args[start..] into a fresh list<elem>, push
+// each (coerced to the i64 cell form like `push` does), and append the list as
+// the final "ptr %L" argument. The list_new is tagged `; tv.vararg` so Stage E
+// releases it exactly once after the call (class b:list) - it is never adopted,
+// since the callee takes its own retain at entry. Returns the extended args.
+df pack_variadic_args(args: list<str>, args_ty: list<str>, start: i64, elem: str, gen_args: str, ir: list<str>, ctr: list<i64>) -> str {
+    fixed lst: str = make_tmp(ctr);
+    emit(ir, str_concat(str_concat("  ", lst), " = call ptr @torvik_list_new() ; tv.vararg"));
+    // list_new is +0 (slot-counting: first store retains). This temp is never
+    // stored in a caller slot, so give it the +1 it needs to survive the callee's
+    // entry-retain / exit-release bracket; Stage E's single b:list release (tagged
+    // above) drops that +1 after the call, freeing it exactly once.
+    emit(ir, str_concat("  call ptr @torvik_list_retain(ptr ", str_concat(lst, ")")));
+    check line_eq(elem, "str") == 1 {
+        emit(ir, str_concat("  call void @torvik_list_mark_managed(ptr ", str_concat(lst, ")")));
+    }
+    set k: i64 = start;
+    whilst k < len(args) {
+        set av: str = args[k];
+        set aty: str = "ptr";
+        check k < len(args_ty) { aty = args_ty[k]; }
+        check aty == "i1" { fixed zt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zt), " = zext i1 "), str_concat(av, " to i64"))); av = zt; aty = "i64"; }
+        check aty == "f64" { fixed fb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", fb), " = bitcast double "), str_concat(av, " to i64"))); av = fb; aty = "i64"; }
+        check aty != "i64" { av = coerce_i64(av, ir, ctr); }
+        emit(ir, str_concat(str_concat(str_concat("  call void @torvik_push(ptr ", lst), ", i64 "), str_concat(av, ")")));
+        k += 1;
+    }
+    set out: str = gen_args;
+    check len(out) > 0 { out = str_concat(out, ", "); }
+    out = str_concat(out, str_concat("ptr ", lst));
+    return out;
+}
+
+
+// True if the callee's last parameter is variadic (its arg loop then packs the
+// trailing args into a list<T>). Kept as a helper so call sites don't combine a
+// length check and a predicate call in one condition.
+df last_param_is_variadic(ptypes: list<str>) -> bool {
+    check len(ptypes) > 0 {
+        check param_is_variadic(ptypes[len(ptypes) - 1]) { return true; }
+    }
+    return false;
+}
+
+df count_required_params(ptypes: list<str>) -> i64 {
+    set n: i64 = 0;
+    set i: i64 = 0;
+    whilst i < len(ptypes) {
+        check param_is_opt(ptypes[i]) == false && param_is_variadic(ptypes[i]) == false { n += 1; }
+        i += 1;
+    }
+    return n;
+}
+
+// Build the wrong-argument-count message, phrased as a range when the function
+// has optional params (e.g. "expects 1 to 3 argument(s)").
+df arg_count_msg(nm: str, n_req: i64, n_total: i64, got: i64) -> str {
+    check n_req == n_total {
+        return fmt("function '{}' expects {} argument(s) but got {}.", nm, n_total, got);
+    }
+    return fmt("function '{}' expects {} to {} argument(s) but got {}.", nm, n_req, n_total, got);
+}
+
+// A friendly type-mismatch message. Renders the arg's reported type in plain
+// terms where it helps (a number / a string / a decimal), else names it directly.
+df arg_mismatch_msg(argnum: i64, nm: str, pty: str, aty: str) -> str {
+    set got: str = aty;
+    check line_eq(aty, "str") == 1 { got = "a string"; }
+    check line_eq(aty, "f64") == 1 { got = "a decimal (f64)"; }
+    check line_eq(aty, "i64") == 1 || line_eq(aty, "i1") == 1 || line_eq(aty, "bool") == 1 || line_eq(aty, "u64") == 1 { got = "a number"; }
+    check int_width(aty) > 0 { got = "a number"; }
+    return fmt("argument {} of '{}' has the wrong type - this parameter expects {}, but got {}.", argnum, nm, pty, got);
+}
+
+// True if a compiled-arg type is definitely a numeric scalar (not str/ptr/etc).
+df argty_is_numeric(t: str) -> bool {
+    check line_eq(t, "i64") == 1 || line_eq(t, "i1") == 1 || line_eq(t, "bool") == 1 || line_eq(t, "f64") == 1 || line_eq(t, "i128") == 1 || line_eq(t, "u128") == 1 || line_eq(t, "u64") == 1 { return true; }
+    check int_width(t) > 0 { return true; }
+    return false;
+}
+
+// True if a type is a heap container (list/table/bag/result) that a scalar/str
+// can never stand in for.
+df ty_is_container(t: str) -> bool {
+    check starts(t, "list") { return true; }
+    check starts(t, "table") { return true; }
+    check starts(t, "bag") { return true; }
+    check starts(t, "result") { return true; }
+    return false;
+}
+
+// Detect a DEFINITE argument/parameter type mismatch. Conservative by design: an
+// ambiguous "ptr" arg type never mismatches, so valid polymorphic-ish call sites
+// are never falsely rejected. Covers, in both directions: str vs number, container
+// vs non-container, and f64 vs integer (same register, different representation -
+// silently produces garbage without a check).
+df arg_param_mismatch(pty: str, aty: str) -> bool {
+    check line_eq(aty, "ptr") == 1 { return false; }
+    check line_eq(aty, pty) == 1 { return false; }
+    fixed p_str: bool = line_eq(pty, "str") == 1;
+    fixed a_str: bool = line_eq(aty, "str") == 1;
+    set p_num: bool = false; check argty_is_numeric(pty) { p_num = true; }
+    set a_num: bool = false; check argty_is_numeric(aty) { a_num = true; }
+    fixed p_f64: bool = line_eq(pty, "f64") == 1;
+    fixed a_f64: bool = line_eq(aty, "f64") == 1;
+    set p_con: bool = false; check ty_is_container(pty) { p_con = true; }
+    set a_con: bool = false; check ty_is_container(aty) { a_con = true; }
+    // str vs number
+    check p_str && a_num { return true; }
+    check p_num && a_str { return true; }
+    // container vs non-container (either direction)
+    fixed a_con_no: bool = a_con == false;
+    fixed p_con_no: bool = p_con == false;
+    check p_con && a_con_no { return true; }
+    check p_con_no && a_con { return true; }
+    // f64 vs an integer-family value (both "numeric" but not interchangeable)
+    fixed a_f64_no: bool = a_f64 == false;
+    fixed p_f64_no: bool = p_f64 == false;
+    check p_f64 {
+        check a_num && a_f64_no { return true; }
+    }
+    check a_f64 {
+        check p_num && p_f64_no { return true; }
+    }
+    // Same container family but managed(str)-vs-raw element kinds: a list<str>
+    // holds retained ptrs, a list<i64>/etc. holds raw cells - crossing them makes
+    // the callee misread every element. Only flagged when both are parameterized
+    // lists and exactly one has str elements (bare/unknown container types are
+    // left alone to avoid false positives).
+    fixed p_isl: bool = starts(pty, "list<");
+    fixed a_isl: bool = starts(aty, "list<");
+    fixed p_ls: bool = line_eq(pty, "list<str>") == 1;
+    fixed a_ls: bool = line_eq(aty, "list<str>") == 1;
+    fixed p_ls_no: bool = p_ls == false;
+    fixed a_ls_no: bool = a_ls == false;
+    check p_isl {
+        check a_isl {
+            check p_ls && a_ls_no { return true; }
+            check a_ls && p_ls_no { return true; }
+        }
+    }
+    return false;
+}
+
+// Append zero-value arguments for the optional params the caller omitted. For
+// each param index in [nprovided, len(ptypes)) (all optional by construction),
+// emit a type-appropriate zero in the same passing form the call uses: int/bool
+// as `i64 0`, f64 as a null ptr (0.0 bits), str as a real empty string so the
+// callee never dereferences null.
+df append_optional_zeros(ptypes: list<str>, nprovided: i64, gen_args: str, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>) -> str {
+    set out: str = gen_args;
+    set i: i64 = nprovided;
+    whilst i < len(ptypes) {
+        fixed bt: str = param_bind_type(ptypes[i]);
+        check len(out) > 0 { out = str_concat(out, ", "); }
+        check line_eq(bt, "str") == 1 {
+            fixed gn: str = intern_str("", gvals, gnames);
+            fixed er: str = emit_str_ref(gn, "", ir, ctr);
+            out = str_concat(out, str_concat("ptr ", er));
+        } fallback {
+            check line_eq(bt, "f64") == 1 {
+                out = str_concat(out, "ptr null");
+            } fallback {
+                // int widths, u64, bool -> i64 0 (the scalar passing form).
+                out = str_concat(out, "i64 0");
+            }
+        }
+        i += 1;
+    }
+    return out;
+}
+
 df is_value_type(t: str) -> i64 {
     check line_eq(t, "i64") == 1 { return 1; }
     check line_eq(t, "f64") == 1 { return 1; }
@@ -1521,6 +1736,25 @@ df chain_tail(tokens: list<i64>, strings: list<str>, allnames: list<str>, init_i
     set ct_ty: str = "i64";
     check uns3 == 1 { ct_ty = "u64"; }
     push(out_val, cur); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, ct_ty);
+}
+
+// A bool-returning builtin (contains/starts/ends) yields an i1. chain_tail
+// compares in i64, so to let a trailing comparison work (`contains(..) == false`,
+// `starts(..) != true`), zext the i1 to i64 and route through chain_tail. When
+// chaining is suppressed (the result is an argument), just push the boolean.
+df finish_bool_chain(tokens: list<i64>, strings: list<str>, allnames: list<str>, i1val: str, p: i64, s: i64, an: i64, suppress_chain: i64, ir: list<str>, ctr: list<i64>, gvals: list<str>, gnames: list<str>, out_val: list<str>, out_pos: list<i64>, out_si: list<i64>, out_ani: list<i64>, out_ty: list<str>, var_names: list<str>, var_types: list<str>) -> void {
+    // Only take the i64 detour when a comparison actually follows (`== false`,
+    // `!= true`, ...); chain_tail compares in i64. With no trailing comparison the
+    // result must stay i1 so `echo!(contains(...))` still prints true/false (not
+    // 1/0) and plain `check contains(...)` is unaffected.
+    fixed nxt: i64 = tok_peek(tokens, p);
+    check suppress_chain == 0 && is_cmp_op(nxt) == 1 {
+        fixed z: str = make_tmp(ctr);
+        emit(ir, str_concat(str_concat(str_concat("  ", z), " = zext i1 "), str_concat(i1val, " to i64")));
+        chain_tail(tokens, strings, allnames, z, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+        return;
+    }
+    push(out_val, i1val); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1");
 }
 
 
@@ -3057,8 +3291,24 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "readln" { emit(ir, str_concat(str_concat("  ", tmp), " = call ptr @torvik_readln()")); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "read" { set rdp: str = ""; check len(args) >= 1 { rdp = args[0]; } fallback { rdp = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_read(ptr "), str_concat(rdp, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "readenv" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_readenv(ptr "), str_concat(args[0], ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            // v1.4.0: chr(code) - the byte code as a 1-char string (inverse of
+            // byte_at). Reuses byte_str, which readkey_str already exposes.
+            check nm == "chr" && len(args) >= 1 { fixed ch0: str = args[0]; set ch0t: str = "ptr"; check len(args_ty) >= 1 { ch0t = args_ty[0]; } set ch0i: str = ch0; check ch0t != "i64" { ch0i = coerce_i64(ch0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_byte_str(i64 "), str_concat(ch0i, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             // v1.3.0: dir_list(path) - sorted entry names of a directory.
             check nm == "dir_list" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_dir_list(ptr "), str_concat(args[0], ")"))); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "list"); return; }
+            // ── v1.3.0 std::net transport ──────────────────────────────────────
+            // fs_size(path) -> i64 bytes, or -1 if missing/not a file.
+            check nm == "fs_size" && len(args) >= 1 { emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_fs_size(ptr "), str_concat(args[0], ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            // net_listen(port) -> result<i64>: ok = listening fd, err = message.
+            check nm == "net_listen" && len(args) >= 1 { fixed lp0: str = args[0]; set lp0t: str = "ptr"; check len(args_ty) >= 1 { lp0t = args_ty[0]; } set lp0i: str = lp0; check lp0t != "i64" { lp0i = coerce_i64(lp0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_net_listen(i64 "), str_concat(lp0i, ")"))); push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return; }
+            // net_accept(server_fd) -> i64 client fd, or -1.
+            check nm == "net_accept" && len(args) >= 1 { fixed na0: str = args[0]; set na0t: str = "ptr"; check len(args_ty) >= 1 { na0t = args_ty[0]; } set na0i: str = na0; check na0t != "i64" { na0i = coerce_i64(na0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_net_accept(i64 "), str_concat(na0i, ")"))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            // net_recv(client_fd) -> str request bytes ("" on EOF/error).
+            check nm == "net_recv" && len(args) >= 1 { fixed nr0: str = args[0]; set nr0t: str = "ptr"; check len(args_ty) >= 1 { nr0t = args_ty[0]; } set nr0i: str = nr0; check nr0t != "i64" { nr0i = coerce_i64(nr0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_net_recv(i64 "), str_concat(nr0i, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            // net_send(client_fd, data) -> i64 bytes sent, or -1.
+            check nm == "net_send" && len(args) >= 2 { fixed ns0: str = args[0]; set ns0t: str = "ptr"; check len(args_ty) >= 1 { ns0t = args_ty[0]; } set ns0i: str = ns0; check ns0t != "i64" { ns0i = coerce_i64(ns0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_net_send(i64 "), ns0i), str_concat(", ptr ", str_concat(args[1], ")")))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
+            // net_send_file(client_fd, path) -> i64 bytes sent (binary-safe), or -1.
+            check nm == "net_send_file" && len(args) >= 2 { fixed nf0: str = args[0]; set nf0t: str = "ptr"; check len(args_ty) >= 1 { nf0t = args_ty[0]; } set nf0i: str = nf0; check nf0t != "i64" { nf0i = coerce_i64(nf0, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_net_send_file(i64 "), nf0i), str_concat(", ptr ", str_concat(args[1], ")")))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
             // v1.3.0: table_keys(t) - every key in the table as a sorted
             // list<str>. Sorted so loops over a table are reproducible (hash
             // order shifts as the table resizes). Values come via table_get.
@@ -3225,8 +3475,8 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
             }
 
-            check nm == "ends" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_ends(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, tmp2); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
-            check nm == "starts" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_starts(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, tmp2); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+            check nm == "ends" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_ends(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); finish_bool_chain(tokens, strings, allnames, tmp2, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
+            check nm == "starts" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_starts(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed tmp2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", tmp2), " = icmp ne i32 "), str_concat(tmp, ", 0"))); finish_bool_chain(tokens, strings, allnames, tmp2, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "push" && len(args) >= 2 { fixed pelem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); set pval: str = args[1]; set pval_ty: str = "ptr"; check len(args_ty) >= 2 { pval_ty = args_ty[1]; } set pe128: i64 = 0; check line_eq(pelem, "i128") == 1 || line_eq(pelem, "u128") == 1 { pe128 = 1; } set pv128: i64 = 0; check pval_ty == "i128" || pval_ty == "u128" { pv128 = 1; } set plit: str = ""; check len(args_lit) >= 2 { plit = args_lit[1]; } check pe128 == 1 && pv128 == 0 && len(plit) > 0 { set plok: i64 = 0; check line_eq(pelem, "i128") == 1 && i128_lit_in_range(plit) == 1 { plok = 1; } check line_eq(pelem, "u128") == 1 && u128_in_range(plit) == 1 { plok = 1; } check plok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", plit), str_concat(" is out of range for ", pelem))); } fixed plbox: str = i128_box_lit(plit, ir, ctr); pval = plbox; pval_ty = pelem; pv128 = 1; } check pe128 == 1 && pv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be pushed into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then push that."); } check pe128 == 0 && pv128 == 1 && (int_width(pelem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be pushed into a non-128-bit integer list. Use list<i128>/list<u128>."); } check pval_ty == "i1" { fixed zt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", zt), " = zext i1 "), str_concat(pval, " to i64"))); pval = zt; pval_ty = "i64"; } check line_eq(pelem, "f64") == 1 || pval_ty == "f64" { fixed pfb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", pfb), " = bitcast double "), str_concat(pval, " to i64"))); pval = pfb; pval_ty = "i64"; } check pval_ty != "i64" { pval = coerce_i64(pval, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_push(ptr ", args[0]), ", i64 "), str_concat(pval, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
             check nm == "list_remove" && len(args) >= 2 { set ridx: str = args[1]; set ridx_ty: str = "ptr"; check len(args_ty) >= 2 { ridx_ty = args_ty[1]; } check ridx_ty == "i1" { fixed rzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rzt), " = zext i1 "), str_concat(ridx, " to i64"))); ridx = rzt; ridx_ty = "i64"; } check ridx_ty != "i64" { ridx = coerce_i64(ridx, ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  call void @torvik_remove(ptr ", args[0]), ", i64 "), str_concat(ridx, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
             check nm == "list_insert" && len(args) >= 3 { fixed ielem: str = list_elem_type(lookup_var_type(first_arg_name, var_names, var_types)); set iidx: str = args[1]; set iidx_ty: str = "ptr"; check len(args_ty) >= 2 { iidx_ty = args_ty[1]; } check iidx_ty == "i1" { fixed izt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", izt), " = zext i1 "), str_concat(iidx, " to i64"))); iidx = izt; iidx_ty = "i64"; } check iidx_ty != "i64" { iidx = coerce_i64(iidx, ir, ctr); } set ival: str = args[2]; set ival_ty: str = "ptr"; check len(args_ty) >= 3 { ival_ty = args_ty[2]; } set ie128: i64 = 0; check line_eq(ielem, "i128") == 1 || line_eq(ielem, "u128") == 1 { ie128 = 1; } set iv128: i64 = 0; check ival_ty == "i128" || ival_ty == "u128" { iv128 = 1; } set ilit: str = ""; check len(args_lit) >= 3 { ilit = args_lit[2]; } check ie128 == 1 && iv128 == 0 && len(ilit) > 0 { set ilok: i64 = 0; check line_eq(ielem, "i128") == 1 && i128_lit_in_range(ilit) == 1 { ilok = 1; } check line_eq(ielem, "u128") == 1 && u128_in_range(ilit) == 1 { ilok = 1; } check ilok == 0 { emit_uerr(ir, p, str_concat(str_concat("literal ", ilit), str_concat(" is out of range for ", ielem))); } fixed ilbox: str = i128_box_lit(ilit, ir, ctr); ival = ilbox; ival_ty = ielem; iv128 = 1; } check ie128 == 1 && iv128 == 0 { emit_uerr(ir, p, "only a 128-bit value can be inserted into a list<i128>/list<u128>. Bind a literal to an i128/u128 variable first, then insert that."); } check ie128 == 0 && iv128 == 1 && (int_width(ielem) > 0) { emit_uerr(ir, p, "a 128-bit value cannot be inserted into a non-128-bit integer list. Use list<i128>/list<u128>."); } check ival_ty == "i1" { fixed ivzt: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ivzt), " = zext i1 "), str_concat(ival, " to i64"))); ival = ivzt; ival_ty = "i64"; } check line_eq(ielem, "f64") == 1 || ival_ty == "f64" { fixed ifb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ifb), " = bitcast double "), str_concat(ival, " to i64"))); ival = ifb; ival_ty = "i64"; } check ival_ty != "i64" { ival = coerce_i64(ival, ir, ctr); } emit(ir, str_concat(str_concat(str_concat(str_concat("  call void @torvik_insert(ptr ", args[0]), ", i64 "), str_concat(iidx, ", i64 ")), str_concat(ival, ")"))); push(out_val, "void"); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "void"); return; }
@@ -3298,7 +3548,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "readkey_str" { fixed rks8: str = make_tmp(ctr); emit(ir, str_concat(str_concat("  ", rks8), " = call i8 @torvik_readkey()")); fixed rks64: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rks64), " = sext i8 "), str_concat(rks8, " to i64"))); emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_byte_str(i64 "), str_concat(rks64, ")"))); finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             // v1.2.0: find(s, sub) - byte index of the first occurrence, -1 if absent.
             check nm == "find" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i64 @torvik_find(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); check suppress_chain == 0 { chain_tail(tokens, strings, allnames, tmp, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0); return; } push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return; }
-            check nm == "contains" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_contains(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed ctb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ctb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, ctb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
+            check nm == "contains" && len(args) >= 2 { emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_contains(ptr "), args[0]), str_concat(", ptr ", str_concat(args[1], ")")))); fixed ctb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", ctb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); finish_bool_chain(tokens, strings, allnames, ctb, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return; }
             check nm == "readbool" { set rbp0: str = ""; check len(args) >= 1 { rbp0 = args[0]; } fallback { rbp0 = emit_str_ref(intern_str("", gvals, gnames), "", ir, ctr); } emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call i32 @torvik_readbool(ptr "), str_concat(rbp0, ")"))); fixed rbb: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", rbb), " = icmp ne i32 "), str_concat(tmp, ", 0"))); push(out_val, rbb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i1"); return; }
             // v1.3.0: join(h) - wait for a task and take its return value. The
             // handle's task<T> annotation names the result type, which selects
@@ -3463,9 +3713,18 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             }
             // Generic call fallback — emit actual call with all args as ptr
             fixed callee_ptypes: list<str> = split_words(lookup_var_type(str_concat("@p@", nm), var_names, var_types));
+            // v1.4.0: a trailing variadic (*) param gathers the extra args into a
+            // list<T>. The fixed params are everything before it; only those go
+            // through the per-arg loop, and the rest are packed after.
+            set has_var_e: bool = false;
+            check last_param_is_variadic(callee_ptypes) { has_var_e = true; }
+            set num_fixed_e: i64 = len(callee_ptypes);
+            check has_var_e { num_fixed_e = len(callee_ptypes) - 1; }
+            set n_fixed_take_e: i64 = len(args);
+            check n_fixed_take_e > num_fixed_e { n_fixed_take_e = num_fixed_e; }
             set generic_args: str = "";
             set gi2: i64 = 0;
-            whilst gi2 < len(args) {
+            whilst gi2 < n_fixed_take_e {
                 check len(generic_args) > 0 { generic_args = str_concat(generic_args, ", "); }
                 set garg_ty: str = "ptr";
                 check gi2 < len(args_ty) { garg_ty = args_ty[gi2]; }
@@ -3486,6 +3745,13 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     check param_is_128 == 0 && arg_is_128 == 1 && int_width(ppt) > 0 {
                         emit_uerr(ir, pos, "a 128-bit value cannot be passed to a non-128-bit integer parameter. Use a matching 128-bit parameter type, or convert explicitly.");
                     }
+                    // v1.4.0: catch definite argument/parameter type mismatches
+                    // (str vs number, container vs scalar, f64 vs integer). Only
+                    // certain mismatches are flagged; an ambiguous arg is left alone.
+                    fixed ebt: str = param_bind_type(ppt);
+                    check arg_param_mismatch(ebt, garg_ty) {
+                        emit_uerr(ir, pos, arg_mismatch_msg(gi2 + 1, nm, ebt, garg_ty));
+                    }
                 }
                 check garg_ty == "i1" || garg_ty == "i64" || garg_ty == "bool" {
                     generic_args = str_concat(generic_args, str_concat("i64 ", args[gi2]));
@@ -3497,23 +3763,44 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     emit(ir, str_concat(str_concat(str_concat("  ", gfp), " = inttoptr i64 "), str_concat(gfb, " to ptr")));
                     generic_args = str_concat(generic_args, str_concat("ptr ", gfp));
                 }
-                check garg_ty != "i1" && garg_ty != "i64" && garg_ty != "f64" {
+                check garg_ty != "i1" && garg_ty != "i64" && garg_ty != "f64" && garg_ty != "bool" {
                     generic_args = str_concat(generic_args, str_concat("ptr ", args[gi2]));
                 }
                 gi2 += 1;
             }
-            check starts(lookup_var_type(nm, var_names, var_types), "fnret:") {
-                check len(args) != len(callee_ptypes) {
-                    emit_uerr(ir, nm_pos, fmt("function '{}' expects {} argument(s) but got {}.", nm, len(callee_ptypes), len(args)));
+            check starts(lookup_fn_ret(nm, var_names, var_types), "fnret:") {
+                // v1.4.0: optional (^) params make the arity a range [required, total];
+                // a variadic (*) removes the upper bound and absorbs the extra args.
+                fixed n_total_e: i64 = len(callee_ptypes);
+                fixed n_req_e: i64 = count_required_params(callee_ptypes);
+                check has_var_e {
+                    check len(args) < n_req_e {
+                        emit_uerr(ir, nm_pos, arg_count_msg(nm, n_req_e, n_total_e, len(args)));
+                    }
+                    // Zero-fill any omitted optionals among the fixed params, then
+                    // pack the remaining args into the variadic list<T>.
+                    check len(args) < num_fixed_e {
+                        generic_args = append_optional_zeros(callee_ptypes, len(args), generic_args, ir, ctr, gvals, gnames);
+                    }
+                    fixed velem_e: str = param_variadic_elem(callee_ptypes[num_fixed_e]);
+                    generic_args = pack_variadic_args(args, args_ty, num_fixed_e, velem_e, generic_args, ir, ctr);
+                } fallback {
+                    check len(args) < n_req_e || len(args) > n_total_e {
+                        emit_uerr(ir, nm_pos, arg_count_msg(nm, n_req_e, n_total_e, len(args)));
+                    }
+                    // Fill omitted trailing optionals with a synthesized zero value.
+                    check len(args) >= n_req_e && len(args) < n_total_e {
+                        generic_args = append_optional_zeros(callee_ptypes, len(args), generic_args, ir, ctr, gvals, gnames);
+                    }
                 }
             } fallback {
                 emit(ir, str_concat(str_concat(str_concat("  ; tv.undeffn:", nm), ":"), int_to_str(nm_pos)));
             }
             emit(ir, str_concat(str_concat(str_concat(str_concat("  ", tmp), " = call ptr @"), nm), str_concat("(", str_concat(generic_args, ")"))));
-            fixed call_is_u64: bool = line_eq(lookup_var_type(nm, var_names, var_types), "fnret:u64") == 1;
+            fixed call_is_u64: bool = line_eq(lookup_fn_ret(nm, var_names, var_types), "fnret:u64") == 1;
             // Float-returning user function: the result is a bit-packed ptr; recover
             // the double and route through the f64 path (chain/comparison/print).
-            check line_eq(lookup_var_type(nm, var_names, var_types), "fnret:f64") == 1 {
+            check line_eq(lookup_fn_ret(nm, var_names, var_types), "fnret:f64") == 1 {
                 fixed cfb: str = make_tmp(ctr);
                 emit(ir, str_concat(str_concat(str_concat("  ", cfb), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
                 fixed cfd: str = make_tmp(ctr);
@@ -3530,7 +3817,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // is an operand inside an enclosing arithmetic chain).
             fixed call_next_op: i64 = tok_peek(tokens, p);
             check suppress_chain == 0 && is_cmp_op(call_next_op) == 1 {
-                fixed ck_ret: str = lookup_var_type(nm, var_names, var_types);
+                fixed ck_ret: str = lookup_fn_ret(nm, var_names, var_types);
                 set ck_ty: str = "ptr";
                 check line_eq(ck_ret, "fnret:str") == 1 { ck_ty = "str"; }
                 set ck_hint: i64 = 0;
@@ -3545,7 +3832,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                 return;
             }
             check suppress_chain == 0 && call_next_op == OP_BOUND {
-                fixed cb_ret: str = lookup_var_type(nm, var_names, var_types);
+                fixed cb_ret: str = lookup_fn_ret(nm, var_names, var_types);
                 set cb_str: i64 = 0; check line_eq(cb_ret, "fnret:str") == 1 { cb_str = 1; }
                 set cb_hint: i64 = 0;
                 check starts(cb_ret, "fnret:") {
@@ -3571,7 +3858,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // String-returning user function: tag the result "str" (not bare
             // "ptr") so consumers that distinguish strings from packed integers
             // — fmt's argument stringifier, in particular — treat it correctly.
-            check line_eq(lookup_var_type(nm, var_names, var_types), "fnret:str") == 1 {
+            check line_eq(lookup_fn_ret(nm, var_names, var_types), "fnret:str") == 1 {
                 finish_str_result(tokens, strings, allnames, tmp, p, s, an, suppress_chain, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
             }
             check call_is_u64 {
@@ -3585,7 +3872,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             // that echo_stringify recovers via coerce_i64 (ev_ty != "i64"); a plain
             // i64 must be ptrtoint'd here because echo_stringify skips coercion when
             // ev_ty == "i64".
-            fixed crt: str = lookup_var_type(nm, var_names, var_types);
+            fixed crt: str = lookup_fn_ret(nm, var_names, var_types);
             check starts(crt, "fnret:") {
                 fixed crtt: str = substr(crt, 6, len(crt));
                 check crtt == "void" {
@@ -3600,7 +3887,14 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                     push(out_val, cti); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "i64"); return;
                 }
                 check (int_width(crtt) > 0) || crtt == "bool" {
-                    push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, crtt); return;
+                    // The call returns a ptr (uniform ABI), but a bool/narrow-int
+                    // result is an i64-domain scalar - recover it with ptrtoint so
+                    // the SSA value matches its "{crtt}" tag. Without this, storing
+                    // the result into a bool/narrow binding double-converts it
+                    // (inttoptr of an already-ptr value) and clang rejects the IR.
+                    fixed ctnb: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", ctnb), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                    push(out_val, ctnb); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, crtt); return;
                 }
             }
             push(out_val, tmp); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, "ptr"); return;
@@ -4514,7 +4808,7 @@ df compile_raven_spawn(tokens: list<i64>, strings: list<str>, allnames: list<str
         spi += 1;
     }
     // Return-type contract for the handled form.
-    fixed sp_rty: str = substr(lookup_var_type(nm, var_names, var_types), 6, len(lookup_var_type(nm, var_names, var_types)));
+    fixed sp_rty: str = substr(lookup_fn_ret(nm, var_names, var_types), 6, len(lookup_fn_ret(nm, var_names, var_types)));
     check wants_handle == 1 {
         check line_eq(sp_rty, want_ty) == 1 { } fallback {
             set sp_rdesc: str = fmt("returns {}", sp_rty);
@@ -5132,6 +5426,35 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             check len(rp) > 0 { pos = rp[0]; }
             check len(rs) > 0 { s   = rs[0]; }
             check len(rs_ai) > 0 { an = rs_ai[0]; }
+            // v1.4.0: fold trailing && / || operands so a boolean expression can be
+            // BOUND to a variable (`fixed ok: bool = a && b;`), not just used in a
+            // check/return/whilst condition. Mirrors the return-path folding: each
+            // operand is coerced to i1 and AND/OR-ed, left to right, yielding an i1.
+            check len(rv) > 0 {
+                set bfold_cur: str = rv[0];
+                set bfold_cur_ty: str = "ptr"; check len(rv_ty) > 0 { bfold_cur_ty = rv_ty[0]; }
+                set bfold_any: i64 = 0;
+                whilst tok_peek(tokens, pos) == OP_AMPAMP || tok_peek(tokens, pos) == OP_PIPEPIPE {
+                    bfold_any = 1;
+                    set bf_is_and: i64 = 0; check tok_peek(tokens, pos) == OP_AMPAMP { bf_is_and = 1; }
+                    pos += 1;
+                    set bfv: list<str> = list_new(); set bfp: list<i64> = list_new(); set bfs: list<i64> = list_new(); set bfa: list<i64> = list_new(); set bfty: list<str> = list_new();
+                    compile_expr(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, bfv, bfp, bfs, bfa, bfty, var_names, var_types);
+                    check len(bfp) > 0 { pos = bfp[0]; } check len(bfs) > 0 { s = bfs[0]; } check len(bfa) > 0 { an = bfa[0]; }
+                    set bf_rhs: str = "null"; check len(bfv) > 0 { bf_rhs = bfv[0]; }
+                    set bf_rhs_ty: str = "ptr"; check len(bfty) > 0 { bf_rhs_ty = bfty[0]; }
+                    set bf_l: str = bfold_cur; check bfold_cur_ty != "i1" { fixed bfz1: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", bfz1), " = icmp ne i64 "), str_concat(coerce_i64(bfold_cur, ir, ctr), ", 0"))); bf_l = bfz1; }
+                    set bf_r: str = bf_rhs; check bf_rhs_ty != "i1" { fixed bfz2: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", bfz2), " = icmp ne i64 "), str_concat(coerce_i64(bf_rhs, ir, ctr), ", 0"))); bf_r = bfz2; }
+                    fixed bfcmb: str = make_tmp(ctr);
+                    check bf_is_and == 1 { emit(ir, str_concat(str_concat(str_concat("  ", bfcmb), " = and i1 "), str_concat(bf_l, str_concat(", ", bf_r)))); }
+                    check bf_is_and == 0 { emit(ir, str_concat(str_concat(str_concat("  ", bfcmb), " = or i1 "), str_concat(bf_l, str_concat(", ", bf_r)))); }
+                    bfold_cur = bfcmb; bfold_cur_ty = "i1";
+                }
+                check bfold_any == 1 {
+                    rv[0] = bfold_cur;
+                    check len(rv_ty) > 0 { rv_ty[0] = "i1"; } fallback { push(rv_ty, "i1"); }
+                }
+            }
             // Use actual return type from compile_expr if available
             check len(rv_ty) > 0 { vtype = rv_ty[0]; }
             // A list bound without an element-type annotation (`set xs = list_new();`)
@@ -5424,6 +5747,7 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             set saw_fallback: i64 = 0;
             set covered: str = "";
             set all_term: i64 = 1;
+            set when_exhaustive: i64 = 0;
             emit(ir, str_concat(str_concat("  br label %wchk", int_to_str(wnum)), "_0"));
             whilst pos < end && tok_peek(tokens, pos) != PUNCT_RBRACE && tok_peek(tokens, pos) != TOK_EOF {
                 fixed chk_lbl: str = str_concat(str_concat(str_concat("wchk", int_to_str(wnum)), "_"), int_to_str(warm));
@@ -5527,7 +5851,8 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             // the final chk label: nothing matched - fall through to the end
             emit(ir, str_concat(str_concat(str_concat("wchk", int_to_str(wnum)), "_"), str_concat(int_to_str(warm), ":")));
             emit(ir, str_concat("  br label %", wend));
-            check saw_fallback == 0 && all_term == 1 { all_term = 0; }
+            // A fallback arm covers every remaining value, so the when is exhaustive.
+            check saw_fallback == 1 { when_exhaustive = 1; }
             // Exhaustiveness
             check len(when_aett) > 0 && saw_fallback == 0 {
                 fixed wants: list<str> = split_words(aett_variants_of(when_aett));
@@ -5549,6 +5874,9 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 check len(missing) > 0 {
                     push(err_pos, when_pos);
                     push(err_msg, fmt("this when over aett '{}' is missing variants: {} - add arms for them, or a `fallback =>` arm.", when_aett, missing));
+                } fallback {
+                    // Every variant of the aett has an arm: the when is exhaustive.
+                    when_exhaustive = 1;
                 }
             }
             check len(when_aett) == 0 && saw_fallback == 0 {
@@ -5556,6 +5884,12 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 push(err_msg, "a when over a non-aett value needs a `fallback =>` arm - the compiler can't prove the patterns cover every value.");
             }
             emit(ir, str_concat(wend, ":"));
+            // When the when is exhaustive AND every arm terminates (returns/breaks/
+            // continues/halts), the wend block is unreachable. Terminate it so the IR
+            // is valid and the flow checker credits the returns — mirrors the merge
+            // block of a `check ... fallback` where both sides terminate. Reaching wend
+            // would require an out-of-range value, impossible for a well-typed aett.
+            check when_exhaustive == 1 && all_term == 1 { emit(ir, "  unreachable"); }
             continue;
         }
 
@@ -5884,6 +6218,13 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                     emit(ir, str_concat(str_concat("  call void @torvik_fs_remove(ptr ", args[0]), ")"));
                     continue;
                 }
+                // v1.3.0 std::net: net_close(fd) - close a socket (void).
+                check nm == "net_close" && len(args) >= 1 {
+                    set ncfd: str = args[0]; set ncfdt: str = "ptr"; check len(args_ty) >= 1 { ncfdt = args_ty[0]; }
+                    check ncfdt != "i64" { ncfd = coerce_i64(ncfd, ir, ctr); }
+                    emit(ir, str_concat(str_concat("  call void @torvik_net_close(i64 ", ncfd), ")"));
+                    continue;
+                }
                 check nm == "writefile" && len(args) >= 2 {
                     emit(ir, str_concat(str_concat(str_concat("  call void @torvik_writefile(ptr ", args[0]), ", ptr "), str_concat(args[1], ")")));
                     continue;
@@ -6014,9 +6355,15 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 }
                 // Other call statement (user function or runtime) — emit the call, discard result
                 fixed scallee_ptypes: list<str> = split_words(lookup_var_type(str_concat("@p@", nm), var_names, var_types));
+                set has_var_s: bool = false;
+                check last_param_is_variadic(scallee_ptypes) { has_var_s = true; }
+                set num_fixed_s: i64 = len(scallee_ptypes);
+                check has_var_s { num_fixed_s = len(scallee_ptypes) - 1; }
+                set n_fixed_take_s: i64 = len(args);
+                check n_fixed_take_s > num_fixed_s { n_fixed_take_s = num_fixed_s; }
                 set sgen_args: str = "";
                 set sgi: i64 = 0;
-                whilst sgi < len(args) {
+                whilst sgi < n_fixed_take_s {
                     check len(sgen_args) > 0 { sgen_args = str_concat(sgen_args, ", "); }
                     set sarg_ty: str = "ptr";
                     check sgi < len(args_ty) { sarg_ty = args_ty[sgi]; }
@@ -6029,6 +6376,11 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                         }
                         check sp_is_128 == 0 && sa_is_128 == 1 && int_width(sppt) > 0 {
                             emit_uerr(ir, pos, "a 128-bit value cannot be passed to a non-128-bit integer parameter. Use a matching 128-bit parameter type, or convert explicitly.");
+                        }
+                        // v1.4.0: catch definite argument/parameter type mismatches.
+                        fixed sbt: str = param_bind_type(sppt);
+                        check arg_param_mismatch(sbt, sarg_ty) {
+                            emit_uerr(ir, pos, arg_mismatch_msg(sgi + 1, nm, sbt, sarg_ty));
                         }
                     }
                     check sarg_ty == "i1" || sarg_ty == "i64" || sarg_ty == "bool" {
@@ -6043,23 +6395,43 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                         emit(ir, str_concat(str_concat(str_concat("  ", sfp), " = inttoptr i64 "), str_concat(sfb, " to ptr")));
                         sgen_args = str_concat(sgen_args, str_concat("ptr ", sfp));
                     }
-                    check sarg_ty != "i1" && sarg_ty != "i64" && sarg_ty != "f64" {
+                    check sarg_ty != "i1" && sarg_ty != "i64" && sarg_ty != "f64" && sarg_ty != "bool" {
                         sgen_args = str_concat(sgen_args, str_concat("ptr ", args[sgi]));
                     }
                     sgi += 1;
                 }
                 fixed scall_tmp: str = make_tmp(ctr);
                 fixed scp_arity: list<str> = split_words(lookup_var_type(str_concat("@p@", nm), var_names, var_types));
-                check starts(lookup_var_type(nm, var_names, var_types), "fnret:") {
-                    check len(args) != len(scp_arity) {
-                        push(err_pos, snm_pos);
-                        push(err_msg, fmt("function '{}' expects {} argument(s) but got {}", nm, len(scp_arity), len(args)));
-                        continue;
+                check starts(lookup_fn_ret(nm, var_names, var_types), "fnret:") {
+                    // v1.4.0: optional (^) params -> arity range [required, total];
+                    // a variadic (*) removes the upper bound and packs the extras.
+                    fixed sn_total: i64 = len(scp_arity);
+                    fixed sn_req: i64 = count_required_params(scp_arity);
+                    check has_var_s {
+                        check len(args) < sn_req {
+                            push(err_pos, snm_pos);
+                            push(err_msg, arg_count_msg(nm, sn_req, sn_total, len(args)));
+                            continue;
+                        }
+                        check len(args) < num_fixed_s {
+                            sgen_args = append_optional_zeros(scp_arity, len(args), sgen_args, ir, ctr, gvals, gnames);
+                        }
+                        fixed svelem: str = param_variadic_elem(scp_arity[num_fixed_s]);
+                        sgen_args = pack_variadic_args(args, args_ty, num_fixed_s, svelem, sgen_args, ir, ctr);
+                    } fallback {
+                        check len(args) < sn_req || len(args) > sn_total {
+                            push(err_pos, snm_pos);
+                            push(err_msg, arg_count_msg(nm, sn_req, sn_total, len(args)));
+                            continue;
+                        }
+                        check len(args) >= sn_req && len(args) < sn_total {
+                            sgen_args = append_optional_zeros(scp_arity, len(args), sgen_args, ir, ctr, gvals, gnames);
+                        }
                     }
                     // v1.3.0: a bare statement call of a NON-void function
                     // silently discards its result - a common source of quiet
                     // bugs (an ignored error code, a computed value dropped).
-                    fixed _srt: str = lookup_var_type(nm, var_names, var_types);
+                    fixed _srt: str = lookup_fn_ret(nm, var_names, var_types);
                     fixed _srty: str = substr(_srt, 6, len(_srt));
                     check line_eq(_srty, "void") == 0 {
                         emit_warn(ir, snm_pos, "unused_result", fmt("the {} result of '{}' is unused - bind it (`fixed r: {} = {}(...);`, or `_r` to discard deliberately), or make the function -> void.", _srty, nm, _srty, nm));
@@ -6894,7 +7266,9 @@ df inject_scope_releases(fn_ir: list<str>, ctr: list<i64>, rty: str, pnames: lis
     set pi: i64 = 0;
     whilst pi < len(pnames) {
         check pi < len(ptypes) {
-            fixed pt: str = ptypes[pi];
+            // v1.4.0: use the bound type so a variadic (...T -> list<T>) param is
+            // released at scope exit, balancing its entry retain.
+            fixed pt: str = param_bind_type(ptypes[pi]);
             set pk: str = "";
             check starts(pt, "list") { pk = "list"; }
             check pt == "str" { pk = "str"; }
@@ -6986,6 +7360,7 @@ df temp_producer_code(line: str, upats: list<str>, ucodes: list<str>) -> str {
     check str_contains(line, "; tv.ternphi:result") { return "b:result"; }
     check str_contains(line, "; tv.ternphi:i128") { return "b:i128"; }
     check str_contains(line, " = call ptr @torvik_str_concat(") { return "a:str"; }
+    check str_contains(line, "; tv.vararg") { return "b:list"; }
     check str_contains(line, "; tv.strpop") { return "b:str"; }
     check str_contains(line, " = call ptr @torvik_char_str(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_byte_str(") { return "a:str"; }
@@ -7031,6 +7406,8 @@ df temp_producer_code(line: str, upats: list<str>, ucodes: list<str>) -> str {
     check str_contains(line, " = call ptr @torvik_try_writefile(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_appendline(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_fs_copy(") { return "a:result"; }
+    check str_contains(line, " = call ptr @torvik_net_listen(") { return "a:result"; }
+    check str_contains(line, " = call ptr @torvik_net_recv(") { return "a:str"; }
     check str_contains(line, " = call ptr @torvik_try_toint(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_try_tofloat(") { return "a:result"; }
     check str_contains(line, " = call ptr @torvik_float_to_str(") { return "a:str"; }
@@ -7281,11 +7658,53 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
         // available position for the header).
         fixed ptypes_v: list<str> = split_words(fn_param_types[rti]);
         set pvi: i64 = 0;
+        set seen_opt: i64 = 0;
+        set seen_var: i64 = 0;
         whilst pvi < len(ptypes_v) {
-            fixed pvt: str = ptypes_v[pvi];
+            fixed pvt_raw: str = ptypes_v[pvi];
+            fixed pvt: str = param_bind_type(pvt_raw);
             check is_value_type(pvt) == 0 && is_aett_name(pvt) == 0 {
                 push(err_pos, rt_caret);
                 push(err_msg, str_concat(str_concat("unknown parameter type '", pvt), "' - expected i64, f64, str, bool, or a list/bag/table/result type"));
+            }
+            // Modifier ordering: required params first, then optional (^), then a
+            // single variadic (*) last. This keeps positional calls unambiguous -
+            // omitted optionals and gathered variadic args are always trailing.
+            check param_is_variadic(pvt_raw) {
+                check seen_var == 1 {
+                    push(err_pos, rt_caret);
+                    push(err_msg, "a function can have at most one variadic (*) parameter, and it must be the last one");
+                }
+                // The variadic gathers its args into a list<T>; for now T must be
+                // str or an integer-family type (these pack cleanly). f64, 128-bit,
+                // and container element types aren't supported as variadic yet.
+                fixed velem: str = param_variadic_elem(pvt_raw);
+                check line_eq(velem, "str") == 1 || line_eq(velem, "bool") == 1 || line_eq(velem, "i64") == 1 || line_eq(velem, "u64") == 1 || int_width(velem) > 0 { } fallback {
+                    push(err_pos, rt_caret);
+                    push(err_msg, fmt("variadic (*) parameters must gather a str or integer type (got '{}') - f64, 128-bit, and container element types aren't supported as variadic yet", velem));
+                }
+                seen_var = 1;
+            } fallback {
+                check seen_var == 1 {
+                    push(err_pos, rt_caret);
+                    push(err_msg, "the variadic (*) parameter must be the last parameter");
+                }
+                check param_is_opt(pvt_raw) {
+                    seen_opt = 1;
+                    // Optional params get a synthesized zero value when omitted, so
+                    // for now they must be a scalar or string. Containers and 128-bit
+                    // types as optional aren't supported yet.
+                    check line_eq(pvt, "str") == 1 || line_eq(pvt, "f64") == 1 || line_eq(pvt, "bool") == 1 || line_eq(pvt, "i64") == 1 || line_eq(pvt, "u64") == 1 || int_width(pvt) > 0 { } fallback {
+                        push(err_pos, rt_caret);
+                        push(err_msg, fmt("optional (^) parameters must be a scalar or string type (got '{}') - containers and 128-bit types can't be optional yet", pvt));
+                    }
+                } fallback {
+                    // A required (unmarked) param after an optional one is illegal.
+                    check seen_opt == 1 {
+                        push(err_pos, rt_caret);
+                        push(err_msg, "required parameters must come before optional (^) parameters");
+                    }
+                }
             }
             pvi += 1;
         }
@@ -7450,6 +7869,14 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare ptr @torvik_table_keys(ptr)");
     emit(ir, "declare i64 @torvik_fs_is_dir(ptr)");
     emit(ir, "declare void @torvik_fs_copy(ptr, ptr)");
+    // std::net transport (v1.3.0 std)
+    emit(ir, "declare i64 @torvik_fs_size(ptr)");
+    emit(ir, "declare ptr @torvik_net_listen(i64)");
+    emit(ir, "declare i64 @torvik_net_accept(i64)");
+    emit(ir, "declare ptr @torvik_net_recv(i64)");
+    emit(ir, "declare i64 @torvik_net_send(i64, ptr)");
+    emit(ir, "declare i64 @torvik_net_send_file(i64, ptr)");
+    emit(ir, "declare void @torvik_net_close(i64)");
     emit(ir, "declare ptr @torvik_float_to_str(double)");
     emit(ir, "declare double @torvik_to_float(ptr)");
     emit(ir, "declare double @torvik_rand()");
@@ -7628,7 +8055,10 @@ whilst fi < len(fn_names) {
             emit(fn_ir, str_concat(str_concat(str_concat("  %", pn), "_slot = alloca ptr, align 8"), ""));
             emit(fn_ir, str_concat(str_concat(str_concat(str_concat("  store ptr %", pn), ", ptr %"), pn), "_slot, align 8"));
             check pi2 < len(ptypes) {
-                fixed pty: str = ptypes[pi2];
+                // v1.4.0: strip any optional/variadic marker - a "?T" param binds
+                // as T, a "...T" variadic binds as list<T> (retained/iterated like
+                // any list param). The caller does the omit-fill / arg-gathering.
+                fixed pty: str = param_bind_type(ptypes[pi2]);
                 set pkind: str = "";
                 check starts(pty, "list") { pkind = "list"; }
                 check pty == "str" { pkind = "str"; }
@@ -7658,9 +8088,11 @@ whilst fi < len(fn_names) {
         push(var_names, "@fn@"); push(var_types, "@fn@");
         // Stage 5: record parameter types in the map so len(param)/string-eq on
         // params resolve at compile time. Types are space-aligned with names.
+        // v1.4.0: register the BOUND type (marker stripped) so the body sees a
+        // variadic as list<T> and an optional as its plain type.
         set ppi: i64 = 0;
         whilst ppi < len(pnames) {
-            check ppi < len(ptypes) { push(var_names, pnames[ppi]); push(var_types, ptypes[ppi]); }
+            check ppi < len(ptypes) { push(var_names, pnames[ppi]); push(var_types, param_bind_type(ptypes[ppi])); }
             ppi += 1;
         }
         // Globals are visible in every function. Register them in the type map so

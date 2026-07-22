@@ -1,13 +1,13 @@
 # The Torvik Guide
 
-A complete tutorial and reference for the Torvik programming language, version 1.3.
+A complete tutorial and reference for the Torvik programming language, version 1.4.
 
 Torvik is a compiled, statically-typed, general-purpose language with a Norse-inspired
 keyword set. It compiles to native binaries through LLVM (emitting LLVM IR that is linked
 with `clang`), and its own compiler (`torvc`) and package manager (`rune`) are written in
 Torvik itself.
 
-This guide describes **only what version 1.3 actually implements**. Features planned for
+This guide describes **only what version 1.4 actually implements**. Features planned for
 later versions are listed in [Roadmap & limitations](#roadmap--limitations) so you always
 know where the edges are.
 
@@ -165,7 +165,8 @@ echo!(char_at(greeting, 1));      // "e" (a 1-character string)
 ```
 
 `char_at(s, i)` returns the character at index `i` as a one-character string;
-`byte_at(s, i)` returns the raw byte value as an `i64`.
+`byte_at(s, i)` returns the raw byte value as an `i64`. `chr(code)` goes the
+other way — the one-character string for a byte code (`chr(65)` is `"A"`).
 
 ### Collections
 
@@ -557,6 +558,63 @@ df factorial(n: i64) -> i64 {
     return n * factorial(n - 1);
 }
 ```
+
+### Optional parameters — `^`
+
+Prefix a parameter with `^` to make it optional. A caller may leave trailing
+optional arguments off; each omitted one takes a type-appropriate zero (`0`,
+`0.0`, `false`, or `""`). Required parameters must come before optional ones, so
+positional calls stay unambiguous.
+
+```torvik
+df greet(name: str, ^count: i64, ^tag: str) -> void {
+    echo!("hi {name} x{count} [{tag}]");
+}
+
+df main() -> void {
+    greet("alpha");                 // hi alpha x0 []
+    greet("beta", 3);               // hi beta x3 []
+    greet("gamma", 5, "vip");       // hi gamma x5 [vip]
+}
+```
+
+Passing too few (missing a required argument) or too many arguments is a clean,
+located error: `function 'greet' expects 1 to 3 argument(s) but got 4`. Optional
+parameters are limited to scalar and `str` types.
+
+### Variadic parameters — `*`
+
+Prefix the **last** parameter with `*` to gather zero or more trailing arguments
+into a `list<T>`, which you iterate like any list. A function has at most one
+variadic parameter, and it combines with optional ones in the order
+required → optional → variadic.
+
+```torvik
+df join_words(sep: str, *words: str) -> str {
+    set out: str = "";
+    set first: bool = true;
+    each w in words {
+        check first { out = w; first = false; }
+        fallback { out = str_concat(out, sep, w); }
+    }
+    return out;
+}
+
+df main() -> void {
+    echo!(join_words(", "));                        // (empty)
+    echo!(join_words(", ", "a", "b", "c"));         // a, b, c
+}
+```
+
+A variadic gathers a `str` or integer-family element type.
+
+### Arguments are type-checked
+
+Every argument is checked against its parameter at the call site. A definite
+mismatch — a number where a string is expected (or the reverse), a decimal where
+an integer is expected, a list where a scalar is expected — is a clean, located
+error rather than silent garbage at run time. Ambiguous cases are left alone, so
+correct programs are never rejected.
 
 ---
 
@@ -1146,7 +1204,7 @@ types landed in v1.2.0; concurrency — `raven` tasks and `bridge` channels — 
 |------------|----------------------------------------|----------------------------------------|
 | Arithmetic | `+`  `-`  `*`  `/`  `%`                 | Prefix `-` negates (`-x`)              |
 | Comparison | `==`  `!=`  `<`  `>`  `<=`  `>=`        | Yield `bool`                           |
-| Logical    | `&&`  `\|\|`  `!`                       | Short-circuiting in conditions         |
+| Logical    | `&&`  `\|\|`  `!`                       | Short-circuiting; usable as values (v1.4.0) |
 | Bitwise    | `&`  `\|`  `^`  `~`  `<<`  `>>`         | On integer types                       |
 | Assignment | `=`  `+=`  `-=`  `*=`  `/=`  `%=`       | Compound forms update in place         |
 | Range      | `..`  `..+`                             | `..` exclusive, `..+` inclusive; used in `each` |
@@ -1174,7 +1232,19 @@ check xs[i] != "" { ... }                     // list<str> element, by content
 check "apple" < "banana" { echo!("sorted"); }
 ```
 
+**Boolean expressions are fully chainable (v1.4.0).** `&&` and `||` work as
+*values* — bind one to a variable, not just use it in a condition — and chain
+any number of operands. A boolean-returning builtin (`contains`, `starts`,
+`ends`) or user function can be compared to `true`/`false` directly.
+
+```torvik
+fixed ok:   bool = a && b;                     // && / || as a value
+fixed all:  bool = a && b && c;                // any number of operands
+check contains(line, "error") == false { ... } // bool call vs a literal
+fixed clean: bool = starts(path, "/") == false;
+```
+
 ---
 
-*This guide tracks Torvik v1.3. For the compiler and project tooling, see
+*This guide tracks Torvik v1.4. For the compiler and project tooling, see
 [TOOLING.md](TOOLING.md); for the built-in function library, see [STDLIB.md](STDLIB.md).*

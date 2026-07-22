@@ -48,9 +48,9 @@ df show_versions() -> void {
     echo!("Torvik Ecosystem Versions");
     echo!(str_concat("  torvik    v", str_concat(tv_get("torvik"), "   (language spec)")));
     echo!(str_concat("  torvc     v", str_concat(tv_get("torvc"), "   (compiler)")));
-    echo!(str_concat("  rune      v", str_concat(tv_get("rune"), "   (package manager)")));
     echo!(str_concat("  std       v", str_concat(tv_get("std"), "   (standard library)")));
     echo!(str_concat("  icons     v", str_concat(tv_get("icons"), "   (icon / file-type assets)")));
+    echo!("  rune      (package manager - versioned separately; run 'rune version')");
 }
 
 // ─── RuneVer — Torvik version comparison ─────────────────────────────────────

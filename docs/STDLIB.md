@@ -25,6 +25,7 @@ it is reported as a clean compile error, never a crash.
 | `substr(s, start, end)` | `str` | Substring from `start` up to (not including) `end` |
 | `char_at(s, i)` | `str` | The character at index `i`, as a one-character string |
 | `byte_at(s, i)` | `i64` | The raw byte value at index `i` |
+| `chr(code)` | `str` | The one-character string for a byte code — the inverse of `byte_at` (`chr(65)` is `"A"`) (new in Torvik v1.4.0) |
 | `trim(s)` | `str` | Remove leading and trailing whitespace |
 | `triml(s)` | `str` | Remove leading whitespace |
 | `trimr(s)` | `str` | Remove trailing whitespace |
@@ -181,6 +182,7 @@ echo!("Hello, {name}!");
 | `fs_mkdir(path)` | — | Create a directory, parents included (like `mkdir -p`) |
 | `fs_copy(src, dst)` | — | Binary-safe file copy — images and other non-text assets round-trip exactly (`readfile` is text) |
 | `fs_mtime(path)` | `i64` | Modification time |
+| `fs_size(path)` | `i64` | File size in bytes (new in Torvik v1.4.0) |
 | `fs_remove(path)` | — | Remove a file or directory |
 
 ## Results (`result<T>`)
@@ -388,6 +390,75 @@ df main() -> void {
     echo!(sum(xs));                          // 15
 }
 ```
+
+### `std::net` (new in Torvik v1.4.0)
+
+An opt-in, minimal HTTP layer for serving a static site or a small localhost API.
+Bring it in with `apply std::net;` (or `apply std;`). The transport primitives
+below are provided by the compiler and runtime and **dead-strip out of programs
+that never call them**, so a program that doesn't use networking pays nothing.
+
+The server model is deliberately simple and synchronous: accept a connection,
+read the request, send one response with `Connection: close`, close.
+
+**Transport primitives** (compiler/runtime):
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `net_listen(port)` | `result<i64>` | Bind and listen on `127.0.0.1:port`; the `err` carries the reason (e.g. port in use) |
+| `net_accept(server)` | `i64` | Block for the next connection; a client handle, or negative on error |
+| `net_recv(client)` | `str` | Read the pending request text from a client |
+| `net_send(client, s)` | `i64` | Send a string to a client |
+| `net_send_file(client, path)` | `i64` | Stream a file's bytes verbatim — binary-safe, so images/fonts/archives serve intact |
+| `net_close(client)` | — | Close a client connection |
+
+**HTTP protocol** (`std::net`):
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `http_method(req)` | `str` | The request method (`GET`, `HEAD`, …) |
+| `http_path(req)` | `str` | The decoded request path |
+| `http_target(req)` | `str` | The raw request target |
+| `url_decode(s)` | `str` | Percent-decode a URL component |
+| `path_is_safe(p)` | `bool` | Whether a path is free of `..` traversal |
+| `mime_type(path)` | `str` | A content type guessed from the extension |
+| `http_status_text(code)` | `str` | The reason phrase for a status code |
+| `send_text(client, code, content_type, body)` | `i64` | Send a full text response |
+| `send_file_response(client, path)` | `i64` | Send a file with headers and the right MIME type |
+| `send_status(client, code, message)` | `i64` | Send a bare status response (403, 404, …) |
+
+```torvik
+apply std::net;
+
+df main() -> void {
+    fixed lr: result<i64> = net_listen(8000);
+    check is_err(lr) { echo!("port busy"); return; }
+    fixed server: i64 = unwrap(lr);
+    echo!("serving on http://127.0.0.1:8000");
+    whilst true {
+        fixed client: i64 = net_accept(server);
+        check client >= 0 {
+            fixed req: str = net_recv(client);
+            check path_is_safe(http_path(req)) {
+                set _n: i64 = send_file_response(client, "site/index.html");
+            } fallback {
+                set _f: i64 = send_status(client, 403, "Forbidden");
+            }
+            net_close(client);
+        }
+    }
+}
+```
+
+Vefna's `vefna serve` is built entirely on `std::net`.
+
+> **Version note.** "New in Torvik v1.4.0" means these were *added* in the Torvik v1.4.0
+> release — it does **not** mean you need a "std 1.4". The standard library carries its own
+> version (currently **1.3.0**), independent of the compiler, and `std::net` works on any
+> Torvik build that ships it. The library is versioned separately precisely so that a future
+> breaking change can be gated behind a new *major* library version — you would opt into it
+> deliberately with `std = "2.0.0"` in `torvik.rune`, and it is never pulled in automatically
+> by a compiler upgrade.
 
 ---
 

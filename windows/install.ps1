@@ -16,6 +16,10 @@ $ErrorActionPreference = 'Stop'
 
 $Org = 'https://github.com/torvik-lang/torvik'
 $Raw = 'https://raw.githubusercontent.com/torvik-lang/torvik/main'
+# rune ships from its own repo now (versioned independently); the Torvik installer
+# still fetches it so a fresh install stays one step (option B, see Install-Rune).
+$RuneOrg = 'https://github.com/torvik-lang/rune'
+$RuneRaw = 'https://raw.githubusercontent.com/torvik-lang/rune/main'
 
 $InstallDir = Join-Path $env:USERPROFILE '.torvik'
 $BinDir     = Join-Path $InstallDir 'bin'
@@ -158,15 +162,13 @@ New-Item -ItemType Directory -Force -Path $BinDir,$LibDir,
 # place. torvc is downloaded the same way for consistency. A genuinely missing
 # build (e.g. a pinned version with no Windows asset) still fails clearly.
 $torvcTmp = Join-Path $BinDir 'torvc.exe.new'
-$runeTmp  = Join-Path $BinDir 'rune.exe.new'
 try {
     Download "$Rel/torvc-$OS-$Arch.exe" $torvcTmp
-    Download "$Rel/rune-$OS-$Arch.exe"  $runeTmp
 } catch {
-    Write-Host "error: could not download the Torvik v$V binaries for $OS/$Arch." -ForegroundColor Red
+    Write-Host "error: could not download the Torvik v$V torvc build for $OS/$Arch." -ForegroundColor Red
     Write-Host '  If you pinned a version, check it has a Windows build at'
     Write-Host '  https://github.com/torvik-lang/torvik/releases'
-    Remove-Item -Force -ErrorAction SilentlyContinue $torvcTmp, $runeTmp
+    Remove-Item -Force -ErrorAction SilentlyContinue $torvcTmp
     exit 1
 }
 
@@ -190,7 +192,6 @@ function Install-Binary([string]$New, [string]$Final) {
 }
 
 Install-Binary $torvcTmp (Join-Path $BinDir 'torvc.exe')
-Install-Binary $runeTmp  (Join-Path $BinDir 'rune.exe')
 
 # --- runtime + standard library --------------------------------------------
 Download "$RawRef/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
@@ -285,6 +286,29 @@ Write-Host ''
 # (a self-update via `rune update`). It's just the previous rune.exe; if it's
 # still locked this pass, it'll be removable next run.
 Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BinDir 'rune.exe.old'), (Join-Path $BinDir 'torvc.exe.old')
+
+# --- rune (package manager) -------------------------------------------------
+# Fetch the latest rune from its own repo so a fresh install is one step. Uses
+# the same rename-aside trick as torvc since rune.exe may be the running process
+# (a `rune update`). Non-fatal: torvc works without it.
+function Install-Rune {
+    try {
+        $rv = ((Invoke-WebRequest -UseBasicParsing "$RuneRaw/VERSION").Content -split "`n" |
+               Where-Object { $_ -match '^\s*rune\s*=\s*(.+?)\s*$' } |
+               ForEach-Object { $Matches[1].Trim() } | Select-Object -First 1)
+        if (-not $rv) { return $false }
+        $tmp = Join-Path $BinDir 'rune.exe.new'
+        Download "$RuneOrg/releases/download/v$rv/rune-$OS-$Arch.exe" $tmp
+        Install-Binary $tmp (Join-Path $BinDir 'rune.exe')
+        "rune = $rv" | Set-Content -Encoding ASCII (Join-Path $InstallDir 'rune.VERSION')
+        Write-Host "Installed rune v$rv (from torvik-lang/rune)."
+        return $true
+    } catch { return $false }
+}
+if (-not (Install-Rune)) {
+    Write-Host 'note: rune (the package manager) was not installed - could not reach its repo.' -ForegroundColor Yellow
+    Write-Host "  Add it any time with:  iwr -useb $RuneRaw/windows/install.ps1 | iex"
+}
 
 Write-Host "Torvik v$V installed."
 Write-Host '>>> Open a NEW terminal (so PATH refreshes), then:  rune --version'

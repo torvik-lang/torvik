@@ -1,7 +1,32 @@
 # Torvik Roadmap
 
 
-## v1.3.0 — current public release
+## v1.4.0 — current public release
+
+- **Optional (`^`) and variadic (`*`) parameters.** Mark a trailing parameter `^` to let
+  callers omit it (it takes a type-appropriate zero), or `*` to gather the remaining
+  arguments into a `list<T>`. They combine in the order required → optional → variadic, and
+  arity errors are clean located ranges.
+- **Comprehensive argument type-checking.** A definite mismatch between an argument and its
+  parameter (string vs number, container vs scalar, `f64` vs integer, str-list vs raw-list)
+  is now a clean located error instead of silent garbage or a crash.
+- **Boolean chaining is limit-free.** `&&` / `||` work as values bound to a variable, chain
+  any number of operands, and a boolean-returning builtin or user function can be compared
+  to `true`/`false` directly — the last of the old "bind to a variable first" rough edges.
+- **`std::net` — a minimal HTTP layer.** `apply std::net;` adds request parsing, MIME types,
+  and binary-safe file serving over transport primitives (`net_listen`/`net_accept`/
+  `net_recv`/`net_send`/`net_send_file`/`net_close`) that dead-strip out when unused. Powers
+  Vefna's `vefna serve`.
+- **`chr(code)` and `fs_size(path)` builtins**; **standard library v1.3.0**.
+- **`rune` decoupled** into its own repository, versioned independently (still installed with
+  the toolchain).
+- Fixes: exhaustive `when` flow-checker false positive; boolean-literal argument IR; `bool`
+  user-function return storage; single-character function-name resolution under `apply std`.
+
+---
+
+
+## v1.3.0
 
 - **File-system surface for real tools** — `dir_list(path)` (sorted directory entry names
   as `list<str>`), `fs_is_dir(path)`, and `fs_copy(src, dst)` (binary-safe, so images and

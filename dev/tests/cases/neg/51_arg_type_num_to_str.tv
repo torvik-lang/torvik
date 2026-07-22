@@ -1,0 +1,4 @@
+df greet(name: str) -> void { echo!(name); }
+df main() -> void {
+    greet(42);
+}

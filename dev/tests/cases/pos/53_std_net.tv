@@ -1,0 +1,40 @@
+// v1.3.0 std: the std::net HTTP helpers (request parsing, MIME, responses).
+// Socket behavior is covered by manual smoke tests; this exercises the pure
+// protocol logic, which is deterministic.
+apply std::net;
+
+df main() -> void {
+    // request line parsing
+    fixed req: str = "GET /posts/a%20b.html?tag=x HTTP/1.1";
+    echo!(http_method(req));         // GET
+    echo!(http_target(req));         // /posts/a%20b.html?tag=x
+    echo!(http_path(req));           // /posts/a b.html   (query stripped, decoded)
+
+    // url decoding
+    echo!(url_decode("/plain/path"));        // unchanged (fast path)
+    echo!(url_decode("a%2Fb%2Ec"));          // a/b.c
+    echo!(url_decode("100%25"));             // 100%
+
+    // path safety
+    echo!(path_is_safe("/ok/index.html"));   // true
+    echo!(path_is_safe("/../secret"));       // false
+    echo!(path_is_safe("/a/../b"));          // false
+
+    // mime types (extension, case-insensitive)
+    echo!(mime_type("index.html"));
+    echo!(mime_type("style.CSS"));
+    echo!(mime_type("app.js"));
+    echo!(mime_type("photo.png"));
+    echo!(mime_type("data.bin"));
+
+    // status text (exhaustive when + fallback, every arm returns)
+    echo!(http_status_text(200));
+    echo!(http_status_text(404));
+    echo!(http_status_text(500));
+    echo!(http_status_text(418));    // fallback -> OK
+
+    // header block ends with a blank line
+    fixed h: str = http_header(200, "text/plain", 5);
+    echo!(fmt("hdr_ok={}", ends(h, "\r\n\r\n")));
+    echo!(fmt("has_len={}", contains(h, "Content-Length: 5")));
+}
