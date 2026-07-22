@@ -1,0 +1,172 @@
+// std/net.tv — Torvik standard library: a minimal HTTP layer over std::net's
+// transport primitives.
+//
+// Part of the standard library. Bring in with `apply std::net;` or `apply std;`.
+// The transport itself — net_listen / net_accept / net_recv / net_send /
+// net_send_file / net_close, plus fs_size and chr — is provided by the compiler
+// and runtime (they dead-strip out of programs that never call them). This module
+// adds the pure-Torvik protocol on top: request parsing, MIME types, and response
+// builders sufficient to serve a static site or a small API from localhost.
+//
+// The server model is deliberately simple and synchronous: accept a connection,
+// read the request, send one response with `Connection: close`, close. That is
+// all a preview/dev server needs, and it keeps the surface tiny.
+
+apply std::path;
+
+// ── Request parsing ───────────────────────────────────────────────────────────
+
+// The method of an HTTP request line: "GET /x HTTP/1.1" -> "GET".
+df http_method(req: str) -> str {
+    fixed sp: i64 = find(req, " ");
+    check sp < 0 { return ""; }
+    return substr(req, 0, sp);
+}
+
+// The raw request target — path plus any query: "GET /a?b=1 HTTP/1.1" -> "/a?b=1".
+df http_target(req: str) -> str {
+    fixed sp1: i64 = find(req, " ");
+    check sp1 < 0 { return "/"; }
+    fixed rest: str = substr(req, sp1 + 1, len(req));
+    fixed sp2: i64 = find(rest, " ");
+    check sp2 < 0 { return rest; }
+    return substr(rest, 0, sp2);
+}
+
+// Hex digit value (0-15) of an ASCII byte, or -1 if it is not a hex digit.
+df _net_hex_val(c: i64) -> i64 {
+    check c >= 48 && c <= 57  { return c - 48; }   // '0'-'9'
+    check c >= 65 && c <= 70  { return c - 55; }   // 'A'-'F'
+    check c >= 97 && c <= 102 { return c - 87; }   // 'a'-'f'
+    return -1;
+}
+
+// Percent-decode a URL path: "%20" -> " ". '+' is left literal (it means a space
+// only in query strings, not in paths). A malformed escape passes through as-is.
+df url_decode(s: str) -> str {
+    check find(s, "%") < 0 { return s; }   // fast path: nothing to decode
+    set out: str = "";
+    set i: i64 = 0;
+    fixed n: i64 = len(s);
+    whilst i < n {
+        fixed c: i64 = byte_at(s, i);
+        check c == 37 && i + 2 < n {        // '%'
+            fixed hi: i64 = _net_hex_val(byte_at(s, i + 1));
+            fixed lo: i64 = _net_hex_val(byte_at(s, i + 2));
+            check hi >= 0 && lo >= 0 {
+                out = str_concat(out, chr(hi * 16 + lo));
+                i += 3;
+            } fallback {
+                out = str_concat(out, chr(c));
+                i += 1;
+            }
+        } fallback {
+            out = str_concat(out, chr(c));
+            i += 1;
+        }
+    }
+    return out;
+}
+
+// The decoded request path with the query string removed: "/a%20b?x=1" -> "/a b".
+df http_path(req: str) -> str {
+    fixed tgt: str = http_target(req);
+    set p: str = tgt;
+    fixed q: i64 = find(tgt, "?");
+    check q >= 0 { p = substr(tgt, 0, q); }
+    return url_decode(p);
+}
+
+// ── Path safety ───────────────────────────────────────────────────────────────
+
+// True when a decoded path is safe to map under a document root: no ".." segment
+// to climb out of the root, and no backslash separators. A server should reject
+// (403/404) anything this returns false for rather than opening the file. A "%00"
+// escape decodes to nothing (chr(0) is ""), so null-byte tricks collapse away.
+df path_is_safe(p: str) -> bool {
+    check contains(p, "..") { return false; }
+    check contains(p, "\\") { return false; }
+    return true;
+}
+
+// ── MIME types ────────────────────────────────────────────────────────────────
+
+// The Content-Type for a file, chosen by extension. Unknown types fall back to
+// application/octet-stream so browsers download rather than mis-render them.
+df mime_type(path: str) -> str {
+    fixed e: str = lower(path_ext(path));
+    check e == ".html" || e == ".htm" { return "text/html; charset=utf-8"; }
+    check e == ".css"                 { return "text/css; charset=utf-8"; }
+    check e == ".js" || e == ".mjs"   { return "text/javascript; charset=utf-8"; }
+    check e == ".json"                { return "application/json; charset=utf-8"; }
+    check e == ".svg"                 { return "image/svg+xml"; }
+    check e == ".png"                 { return "image/png"; }
+    check e == ".jpg" || e == ".jpeg" { return "image/jpeg"; }
+    check e == ".gif"                 { return "image/gif"; }
+    check e == ".webp"                { return "image/webp"; }
+    check e == ".ico"                 { return "image/x-icon"; }
+    check e == ".txt" || e == ".md"   { return "text/plain; charset=utf-8"; }
+    check e == ".xml"                 { return "application/xml; charset=utf-8"; }
+    check e == ".woff2"               { return "font/woff2"; }
+    check e == ".woff"                { return "font/woff"; }
+    check e == ".ttf"                 { return "font/ttf"; }
+    check e == ".pdf"                 { return "application/pdf"; }
+    check e == ".wasm"                { return "application/wasm"; }
+    return "application/octet-stream";
+}
+
+// ── Responses ─────────────────────────────────────────────────────────────────
+
+// The reason phrase for a status code (an exhaustive `when` with a `fallback`).
+df http_status_text(code: i64) -> str {
+    when code {
+        200 => { return "OK"; }
+        301 => { return "Moved Permanently"; }
+        302 => { return "Found"; }
+        304 => { return "Not Modified"; }
+        400 => { return "Bad Request"; }
+        403 => { return "Forbidden"; }
+        404 => { return "Not Found"; }
+        405 => { return "Method Not Allowed"; }
+        500 => { return "Internal Server Error"; }
+        fallback => { return "OK"; }
+    }
+}
+
+// A response header block (status line + headers + the blank line) for a body of
+// the given length. Send this, then the body: net_send for text, net_send_file
+// for binary. `Connection: close` — one request per connection keeps it simple.
+df http_header(code: i64, content_type: str, length: i64) -> str {
+    return fmt("HTTP/1.0 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", code, http_status_text(code), content_type, length);
+}
+
+// Send a complete text response (header + body). Returns bytes sent, or -1.
+df send_text(client: i64, code: i64, content_type: str, body: str) -> i64 {
+    fixed hdr: str = http_header(code, content_type, len(body));
+    fixed h: i64 = net_send(client, hdr);
+    check h < 0 { return -1; }
+    fixed b: i64 = net_send(client, body);
+    check b < 0 { return -1; }
+    return h + b;
+}
+
+// Send a file as the response body: binary-safe, Content-Type by extension, and a
+// byte-exact Content-Length from the file's size. Returns bytes sent, or -1 if
+// the file cannot be read (the caller should then send a 404).
+df send_file_response(client: i64, path: str) -> i64 {
+    fixed sz: i64 = fs_size(path);
+    check sz < 0 { return -1; }
+    fixed hdr: str = http_header(200, mime_type(path), sz);
+    fixed h: i64 = net_send(client, hdr);
+    check h < 0 { return -1; }
+    fixed b: i64 = net_send_file(client, path);
+    check b < 0 { return -1; }
+    return h + b;
+}
+
+// Send a minimal text/plain status response (e.g. 404 Not Found). Returns bytes
+// sent, or -1.
+df send_status(client: i64, code: i64, message: str) -> i64 {
+    fixed body: str = fmt("{} {}\n", code, message);
+    return send_text(client, code, "text/plain; charset=utf-8", body);
+}
