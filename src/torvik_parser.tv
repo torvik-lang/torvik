@@ -466,8 +466,17 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
             // is part of a param's type annotation (after its colon).
             set reading_type: i64 = 0;
             set cur_type: str = "";
+            // v1.4.0 param modifiers: a `^` before a param name marks it OPTIONAL
+            // (callers may omit it; it defaults to a zero value), and a `*` marks
+            // it VARIADIC (gathers zero or more trailing args into a list<T>). The
+            // marker precedes the name and is folded onto the param's TYPE string
+            // as a prefix ("?T" optional, "...T" variadic) so it rides the existing
+            // param-type plumbing to the validator, body binder, and call sites.
+            set pend_mark: str = "";
             whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_RPAREN {
                 fixed sk: i64 = tok_peek(tokens, pos);
+                check sk == OP_CARET && reading_type == 0 { pend_mark = "?"; }
+                check sk == OP_STAR && reading_type == 0 { pend_mark = "..."; }
                 check sk == TOK_IDENT {
                     fixed pk: i64 = tok_peek(tokens, pos + 1);
                     check pk == PUNCT_COLON {
@@ -493,8 +502,8 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
                 check sk == PUNCT_COMMA {
                     check reading_type == 1 {
                         check len(param_types) > 0 { param_types = str_concat(param_types, " "); }
-                        param_types = str_concat(param_types, cur_type);
-                        reading_type = 0; cur_type = "";
+                        param_types = str_concat(param_types, str_concat(pend_mark, cur_type));
+                        reading_type = 0; cur_type = ""; pend_mark = "";
                     }
                 }
                 pos += 1;
@@ -502,7 +511,7 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
             // Flush the final param's type (no trailing comma before the close paren).
             check reading_type == 1 {
                 check len(param_types) > 0 { param_types = str_concat(param_types, " "); }
-                param_types = str_concat(param_types, cur_type);
+                param_types = str_concat(param_types, str_concat(pend_mark, cur_type));
             }
             check tok_peek(tokens, pos) == PUNCT_RPAREN { pos += 1; }
             // Parse -> TYPE — capture the full return type, including any <...>
