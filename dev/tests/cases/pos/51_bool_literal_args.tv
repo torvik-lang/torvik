@@ -1,0 +1,26 @@
+// v1.3.1: passing a bool *literal* as a function argument. The arg-type dispatch
+// used to fire two branches for a "bool"-typed arg, emitting a doubled type
+// prefix (`i64 %tNptr %tN`) that clang rejected. Literals now pass as scalars.
+df pick(c: bool) -> str {
+    check c { return "yes"; } fallback { return "no"; }
+}
+
+df to_int(c: bool) -> i64 {
+    check c { return 1; } fallback { return 0; }
+}
+
+// void-context call (statement path) with a bool literal.
+df log_it(on: bool, msg: str) -> void {
+    check on { echo!(msg); }
+}
+
+df main() -> void {
+    echo!(pick(true));
+    echo!(pick(false));
+    echo!(to_int(true));
+    echo!(to_int(false));
+    set b: bool = true;
+    echo!(pick(b));
+    log_it(true, "shown");
+    log_it(false, "hidden");
+}

@@ -1,0 +1,24 @@
+// v1.4.0: boolean chaining is limit-free. `&&` / `||` work as VALUE expressions
+// bound to a variable (not just inside a condition), including three-way, and a
+// bool-returning builtin or user function can be compared to `true`/`false`.
+apply std;
+df positive(n: i64) -> bool { return n > 0; }
+df main() -> void {
+    fixed a: bool = true;
+    fixed b: bool = false;
+    fixed c: bool = true;
+    fixed and2: bool = a && b;          // false
+    fixed or2: bool = a || b;           // true
+    fixed and3: bool = a && c && true;  // true
+    echo!(and2);
+    echo!(or2);
+    echo!(and3);
+    // bool builtin compared to a literal
+    check contains("hello", "z") == false { echo!("no z"); }
+    check starts("hello", "he") == true { echo!("starts he"); }
+    // bool builtin comparison bound to a variable
+    fixed missing: bool = contains("hello", "q") == false;
+    echo!(missing);
+    // user bool function compared to a literal
+    check positive(0) == false { echo!("not positive"); }
+}
