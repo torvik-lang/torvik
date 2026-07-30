@@ -1,12 +1,14 @@
-# run_tests.ps1 - Torvik v1.3.x end-to-end test suite (Windows 10+).
-# Usage: powershell -ExecutionPolicy Bypass -File run_tests.ps1 [torvc-path] [rune-path]
-#   Defaults to `torvc` / `rune` on PATH.
+# run_tests.ps1 - Torvik v1.5.x end-to-end test suite (Windows 10+).
+# Usage: powershell -ExecutionPolicy Bypass -File run_tests.ps1 [torvc-path]
+#   Defaults to `torvc` on PATH.
+#
+# v1.5.0: rune ships from its own repository and is tested there, so this suite
+# needs only the compiler.
 # All work happens in .\tv-test-work (never %TEMP%). Exit code: 0 all pass, 1 any failure.
 # Full log in .\tv-test-work\results.log
 
 param(
-    [string]$Torvc = "torvc",
-    [string]$Rune  = "rune"
+    [string]$Torvc = "torvc"
 )
 
 $ErrorActionPreference = "Continue"
@@ -29,9 +31,7 @@ function Get-Cmd([string]$name) {
     return $c.Source
 }
 $TorvcExe = Get-Cmd $Torvc
-$RuneExe  = Get-Cmd $Rune
 Note "== torvc: $(& $TorvcExe --version 2>&1) =="
-Note "== rune:  $(& $RuneExe --version 2>&1) =="
 Note "== host:  $([System.Environment]::OSVersion.VersionString) =="
 
 # Normalize output: CRLF -> LF, strip one trailing newline (matches .out goldens)
@@ -121,112 +121,6 @@ Get-ChildItem (Join-Path $Here "cases\neg\*.tv") | ForEach-Object {
     }
 }
 
-# ---------- rune cases ----------
-Note ""
-Note "== RUNE CASES =="
-function Rune-Case([string]$name, [scriptblock]$body) {
-    $d = Join-Path $Work "rune_$name"
-    New-Item -ItemType Directory -Path $d | Out-Null
-    Push-Location $d
-    $ok = $false
-    try { $ok = & $body } catch { $ok = $false; Add-Content $Log "      exception: $_" }
-    Pop-Location
-    if ($ok) { $script:PASS++; Note "ok    rune/$name" }
-    else     { $script:FAIL++; $script:FAILED += "rune/$name"; Note "FAIL  rune/$name" }
-}
-
-Rune-Case "new_build_run" {
-    & $RuneExe new myapp *> $null; if ($LASTEXITCODE -ne 0) { return $false }
-    if (-not (Test-Path "myapp\torvik.rune")) { return $false }
-    if (-not (Test-Path "myapp\src\main.tv")) { return $false }
-    Set-Location myapp
-    & $RuneExe build *> $null; if ($LASTEXITCODE -ne 0) { return $false }
-    if (-not ((Test-Path "build\myapp.exe") -or (Test-Path "build\myapp"))) { return $false }
-    $out = & $RuneExe run 2>&1 | Out-String
-    return ($out -match "(?i)hello")
-}
-
-Rune-Case "incremental" {
-    & $RuneExe new capp *> $null; Set-Location capp
-    & $RuneExe run *> first.log
-    & $RuneExe run *> second.log
-    $second = Get-Content second.log -Raw
-    return (($second -match "(?i)cache|up.to.date|unchanged") -or ($second -notmatch "(?i)compil"))
-}
-
-Rune-Case "exit_propagation" {
-    & $RuneExe new eapp *> $null; Set-Location eapp
-    Set-Content "src\main.tv" "df main() -> void {`n    exit(4);`n}`n"
-    & $RuneExe run *> $null
-    return ($LASTEXITCODE -eq 4)
-}
-
-Rune-Case "clean_list_version" {
-    & $RuneExe new lapp *> $null; Set-Location lapp
-    & $RuneExe build *> $null; if ($LASTEXITCODE -ne 0) { return $false }
-    $lst = & $RuneExe list 2>&1 | Out-String
-    if ($lst -notmatch "(?i)lapp") { return $false }
-    & $RuneExe clean *> $null
-    if (Test-Path "build") { return $false }
-    $ver = & $RuneExe version 2>&1 | Out-String
-    return ($ver -match "1\.")
-}
-
-Rune-Case "min_version_gate" {
-    & $RuneExe new vapp *> $null; Set-Location vapp
-    $m = Get-Content torvik.rune -Raw
-    if ($m -match "(?m)^torvik\s*=") { $m = $m -replace "(?m)^torvik\s*=.*$", 'torvik = "99.0.0"' }
-    else { $m += "`ntorvik = `"99.0.0`"`n" }
-    Set-Content torvik.rune $m
-    & $RuneExe build *> b.log
-    if ($LASTEXITCODE -eq 0) { return $false }
-    return ((Get-Content b.log -Raw) -match "(?i)update|version")
-}
-
-Rune-Case "missing_entry" {
-    New-Item -ItemType Directory -Path p1 | Out-Null; Set-Location p1
-    Set-Content torvik.rune "[project]`nname = `"p1`"`n"
-    & $RuneExe build *> b.log
-    if ($LASTEXITCODE -eq 0) { return $false }
-    return ((Get-Content b.log -Raw) -match "main\.tv")
-}
-
-Rune-Case "bad_name" {
-    & $RuneExe new "bad/name" *> $null
-    if ($LASTEXITCODE -eq 0) { return $false }
-    & $RuneExe new "" *> $null
-    if ($LASTEXITCODE -eq 0) { return $false }
-    return $true
-}
-
-Rune-Case "final_build" {
-    & $RuneExe new fapp *> $null; Set-Location fapp
-    & $RuneExe build --final *> $null; if ($LASTEXITCODE -ne 0) { return $false }
-    $exe = if (Test-Path "build\fapp.exe") { ".\build\fapp.exe" } else { ".\build\fapp" }
-    $out = & $exe 2>&1 | Out-String
-    return ($out -match "(?i)hello")
-}
-
-# std version gate
-$d = Join-Path $Work "rune_std_gate"
-New-Item -ItemType Directory -Path $d | Out-Null
-Push-Location $d
-& $RuneExe new gproj *> $null
-Push-Location gproj
-Add-Content torvik.rune 'std         = "9.0.0"'
-& $RuneExe build *> g1.log
-$r1 = $LASTEXITCODE
-(Get-Content torvik.rune -Raw) -replace 'std         = "9.0.0"', 'std         = "0.1.0"' | Set-Content torvik.rune
-& $RuneExe build *> g2.log
-$r2 = $LASTEXITCODE
-if ($r1 -eq 1 -and ((Get-Content g1.log -Raw) -match "requires standard library") -and $r2 -eq 0) {
-    $script:PASS++; Note "ok    rune/std_version_gate"
-} else {
-    $script:FAIL++; $script:FAILED += "rune/std_version_gate"; Note "FAIL  rune/std_version_gate"
-}
-Pop-Location
-Pop-Location
-
 # ---------- torvc flag cases ----------
 Note ""
 Note "== TORVC FLAG CASES =="
@@ -273,13 +167,24 @@ Flag-Case "version_help" {
     & $TorvcExe -h *> h.log
     return $true
 }
-Flag-Case "derived_name" {
+# v1.5.0: no -o => RUN mode (python3-style). Executes the file, forwards extra
+# args to the program, and leaves no binary behind.
+Flag-Case "run_mode" {
     Remove-Item flag.exe, flag -ErrorAction SilentlyContinue
-    & $TorvcExe flag.tv -q *> d.log
-    if ($LASTEXITCODE -ne 0) { return $false }
-    $exe = if (Test-Path ".\flag.exe") { ".\flag.exe" } else { ".\flag" }
-    if (-not (Test-Path $exe)) { return $false }
-    return ((& $exe) -eq "flagtest")
+    $out = (& $TorvcExe flag.tv 2>&1 | Out-String)
+    if ($out -notmatch "flagtest") { return $false }
+    if ((Test-Path ".\flag.exe") -or (Test-Path ".\flag")) { return $false }
+    return $true
+}
+Flag-Case "run_args" {
+    @'
+df main() -> void {
+    fixed n: i64 = args();
+    check n >= 2 { echo!(args_get(1)); } fallback { echo!("noargs"); }
+}
+'@ | Set-Content -Encoding ASCII argfwd.tv
+    $out = (& $TorvcExe argfwd.tv HELLO 2>&1 | Out-String)
+    return ($out -match "HELLO")
 }
 Flag-Case "missing_source" {
     & $TorvcExe no_such_file.tv -o x -q *> m.log
