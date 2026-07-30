@@ -191,17 +191,72 @@ dl "$REL/torvc-$OS-$ARCH" "$BIN_DIR/torvc.new" 2>/dev/null || {
 }
 mv "$BIN_DIR/torvc.new" "$BIN_DIR/torvc"
 chmod +x "$BIN_DIR/torvc"
-for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv std.tv; do dl "$RAW_REF/src/$a" "$LIB_DIR/$a"; done
+# std.tv is no longer among these - it comes from the std repo below.
+for a in torvik_lexer.tv torvik_parser.tv torvik_codegen.tv diag.tv; do dl "$RAW_REF/src/$a" "$LIB_DIR/$a"; done
 dl "$RAW_REF/runtime/torvik_runtime.c" "$LIB_DIR/torvik_runtime.c"
 dl "$RAW_REF/VERSION" "$LIB_DIR/VERSION"
-mkdir -p "$LIB_DIR/std"
-# Derive the module list from the umbrella (std.tv) we just installed, so a new
-# module ships automatically once it's added to `apply std::X;` there. A
-# hardcoded list silently skipped new modules (v1.2.0's std::convert), and this
-# runs over HTTP where a directory glob isn't available.
-for a in $(grep -oE '^apply std::[a-z_]+' "$LIB_DIR/std.tv" | sed 's/^apply std:://'); do
-    dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv"
-done
+
+# --- standard library -------------------------------------------------------
+# v1.5.0: std lives in its own repository (torvik-lang/std) with its own version
+# line, so a project can hold it on one major while the toolchain moves on.
+#
+# Older Torvik releases carried std inside their own tree. Git tags are immutable,
+# so for a pinned install of anything before v1.5.0 the matching std is still right
+# there at that tag - use it, and those versions keep working untouched. Anything
+# else takes std from the std repo.
+STD_ORG="https://github.com/torvik-lang/std"
+STD_RAW="https://raw.githubusercontent.com/torvik-lang/std"
+
+std_from_torvik_tag() {
+    # Pre-split layout: src/std.tv + src/std/<mod>.tv in the Torvik repo.
+    dl "$RAW_REF/src/std.tv" "$LIB_DIR/std.tv" || return 1
+    mkdir -p "$LIB_DIR/std"
+    for a in $(grep -oE '^apply std::[a-z_]+' "$LIB_DIR/std.tv" | sed 's/^apply std:://'); do
+        dl "$RAW_REF/src/std/$a.tv" "$LIB_DIR/std/$a.tv" || return 1
+    done
+    grep -E '^[[:space:]]*std[[:space:]]*=' "$LIB_DIR/VERSION" > "$LIB_DIR/std.VERSION" 2>/dev/null || true
+    return 0
+}
+
+std_from_std_repo() {
+    # Which std? A pinned toolchain asks for the version its VERSION file names, so
+    # the pair stays matched. A latest install takes the newest published std.
+    _sv=""
+    if [ -n "$TORVIK_VERSION" ]; then
+        _sv="$(grep -E '^[[:space:]]*std[[:space:]]*=' "$LIB_DIR/VERSION" 2>/dev/null | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    fi
+    if [ -z "$_sv" ]; then
+        _sv="$(fetch "$STD_RAW/main/VERSION" 2>/dev/null | grep -E '^[[:space:]]*std' | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    fi
+    [ -n "$_sv" ] || return 1
+    _sref="$STD_RAW/v$_sv/src"
+    dl "$_sref/std.tv" "$LIB_DIR/std.tv" || return 1
+    mkdir -p "$LIB_DIR/std"
+    # Module list is DERIVED from the umbrella, never hardcoded - a hardcoded list
+    # silently skipped std::convert when it was added in v1.2.0.
+    for a in $(grep -oE '^apply std::[a-z_]+' "$LIB_DIR/std.tv" | sed 's/^apply std:://'); do
+        dl "$_sref/$a.tv" "$LIB_DIR/std/$a.tv" || return 1
+    done
+    printf 'std = %s\n' "$_sv" > "$LIB_DIR/std.VERSION"
+    return 0
+}
+
+# Pinned to a pre-1.5.0 Torvik? Take std from that tag, where it still lives.
+_use_old_std=0
+if [ -n "$TORVIK_VERSION" ]; then
+    _tvmaj="$(printf '%s' "$V" | cut -d. -f1)"
+    _tvmin="$(printf '%s' "$V" | cut -d. -f2)"
+    if [ "$_tvmaj" = "1" ] && [ "${_tvmin:-0}" -lt 5 ] 2>/dev/null; then _use_old_std=1; fi
+fi
+
+if [ "$_use_old_std" = "1" ]; then
+    std_from_torvik_tag || { echo "warning: could not install the standard library from the v$V tag." >&2; }
+else
+    std_from_std_repo || {
+        echo "warning: could not install the standard library from $STD_ORG." >&2
+        echo "         torvc works without it; 'apply std' will not." >&2
+    }
+fi
 
 # --- rune (package manager) -------------------------------------------------
 # rune now lives in its own repo (torvik-lang/rune) with its own version line, so
