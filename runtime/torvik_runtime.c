@@ -22,6 +22,204 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#ifdef TORVIK_BARE
+/* ── Freestanding build (torvc --bare) ─────────────────────────────────────
+ * There is no C library here. Only the headers a compiler must provide without
+ * one are available; everything else is declared by hand and supplied by the
+ * program itself (malloc/free come from its on_alloc/on_free hooks, the string
+ * helpers are emitted as IR by torvc).
+ *
+ * The functions that genuinely need an operating system - files, directories,
+ * processes, sockets, the clock - are compiled out below rather than left to
+ * fail at link time. torvc already refuses to CALL them in a bare build, so a
+ * freestanding image can never miss them.
+ *
+ * This is what makes a bare build host-independent: the runtime is compiled for
+ * the TARGET, so a kernel built on Windows is the same ELF as one built on Linux.
+ */
+#include <stdint.h>
+#include <stdarg.h>
+#include <stddef.h>
+void  *malloc(size_t);
+void   free(void *);
+void  *memcpy(void *, const void *, size_t);
+void  *memmove(void *, const void *, size_t);
+void  *memset(void *, int, size_t);
+int    memcmp(const void *, const void *, size_t);
+size_t strlen(const char *);
+int    strcmp(const char *, const char *);
+char  *strcpy(char *, const char *);
+char  *strcat(char *, const char *);
+char  *strchr(const char *, int);
+char  *strstr(const char *, const char *);
+int    snprintf(char *, size_t, const char *, ...);
+void  *realloc(void *, size_t);
+char  *strdup(const char *);
+long long strtoll(const char *, char **, int);
+void   exit(int);
+/* Torvik emits freestanding definitions for these in a bare image; the panic path
+   is the only thing that reaches them, and bare, a panic parks the machine. */
+typedef struct _TORVIK_FILE TORVIK_FILE;
+#define FILE TORVIK_FILE
+extern FILE *stderr;
+extern FILE *stdout;
+extern FILE *stdin;
+typedef long ssize_t;
+extern int errno;
+double strtod(const char *, char **);
+int    toupper(int);
+int    tolower(int);
+int    isspace(int);
+int    isdigit(int);
+int    isalpha(int);
+int    isalnum(int);
+double fabs(double);
+double floor(double);
+double ceil(double);
+double sqrt(double);
+double pow(double, double);
+int    strncmp(const char *, const char *, size_t);
+char  *strerror(int);
+FILE  *fopen(const char *, const char *);
+int    fprintf(FILE *, const char *, ...);
+int    getchar(void);
+/* termios lives only in the hosted read-a-key path, which a freestanding image
+   cannot use (there is no terminal). Give the type a stand-in so the file parses;
+   --gc-sections drops the function, since torvc refuses to call it bare. */
+struct termios { int c_iflag, c_oflag, c_cflag, c_lflag; unsigned char c_cc[32]; };
+int    tcgetattr(int, struct termios *);
+int    tcsetattr(int, int, const struct termios *);
+#define STDIN_FILENO 0
+#define TCSANOW 0
+#define ICANON 2
+#define ECHO 8
+#define VMIN 6
+#define VTIME 5
+#define TCSAFLUSH 2
+int    fseek(FILE *, long, int);
+long   ftell(FILE *);
+size_t fread(void *, size_t, size_t, FILE *);
+size_t fwrite(const void *, size_t, size_t, FILE *);
+int    fclose(FILE *);
+int    fgetc(FILE *);
+int    fputc(int, FILE *);
+int    remove(const char *);
+int    rename(const char *, const char *);
+int    puts(const char *);
+int    printf(const char *, ...);
+int    vsnprintf(char *, size_t, const char *, va_list);
+int    atoi(const char *);
+long   atol(const char *);
+void   qsort(void *, size_t, size_t, int (*)(const void *, const void *));
+int    abs(int);
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#define EOF (-1)
+#define NULL ((void*)0)
+#define RAND_MAX 2147483647
+char  *getenv(const char *);
+int    getpid(void);
+int    rand(void);
+void   srand(unsigned);
+void   rewind(FILE *);
+typedef long time_t;
+time_t time(time_t *);
+struct tm { int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst; };
+struct tm *localtime(const time_t *);
+size_t strftime(char *, size_t, const char *, const struct tm *);
+struct timeval { long tv_sec, tv_usec; };
+int    gettimeofday(struct timeval *, void *);
+struct timespec { long tv_sec, tv_nsec; };
+int    nanosleep(const struct timespec *, struct timespec *);
+void  *calloc(size_t, size_t);
+int    system(const char *);
+long   sysconf(int);
+char  *torvik_getcwd(char *, size_t);
+#define _SC_NPROCESSORS_ONLN 84
+#define WIFEXITED(s) (((s) & 0x7f) == 0)
+struct utsname { char sysname[65], nodename[65], release[65], version[65], machine[65]; };
+int    uname(struct utsname *);
+struct sysinfo { long uptime; unsigned long loads[3], totalram, freeram, sharedram, bufferram, totalswap, freeswap; unsigned short procs; unsigned int mem_unit; };
+int    sysinfo(struct sysinfo *);
+typedef struct _TORVIK_DIR DIR;
+struct dirent { char d_name[256]; };
+DIR   *opendir(const char *);
+struct dirent *readdir(DIR *);
+int    closedir(DIR *);
+int    mkdir(const char *, unsigned);
+int    torvik_access(const char *, int);
+struct stat { unsigned long st_mode, st_size, st_mtime; };
+int    stat(const char *, struct stat *);
+#define F_OK 0
+#define S_IFMT  0170000
+#define S_IFDIR 0040000
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define WEXITSTATUS(s) (((s) >> 8) & 0xff)
+#define WIFSIGNALED(s) (((s) & 0x7f) != 0 && ((s) & 0x7f) != 0x7f)
+#define WTERMSIG(s) ((s) & 0x7f)
+int    open(const char *, int, ...);
+int    openat(int, const char *, int, ...);
+int    close(int);
+DIR   *fdopendir(int);
+int    fstatat(int, const char *, struct stat *, int);
+int    lstat(const char *, struct stat *);
+int    unlinkat(int, const char *, int);
+char  *strrchr(const char *, int);
+#define O_RDONLY 0
+#define O_DIRECTORY 0200000
+#define O_NOFOLLOW 0400000
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR 0x200
+/* Threads need a scheduler, which a freestanding image does not have. Declared so
+   the file parses; --gc-sections drops them because torvc will not let a bare
+   program spawn a raven. */
+typedef unsigned long pthread_t;
+typedef struct { long o[8]; } pthread_attr_t;
+typedef struct { long o[5]; } pthread_mutex_t;
+#define PTHREAD_MUTEX_INITIALIZER {{0,0,0,0,0}}
+#define PTHREAD_CREATE_DETACHED 1
+int pthread_create(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
+int pthread_join(pthread_t, void **);
+int pthread_attr_init(pthread_attr_t *);
+int pthread_attr_destroy(pthread_attr_t *);
+int pthread_attr_setdetachstate(pthread_attr_t *, int);
+int pthread_mutex_lock(pthread_mutex_t *);
+int pthread_mutex_unlock(pthread_mutex_t *);
+int pthread_mutex_init(pthread_mutex_t *, const void *);
+int pthread_mutex_destroy(pthread_mutex_t *);
+typedef struct { long o[6]; } pthread_cond_t;
+int pthread_cond_init(pthread_cond_t *, const void *);
+int pthread_cond_destroy(pthread_cond_t *);
+int pthread_cond_wait(pthread_cond_t *, pthread_mutex_t *);
+int pthread_cond_signal(pthread_cond_t *);
+int pthread_cond_broadcast(pthread_cond_t *);
+/* Sockets: no network stack in a freestanding image either. */
+int socket(int, int, int);
+int setsockopt(int, int, int, const void *, unsigned);
+void (*signal(int, void (*)(int)))(int);
+#define AF_INET 2
+#define SOCK_STREAM 1
+#define IPPROTO_TCP 6
+#define SIGPIPE 13
+#define SIG_IGN ((void (*)(int))1)
+struct in_addr { unsigned int s_addr; };
+struct sockaddr_in { short sin_family; unsigned short sin_port; struct in_addr sin_addr; char sin_zero[8]; };
+struct sockaddr;
+int bind(int, const struct sockaddr *, unsigned);
+int listen(int, int);
+int accept(int, struct sockaddr *, unsigned *);
+long send(int, const void *, size_t, int);
+long recv(int, void *, size_t, int);
+unsigned short htons(unsigned short);
+unsigned int htonl(unsigned int);
+#define SOL_SOCKET 1
+#define SO_REUSEADDR 2
+#define INADDR_LOOPBACK 0x7f000001
+int    fputs(const char *, FILE *);
+int    fflush(FILE *);
+long   getline(char **, size_t *, FILE *);
+#else
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -32,13 +230,18 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <errno.h>
+#endif
 
 /* ── Platform layer ──────────────────────────────────────────────────────────
    Torvik's runtime is one shared C file across Linux, macOS, and Windows. The
    POSIX headers and the Win32 API cover the same ground with different names, so
    the platform-divergent pieces (terminal raw mode, process id, wall-clock ms,
    OS/arch/host info, memory stats, running a command, directory walk) each carry
-   a _WIN32 branch. Everything else is portable C and compiles unchanged. */
+   a _WIN32 branch. Everything else is portable C and compiles unchanged.
+
+   A freestanding build has neither platform's headers, and needs neither: every
+   function that would use them is compiled out below. */
+#ifndef TORVIK_BARE
 #if defined(_WIN32)
   #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN
@@ -72,12 +275,13 @@
   #define torvik_getcwd getcwd
   #define torvik_access access
 #endif
+#endif /* TORVIK_BARE */
 
 /* getline() is POSIX; the mingw/MSVC CRT doesn't provide it. Supply a minimal,
    compatible implementation on Windows: grows *lineptr as needed and returns the
    number of bytes read (including the newline), or -1 at EOF. Semantics match
    what torvik_read relies on. */
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(TORVIK_BARE)
 #include <sys/types.h>   /* ssize_t via mingw */
 static ssize_t torvik_getline_impl(char **lineptr, size_t *n, FILE *stream) {
     if (!lineptr || !n || !stream) return -1;
@@ -456,7 +660,11 @@ char *torvik_replace(const char *s, const char *from, const char *to) {
         dst += to_len;
         p = found + from_len;
     }
-    strcpy(dst, p);
+    /* Copy the trailing remainder. `result` was sized to the exact output length
+     * (new_len) and `dst` has advanced past all replacements, so strlen(p)+1 bytes
+     * (including the NUL) fit exactly. Use memcpy with an explicit length rather
+     * than strcpy so the bound is visible (and CodeQL-clean). */
+    memcpy(dst, p, strlen(p) + 1);
     return result;
 }
 
@@ -810,6 +1018,19 @@ void torvik_assert(int cond, const char *msg) {
     if (!cond) torvik_panic(msg);
 }
 
+/* v1.5.0 Forge: fixed-array bounds check. Returns idx if in range, else panics.
+   Unsigned compare catches negatives (they wrap to huge unsigned) and idx>=n in
+   one test. The format string is a fixed literal; idx/n are the only arguments,
+   so there is no format-string exposure. */
+int64_t torvik_array_bounds(int64_t idx, int64_t n) {
+    if ((uint64_t)idx >= (uint64_t)n) {
+        fprintf(stderr, "[Torvik panic] array index %lld out of bounds (length %lld)\n",
+                (long long)idx, (long long)n);
+        exit(1);
+    }
+    return idx;
+}
+
 /* typeof is resolved at COMPILE TIME (Torvik is statically typed) — the
    compiler interns the type name directly, so no runtime helpers exist. */
 
@@ -1038,6 +1259,7 @@ TorvikTable *torvik_table_new(void) {
     t->cap     = 16;
     t->len     = 0;
     t->entries = calloc(t->cap, sizeof(TorvikTableEntry));
+    if (!t->entries) torvik_panic("out of memory");
     return t;
 }
 
@@ -1052,6 +1274,7 @@ static void table_grow(TorvikTable *t) {
     TorvikTableEntry *old = t->entries;
     t->cap     *= 2;
     t->entries  = calloc(t->cap, sizeof(TorvikTableEntry));
+    if (!t->entries) torvik_panic("out of memory");
     /* Re-insert: move each live entry into the new table. Keys and values move
      * as-is (no re-strdup, no refcount change) — ownership simply transfers. */
     for (int64_t i = 0; i < old_cap; i++) {
