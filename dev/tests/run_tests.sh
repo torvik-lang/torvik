@@ -1,12 +1,16 @@
 #!/usr/bin/env sh
-# run_tests.sh - Torvik v1.3.x end-to-end test suite (Linux).
-# Usage: sh run_tests.sh [path-to-torvc] [path-to-rune]
-#   Defaults to `torvc` / `rune` on PATH.
+# run_tests.sh - Torvik v1.5.x end-to-end test suite (Linux).
+# Usage: sh run_tests.sh [path-to-torvc]
+#   Defaults to `torvc` on PATH.
+#
+# v1.5.0: rune ships from its own repository and is tested there
+# (rune/dev/tests/run_tests.sh), so this suite needs only the compiler. That means
+# a compiler regression can be caught without rune installed, and a rune regression
+# without building the compiler.
 # All work happens in ./tv-test-work (NOT /tmp - safe for hardened noexec /tmp).
 # Exit code: 0 all pass, 1 any failure. Full log in ./tv-test-work/results.log
 
 TORVC="${1:-torvc}"
-RUNE="${2:-rune}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$HERE/tv-test-work"
 LOG="$WORK/results.log"
@@ -18,9 +22,7 @@ PASS=0; FAIL=0; FAILED_NAMES=""
 note() { echo "$1" | tee -a "$LOG"; }
 
 command -v "$TORVC" >/dev/null 2>&1 || { echo "torvc not found ($TORVC)"; exit 1; }
-command -v "$RUNE"  >/dev/null 2>&1 || { echo "rune not found ($RUNE)";  exit 1; }
 note "== torvc: $($TORVC --version 2>&1) =="
-note "== rune:  $($RUNE --version 2>&1) =="
 note "== host:  $(uname -sr) =="
 
 # ---------- positive cases: compile, run, diff stdout, check exit code ----------
@@ -102,107 +104,6 @@ for tv in "$HERE"/cases/neg/*.tv; do
     fi
 done
 
-# ---------- rune project-tool cases ----------
-note ""
-note "== RUNE CASES =="
-rune_case() { # $1 name, $2 expected(0/nonzero), rest: description; body via stdin executed in fresh dir
-    name="$1"; d="$WORK/rune_$name"; mkdir -p "$d"
-    ( cd "$d" && sh -s ) > "$WORK/rune_$name.log" 2>&1
-    rc=$?
-    if [ "$rc" = "0" ]; then PASS=$((PASS+1)); note "ok    rune/$name"
-    else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES rune/$name"
-        note "FAIL  rune/$name"; sed 's/^/      /' "$WORK/rune_$name.log" | tail -15 >> "$LOG"; fi
-}
-
-rune_case new_build_run <<EOF
-set -e
-"$RUNE" new myapp
-[ -f myapp/torvik.rune ] && [ -f myapp/src/main.tv ]
-cd myapp
-"$RUNE" build
-[ -x build/myapp ]
-out=\$("$RUNE" run)
-echo "\$out" | grep -qi "hello"
-EOF
-
-rune_case incremental <<EOF
-set -e
-"$RUNE" new capp && cd capp
-"$RUNE" run > first.log 2>&1
-"$RUNE" run > second.log 2>&1
-grep -qi "cache\|up.to.date\|unchanged" second.log || ! grep -qi "compil" second.log
-EOF
-
-rune_case exit_propagation <<EOF
-set -e
-"$RUNE" new eapp && cd eapp
-cat > src/main.tv <<'TV'
-df main() -> void {
-    exit(4);
-}
-TV
-rc=0
-"$RUNE" run || rc=\$?
-[ "\$rc" = "4" ]
-EOF
-
-rune_case clean_list_version <<EOF
-set -e
-"$RUNE" new lapp && cd lapp
-"$RUNE" build
-"$RUNE" list | grep -qi "lapp"
-"$RUNE" clean
-[ ! -d build ]
-"$RUNE" version | grep -q "1\."
-EOF
-
-rune_case min_version_gate <<EOF
-set -e
-"$RUNE" new vapp && cd vapp
-# require an impossibly new toolchain; build must refuse and mention update
-sed -i 's/^torvik *=.*/torvik = "99.0.0"/' torvik.rune || echo 'torvik = "99.0.0"' >> torvik.rune
-if "$RUNE" build > b.log 2>&1; then exit 1; fi
-grep -qi "update\|version" b.log
-EOF
-
-rune_case missing_entry <<EOF
-set -e
-mkdir p1 && cd p1
-printf '[project]\nname = "p1"\n' > torvik.rune
-if "$RUNE" build > b.log 2>&1; then exit 1; fi
-grep -qi "main.tv" b.log
-EOF
-
-rune_case bad_name <<EOF
-set -e
-if "$RUNE" new "bad/name" > n.log 2>&1; then exit 1; fi
-if "$RUNE" new "" > n2.log 2>&1; then exit 1; fi
-exit 0
-EOF
-
-rune_case final_build <<EOF
-set -e
-"$RUNE" new fapp && cd fapp
-"$RUNE" build --final
-[ -x build/fapp ]
-./build/fapp | grep -qi "hello"
-EOF
-
-# std version gate
-d="$WORK/rune_std_gate"; mkdir -p "$d"; cd "$d"
-"$RUNE" new gproj > /dev/null 2>&1
-cd gproj
-printf 'std         = "9.0.0"\n' >> torvik.rune
-"$RUNE" build > g1.log 2>&1
-r1=$?
-sed 's/std         = "9.0.0"/std         = "0.1.0"/' torvik.rune > t.rune && mv t.rune torvik.rune
-"$RUNE" build > g2.log 2>&1
-r2=$?
-if [ $r1 = 1 ] && grep -q "requires standard library" g1.log && [ $r2 = 0 ]; then
-    PASS=$((PASS+1)); note "ok    rune/std_version_gate"
-else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES rune/std_version_gate"; note "FAIL  rune/std_version_gate"; fi
-cd "$WORK"
-
 # ---------- torvc flag cases ----------
 note ""
 note "== TORVC FLAG CASES =="
@@ -225,11 +126,17 @@ if "$TORVC" --version | grep -q "1\." && "$TORVC" -h > h.log 2>&1; then
     PASS=$((PASS+1)); note "ok    flags/version_help"
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES flags/version_help"; note "FAIL  flags/version_help"; fi
 
-# no -o: name derived from source
+# v1.5.0: no -o => RUN mode (python3-style). Executes the file, forwards extra
+# args to the program, and leaves no binary behind.
 rm -f flag
-if "$TORVC" flag.tv -q > d.log 2>&1 && [ -x flag ] && [ "$(./flag)" = "flagtest" ]; then
-    PASS=$((PASS+1)); note "ok    flags/derived_name"
-else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES flags/derived_name"; note "FAIL  flags/derived_name"; fi
+if [ "$("$TORVC" flag.tv 2>/dev/null)" = "flagtest" ] && [ ! -e flag ]; then
+    PASS=$((PASS+1)); note "ok    flags/run_mode"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES flags/run_mode"; note "FAIL  flags/run_mode"; fi
+
+printf 'df main() -> void {\n    fixed n: i64 = args();\n    check n >= 2 { echo!(args_get(1)); } fallback { echo!("noargs"); }\n}\n' > argfwd.tv
+if [ "$("$TORVC" argfwd.tv HELLO 2>/dev/null)" = "HELLO" ]; then
+    PASS=$((PASS+1)); note "ok    flags/run_args"
+else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES flags/run_args"; note "FAIL  flags/run_args"; fi
 
 # missing source file: clean user error (exit 1, not 70)
 "$TORVC" no_such_file.tv -o x -q > m.log 2>&1
@@ -262,7 +169,7 @@ if [ $? = 0 ] && ! grep -q "warning:" w2.log; then
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/no_warn_flag"; note "FAIL  warns/no_warn_flag"; fi
 
 # -q suppresses the success banner but NOT warnings - they are diagnostics.
-# (rune builds with -q; this is exactly how warnings reach `rune run` users.)
+# (-q is how a project manager invokes torvc, so this is the path those users see.)
 "$TORVC" warny.tv -o wy3 -q > w3.log 2>&1
 if [ $? = 0 ] && grep -q "warning:" w3.log && ! grep -q "Compiled successfully" w3.log; then
     PASS=$((PASS+1)); note "ok    warns/quiet_keeps_warnings"
