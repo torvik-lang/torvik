@@ -83,6 +83,7 @@ fixed KW_BREAK:    i64 = 124;
 fixed KW_UNSAFE:     i64 = 125;
 fixed KW_AETT:       i64 = 126;   // aett - a family of named values (v1.2.0)
 fixed KW_RAVEN:      i64 = 127;   // raven - spawn a concurrent task (v1.3.0)
+fixed KW_GALDR:      i64 = 128;   // galdr - inline assembly block (v1.5.0 Forge)
 
 df is_digit(c: i64) -> bool { return c >= 48 && c <= 57; }
 df is_alpha(c: i64) -> bool {
@@ -106,6 +107,7 @@ df keyword_for(word: str) -> i64 {
     check word == "when"     { return KW_WHEN; }
     check word == "aett"     { return KW_AETT; }
     check word == "shape"    { return KW_SHAPE; }
+    check word == "galdr"    { return KW_GALDR; }
     check word == "apply"    { return KW_APPLY; }
     check word == "guard"    { return KW_GUARD; }
     check word == "echo"     { return KW_ECHO; }
@@ -174,14 +176,9 @@ df lex_source(source: str) -> list<i64> {
             continue;
         }
         check is_digit(c) {
-            whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
-            check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
-                pos += 1;
-                whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
-                push(kinds, TOK_FLOAT);
-                continue;
-            }
-            push(kinds, TOK_INT);
+            set nsf: list<i64> = list_new();
+            pos = num_scan(source, pos, slen, nsf);
+            check nsf[0] == 1 { push(kinds, TOK_FLOAT); } fallback { push(kinds, TOK_INT); }
             continue;
         }
         check is_alpha(c) {
@@ -358,6 +355,132 @@ df chr_str(b: i64) -> str {
     return "";
 }
 
+// ─── Numeric literal scanning (v1.5.0) ──────────────────────────────────────
+// Hex (`0x1B8`), binary (`0b1010`), and `_` digit separators (`0xDEAD_BEEF`,
+// `1_000_000`) for integer literals. The three source scanners — lex_source,
+// extract_strings, extract_offsets — MUST consume a numeric token over the
+// identical byte span or the token/offset/string streams drift (TVC-1001).
+// num_scan is the single shared span scanner they all call, so lockstep is
+// structural rather than three hand-maintained copies.
+//
+// out_is_float receives exactly one value: 1 if the token is a float literal
+// (decimal with a fractional part), else 0. Hex and binary are always integers.
+df num_scan(source: str, start: i64, slen: i64, out_is_float: list<i64>) -> i64 {
+    set pos: i64 = start;
+    // Hex / binary prefix — only when the leading char is '0'.
+    check byte_at(source, start) == 48 && start + 1 < slen {
+        fixed p1: i64 = byte_at(source, start + 1);
+        check p1 == 120 || p1 == 88 {            // 'x' / 'X'
+            set hp: i64 = start + 2;
+            set hbrk: i64 = 0;
+            whilst hp < slen && hbrk == 0 {
+                fixed hc: i64 = byte_at(source, hp);
+                check hex_val(hc) >= 0 || hc == 95 { hp += 1; } fallback { hbrk = 1; }
+            }
+            push(out_is_float, 0);
+            return hp;
+        }
+        check p1 == 98 || p1 == 66 {             // 'b' / 'B'
+            set bp: i64 = start + 2;
+            set bbrk: i64 = 0;
+            whilst bp < slen && bbrk == 0 {
+                fixed bc: i64 = byte_at(source, bp);
+                check bc == 48 || bc == 49 || bc == 95 { bp += 1; } fallback { bbrk = 1; }
+            }
+            push(out_is_float, 0);
+            return bp;
+        }
+    }
+    // Decimal integer part (digits and '_' separators).
+    set dbrk: i64 = 0;
+    whilst pos < slen && dbrk == 0 {
+        fixed dc: i64 = byte_at(source, pos);
+        check is_digit(dc) || dc == 95 { pos += 1; } fallback { dbrk = 1; }
+    }
+    // Optional fractional part -> float. Mirrors the pre-1.5.0 behavior exactly
+    // (a '.' only starts a fraction when followed by a digit; no '_' after '.').
+    check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
+        pos += 1;
+        whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
+        push(out_is_float, 1);
+        return pos;
+    }
+    push(out_is_float, 0);
+    return pos;
+}
+
+// Multiply a decimal string by `mul` and add `addend`, returning the decimal
+// string of the result. Arbitrary length (so 128-bit hex/binary literals decode
+// exactly). All intermediates stay well within i64 for mul<=16, addend<=15.
+df dec_mul_add(dec: str, mul: i64, addend: i64) -> str {
+    set out: str = "";
+    set carry: i64 = addend;
+    set i: i64 = len(dec) - 1;
+    whilst i >= 0 {
+        fixed db: i64 = byte_at(dec, i);
+        fixed d: i64 = db - 48;
+        fixed prod: i64 = d * mul + carry;
+        carry = prod / 10;
+        out = str_concat(chr_str((prod % 10) + 48), out);
+        i -= 1;
+    }
+    whilst carry > 0 {
+        out = str_concat(chr_str((carry % 10) + 48), out);
+        carry = carry / 10;
+    }
+    check len(out) == 0 { out = "0"; }
+    set k: i64 = 0;
+    whilst k < len(out) - 1 && byte_at(out, k) == 48 { k += 1; }
+    return substr(out, k, len(out));
+}
+
+df strip_underscores(s: str) -> str {
+    set out: str = "";
+    set i: i64 = 0;
+    whilst i < len(s) {
+        check byte_at(s, i) != 95 { out = str_concat(out, substr(s, i, i + 1)); }
+        i += 1;
+    }
+    return out;
+}
+
+// Normalize a scanned INTEGER literal to a plain decimal string with no prefix
+// or separators, which is exactly what the rest of the compiler already handles
+// (range checks, i128 boxing, and verbatim emission into LLVM IR). Float text is
+// never passed here — it is emitted as-is by extract_strings.
+df normalize_int_literal(raw: str) -> str {
+    fixed n: i64 = len(raw);
+    check n >= 2 {
+        fixed c0: i64 = byte_at(raw, 0);
+        fixed c1: i64 = byte_at(raw, 1);
+        check c0 == 48 && (c1 == 120 || c1 == 88) {
+            set dec: str = "0";
+            set i: i64 = 2;
+            whilst i < n {
+                fixed hc: i64 = byte_at(raw, i);
+                check hc != 95 {
+                    fixed hv: i64 = hex_val(hc);
+                    check hv >= 0 { dec = dec_mul_add(dec, 16, hv); }
+                }
+                i += 1;
+            }
+            return dec;
+        }
+        check c0 == 48 && (c1 == 98 || c1 == 66) {
+            set decb: str = "0";
+            set j: i64 = 2;
+            whilst j < n {
+                fixed bc: i64 = byte_at(raw, j);
+                check bc == 48 { decb = dec_mul_add(decb, 2, 0); }
+                check bc == 49 { decb = dec_mul_add(decb, 2, 1); }
+                j += 1;
+            }
+            return decb;
+        }
+    }
+    return strip_underscores(raw);
+}
+
 // Extract all string literals from source in order
 // Simple approach: just scan for "..." patterns directly
 df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
@@ -454,18 +577,13 @@ df extract_strings(source: str, _tokens: list<i64>) -> list<str> {
             }
             check is_standalone == 1 {
                 fixed start: i64 = pos;
-                set brk2: i64 = 0;
-                whilst brk2 == 0 {
-                    check pos >= slen { brk2 = 1; continue; }
-                    fixed cc2: i64 = byte_at(source, pos);
-                    check cc2 >= 48 && cc2 <= 57 { pos += 1; continue; }
-                    brk2 = 1;
-                }
-                check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
-                    pos += 1;
-                    whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
-                }
-                push(strings, substr(source, start, pos));
+                set nsf: list<i64> = list_new();
+                pos = num_scan(source, start, slen, nsf);
+                fixed raw: str = substr(source, start, pos);
+                // Floats are emitted verbatim; integer text is normalized to a
+                // plain decimal string (hex/binary decoded, '_' separators
+                // stripped) so all downstream literal handling is unchanged.
+                check nsf[0] == 1 { push(strings, raw); } fallback { push(strings, normalize_int_literal(raw)); }
                 continue;
             }
             pos += 1;
@@ -541,6 +659,16 @@ df extract_all_names(source: str) -> list<str> {
             }
             push(names, substr(source, start, pos));
             pos += 1;
+            continue;
+        }
+
+        // Numeric literal → consume the whole span, push nothing. Numbers live
+        // in the `strings` stream, never in `allnames`. This must consume the
+        // identical span as the other scanners (num_scan) so a hex/binary tail
+        // like the `xB8000` in `0xB8000` is never mistaken for an identifier.
+        check c >= 48 && c <= 57 {
+            set nsf: list<i64> = list_new();
+            pos = num_scan(source, pos, slen, nsf);
             continue;
         }
 
@@ -626,13 +754,8 @@ df extract_offsets(source: str) -> list<i64> {
             continue;
         }
         check is_digit(c) {
-            whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
-            check pos < slen && byte_at(source, pos) == 46 && pos + 1 < slen && is_digit(byte_at(source, pos + 1)) {
-                pos += 1;
-                whilst pos < slen && is_digit(byte_at(source, pos)) { pos += 1; }
-                push(offs, tok_start);
-                continue;
-            }
+            set nsf: list<i64> = list_new();
+            pos = num_scan(source, pos, slen, nsf);
             push(offs, tok_start);
             continue;
         }
