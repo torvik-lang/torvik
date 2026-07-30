@@ -1,0 +1,4 @@
+df main() -> void {
+    set z: [i64; 0] = array_zero();
+    echo!("x");
+}

@@ -1,13 +1,13 @@
 # The Torvik Guide
 
-A complete tutorial and reference for the Torvik programming language, version 1.4.
+A complete tutorial and reference for the Torvik programming language, version 1.5.
 
 Torvik is a compiled, statically-typed, general-purpose language with a Norse-inspired
 keyword set. It compiles to native binaries through LLVM (emitting LLVM IR that is linked
 with `clang`), and its own compiler (`torvc`) and package manager (`rune`) are written in
 Torvik itself.
 
-This guide describes **only what version 1.4 actually implements**. Features planned for
+This guide describes **only what version 1.5 actually implements**. Features planned for
 later versions are listed in [Roadmap & limitations](#roadmap--limitations) so you always
 know where the edges are.
 
@@ -29,16 +29,18 @@ know where the edges are.
 12. [Loops: `whilst` and `each`](#loops-whilst-and-each)
 13. [Functions: `df`](#functions-df)
 14. [Collections: `list`, `table`, `bag`](#collections-list-table-bag)
-15. [Assertions and aborts: `vow` and `halt`](#assertions-and-aborts-vow-and-halt)
-16. [Error handling: `result<T>`, `ok`, and `err`](#error-handling-resultt-ok-and-err)
-17. [Concurrency: ravens and bridges](#concurrency-ravens-and-bridges)
-18. [Compile warnings](#compile-warnings)
-19. [The `unsafe` prefix](#the-unsafe-prefix)
-20. [Modules: `apply`](#modules-apply)
-21. [Memory model](#memory-model)
-22. [Roadmap & limitations](#roadmap--limitations)
-23. [Keyword reference](#keyword-reference)
-24. [Operator reference](#operator-reference)
+15. [Pipelines and membership: `~>` and `<|`](#pipelines-and-membership--and-)
+16. [Assertions and aborts: `vow` and `halt`](#assertions-and-aborts-vow-and-halt)
+17. [Error handling: `result<T>`, `ok`, and `err`](#error-handling-resultt-ok-and-err)
+18. [Concurrency: ravens and bridges](#concurrency-ravens-and-bridges)
+19. [Compile warnings](#compile-warnings)
+20. [Systems programming: the Forge](#systems-programming-the-forge)
+21. [The `unsafe` prefix](#the-unsafe-prefix)
+22. [Modules: `apply`](#modules-apply)
+23. [Memory model](#memory-model)
+24. [Roadmap & limitations](#roadmap--limitations)
+25. [Keyword reference](#keyword-reference)
+26. [Operator reference](#operator-reference)
 
 ---
 
@@ -128,6 +130,15 @@ set u: u64  = 18000000000000000000;
 `i64` is the everyday integer type. The 128-bit types are heap-backed and support the
 full set of arithmetic and comparison operators.
 
+Hexadecimal and binary literals are written `0x` and `0b`, and `_` may be used
+anywhere inside a number to group digits:
+
+```torvik
+fixed vga:  i64 = 0xB8000;
+fixed mask: i64 = 0b1010_0110;
+fixed big:  i64 = 1_000_000;
+```
+
 > A leading `-` negates a value: `-5`, or `set n: i64 = -x;`. It also works as a chain
 > operand, including a binary minus immediately followed by a unary minus — `a - -b`,
 > `a + -5`, `a * -f(x)` — in both integer and float expressions. A leading `-` binds to
@@ -136,13 +147,32 @@ full set of arithmetic and comparison operators.
 
 ### Floating point
 
-`f64` is a 64-bit double. Float literals always echo with a decimal point.
+`f64` is the everyday float — a 64-bit double. Float literals always echo with a
+decimal point.
 
 ```torvik
 fixed pi: f64 = 3.14159;
 echo!(pi);        // 3.14159
 echo!(2.0);       // 2.0
 ```
+
+The other IEEE widths are available too: **`f16`** (half), **`f32`** (single) and
+**`f128`** (quad). They matter when layout matters — a GPU vertex buffer or a C
+struct expects a specific number of bytes:
+
+```torvik
+shape Vec3 { x: f32, y: f32, z: f32 }
+echo!(size_of(Vec3));    // 12, not 24
+```
+
+Values are computed as `f64` and converted at the storage boundary, so storage is
+always the true declared width. Narrow types round properly — `f16` tops out at
+65504, and going past it gives `inf`, as IEEE 754 says it should.
+
+> **`f128` is a storage and interop type.** Arithmetic on it computes at double
+> precision, so declaration, storage and layout are exact but computation is not.
+> x86 also has no hardware for 128-bit floats, so real f128 arithmetic needs
+> soft-float support that a freestanding (`--bare`) build does not link.
 
 ### Booleans
 
@@ -933,8 +963,11 @@ fixed msg: str = recv(ch);               // takes one out; blocks if empty
 ```
 
 Values **deep-copy on send**, the same guarantee as spawn arguments: once a value crosses
-the bridge, sender and receiver own independent copies. Bridges carry the same types tasks
-do — every integer width, `f64`, `bool`, `str`, `i128`/`u128`, and `aett` values.
+the bridge, sender and receiver own independent copies. A bridge carries any value a queue slot can own outright and deep-copy: every integer
+width, `bool`, all four float widths (`f16`, `f32`, `f64`, `f128`), `str`, `i128`/`u128`,
+and aett values. Collections cannot cross one, and bridges and tasks cannot nest.
+
+
 
 A bridge is passed *into* a task as an argument — and unlike every other argument, the task
 receives **the bridge itself**, not a copy (a private copy of a channel would be pointless).
@@ -1027,6 +1060,156 @@ Because `apply` inlines modules into one compilation unit, a directive covers th
 whole compile of the file it appears in, applied modules included. The `!@` prefix
 is reserved for warning-system directives, so future controls slot in without new
 syntax.
+
+---
+
+## Systems programming: the Forge
+
+Everything so far has assumed an operating system underneath you. Torvik can also
+work without one — talk to hardware directly, and produce an image that boots on bare
+metal. The tools for that are collectively "the Forge".
+
+They are all `unsafe`-gated. Torvik has no unsafe *mode*; it has unsafe
+*statements*, and you write the word each time. The safe surface stays safe:
+`buf[i]` is still bounds-checked in the function next door.
+
+### Raw pointers: `varda<T>`
+
+A `varda<T>` is a pointer to a `T` with no ownership and no reference counting —
+exactly the machine's idea of a pointer.
+
+```torvik
+unsafe set vga: varda<u16> = from_addr(0xB8000);
+unsafe store(vga, 0x0F48);
+unsafe fixed back: i64 = load(vga);
+```
+
+`from_addr` and `as_addr` convert between addresses and pointers. To move a pointer:
+
+- **`ptr_add(p, n)`** advances by `n` **elements** — like C's `p + n`. On a
+  `varda<u16>`, `ptr_add(p, 3)` moves six bytes.
+- **`ptr_byte_offset(p, n)`** advances by `n` **bytes**, whatever the element type.
+
+Two names because confusing them produces code that runs and quietly writes to the
+wrong address.
+
+`addr_of` is safe — it takes the address of something you already own (a fixed array,
+or a shape field) rather than conjuring one from a number. `is_null` and `null_addr`
+are safe too.
+
+### Fixed arrays: `[T; N]`
+
+A fixed array is `N` elements stored inline, not on the heap.
+
+```torvik
+fixed buf: [u8; 4] = array_zero();
+buf[0] = 65;
+echo!(buf[0]);        // 65
+echo!(len(buf));      // 4 - known at compile time
+```
+
+Indexing is **bounds-checked**, including against negative indices. Arrays hold
+machine scalars: the integer widths, `bool`, and the float widths.
+
+### Value structs: `shape`
+
+A `shape` is a struct stored by value, with no heap allocation and no reference
+counting.
+
+```torvik
+shape Point { x: i64, y: i64 }
+
+set p: Point = Point { x: 10, y: 20 };
+echo!(p.x + p.y);     // 30
+p.x = 100;
+```
+
+Any field you leave out of the literal is zero, not stack garbage.
+
+Add `packed` and the compiler inserts no padding, so the layout matches a C struct or
+a hardware descriptor byte for byte:
+
+```torvik
+packed shape GdtEntry {
+    limit_low: u16, base_low: u16, base_mid: u8,
+    access: u8, flags: u8, base_high: u8
+}
+echo!(size_of(GdtEntry));    // 8, exactly as the manual says
+```
+
+`size_of(T)` and `align_of(T)` report compile-time layout facts for any scalar or
+shape. Layout is LLVM's, so these stay correct as targets change.
+
+Shapes currently hold machine scalars. Heap-backed fields (`str`, `list`, `i128`, …),
+nested shapes and shape parameters are on the roadmap; unsupported types are refused
+with a clear error rather than silently mis-stored.
+
+### Volatile access
+
+An ordinary store to memory nothing else reads is dead code, and the optimiser may
+delete it. For a hardware register the write *is* the point:
+
+```torvik
+unsafe store_vol(reg, value);
+unsafe fixed status: i64 = load_vol(reg);
+```
+
+`load_vol` and `store_vol` are never elided, merged or reordered.
+
+### Inline assembly: `galdr`
+
+When there is no other way to say it:
+
+```torvik
+unsafe galdr { "cli"; "hlt"; }
+```
+
+One instruction per string. The block is emitted with `sideeffect`, so it stays
+exactly where you put it.
+
+Common x86_64 operations have named intrinsics instead, so the register constraints
+live in the compiler rather than in your source: `cli`, `sti`, `hlt`, `pause_cpu`,
+`outb`/`outw`/`outl`, and `inb`/`inw`/`inl`.
+
+```torvik
+unsafe outb(0x3D4, 14);
+unsafe fixed v: i64 = inb(0x3D5);
+```
+
+### Freestanding builds
+
+```sh
+torvc kernel.tv --bare -o kernel.elf
+```
+
+For a kernel a bootloader will actually load, add `--elf32`. Multiboot 1 refuses a
+64-bit ELF — QEMU says *"Cannot load x86-64 image, give a 32bit one"* — so the image
+is rewritten as a 32-bit container. The code inside stays 64-bit.
+
+`--bare` produces an image with no libc and no runtime: it decides the format from
+the **target**, not from the machine you build on, so the same command gives the same
+ELF on Linux and on Windows.
+
+Anything that needs an operating system is refused at compile time, with an error
+that says what to use instead:
+
+```
+error: 'readfile' needs an operating system, and this is a freestanding build
+(--bare) - there is nothing underneath to service it. Talk to the hardware instead.
+```
+
+Heap types need memory, and bare there is no `malloc`. Supply one:
+
+```torvik
+df on_alloc(size: i64) -> varda<u8> { ... }
+df on_free(p: varda<u8>) -> void { ... }
+```
+
+Define both and `str`, `list` and the rest work in a freestanding image. Leave them
+out and the runtime isn't linked at all.
+
+For a complete worked example — VGA text output, port I/O, a long-mode boot stub and
+a linker script — see **[Forge your first kernel](../examples/kernel/README.md)**.
 
 ---
 
@@ -1137,13 +1320,8 @@ reasoning):
 
 - **Structs (`shape`)**.
 - **A `pub`** visibility keyword.
-- **Additional numeric types**: `f32` and a dedicated `char` type (today, character literals
+- a dedicated **`char`** type (today, character literals
   are one-character strings).
-- **Fixed-size arrays** (`[T; N]`).
-
-- **Systems / OS-development primitives** (inline assembly, volatile memory access, raw
-  pointer operations, packed structs). Torvik is a general-purpose compiled language;
-  these are not implemented.
 
 Known limitations:
 
@@ -1193,6 +1371,8 @@ types landed in v1.2.0; concurrency — `raven` tasks and `bridge` channels — 
 | `vow`       | Assertion: abort with a message if a condition is false        |
 | `halt`      | Print a message and exit immediately                           |
 | `unsafe`    | Prefix a declaration/assignment to opt into a rejected op (wrap an out-of-range literal) |
+| `shape`     | Define a value struct; `packed shape` removes padding          |
+| `galdr`     | Inline assembly block (`unsafe galdr { "hlt"; }`)              |
 | `apply`     | Bring another module's definitions into the file              |
 | `true` / `false` | Boolean literals                                          |
 
@@ -1246,5 +1426,5 @@ fixed clean: bool = starts(path, "/") == false;
 
 ---
 
-*This guide tracks Torvik v1.4. For the compiler and project tooling, see
+*This guide tracks Torvik v1.5. For the compiler and project tooling, see
 [TOOLING.md](TOOLING.md); for the built-in function library, see [STDLIB.md](STDLIB.md).*

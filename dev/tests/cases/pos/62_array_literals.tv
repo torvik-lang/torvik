@@ -1,0 +1,16 @@
+df main() -> void {
+    set a: [i64; 3] = [10, 20, 30];
+    echo!(a[0]);
+    echo!(a[1]);
+    echo!(a[2]);
+    set b: [u8; 4] = [1, 2, 255, 300];
+    echo!(b[2]);
+    echo!(b[3]);
+    fixed x: i64 = 5;
+    set c: [i64; 2] = [x * 2, x + 1];
+    echo!(c[0]);
+    echo!(c[1]);
+    a[1] = 99;
+    echo!(a[1]);
+    echo!(len(a));
+}

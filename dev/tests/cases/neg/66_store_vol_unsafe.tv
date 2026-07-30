@@ -1,0 +1,6 @@
+df main() -> void {
+    fixed b: [i64; 2] = array_zero();
+    set p: varda<i64> = addr_of(b);
+    store_vol(p, 1);
+    echo!("x");
+}

@@ -1,0 +1,15 @@
+shape Point { x: i64, y: i64 }
+shape Mixed { a: u8, b: i64, c: u8 }
+packed shape PMixed { a: u8, b: i64, c: u8 }
+df main() -> void {
+    echo!(fmt("size_of(i8)={} align={}", size_of(i8), align_of(i8)));
+    echo!(fmt("size_of(i32)={} align={}", size_of(i32), align_of(i32)));
+    echo!(fmt("size_of(i64)={} align={}", size_of(i64), align_of(i64)));
+    echo!(fmt("size_of(f64)={} align={}", size_of(f64), align_of(f64)));
+    echo!(fmt("size_of(bool)={} align={}", size_of(bool), align_of(bool)));
+    echo!(fmt("Point:  size={} align={}   (expect 16 / 8)", size_of(Point), align_of(Point)));
+    echo!(fmt("Mixed:  size={} align={}   (expect 24 / 8 - padded)", size_of(Mixed), align_of(Mixed)));
+    echo!(fmt("PMixed: size={} align={}   (expect 10 / 1 - packed)", size_of(PMixed), align_of(PMixed)));
+    fixed total: i64 = size_of(Point) * 4;
+    echo!(fmt("size_of(Point) * 4 = {total}"));
+}

@@ -1,0 +1,6 @@
+shape Point { x: i64, y: i64 }
+df main() -> void {
+    set p: Point = Point { x: 1, y: 2 };
+    unsafe set q: varda<i64> = addr_of(p.nope);
+    echo!("x");
+}

@@ -1,0 +1,20 @@
+shape Point { x: i64, y: i64 }
+shape Color { r: u8, g: u8, b: u8, a: u8 }
+df main() -> void {
+    set p: Point = Point { x: 10, y: 20 };
+    echo!(p.x);
+    echo!(p.y);
+    check p.x < p.y { echo!("lt"); } fallback { echo!("ge"); }
+    p.x = 100;
+    p.y = p.x;
+    echo!(p.x);
+    echo!(p.y);
+    fixed a: i64 = p.x;
+    fixed b: i64 = p.y;
+    echo!(a + b);
+    set c: Color = Color { r: 255, g: 128, b: 0, a: 300 };
+    echo!(c.r);
+    echo!(c.a);
+    set q: Point = Point { x: 5 };
+    echo!(q.y);
+}

@@ -1,0 +1,7 @@
+df torvik_my_helper(x: i64) -> i64 {
+    return x + 1;
+}
+df main() -> void {
+    fixed r: i64 = torvik_my_helper(41);
+    echo!(r);
+}

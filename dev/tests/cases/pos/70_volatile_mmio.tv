@@ -1,0 +1,17 @@
+df main() -> void {
+    fixed buf: [i64; 4] = array_zero();
+    unsafe set p0: varda<i64> = addr_of(buf);
+    unsafe set p1: varda<i64> = ptr_add(p0, 1);
+    unsafe store(p1, 22);
+    echo!(fmt("ptr_add(p0,1) -> buf[1]={buf[1]}  (expect 22)"));
+    fixed b2: [u32; 4] = array_zero();
+    unsafe set q0: varda<u32> = addr_of(b2);
+    unsafe set q2: varda<u32> = ptr_add(q0, 2);
+    unsafe store_vol(q2, 77);
+    unsafe fixed back: i64 = load_vol(q2);
+    echo!(fmt("u32 ptr_add(q0,2) -> b2[2]={b2[2]} load_vol={back}  (expect 77 77)"));
+    // ptr_byte_offset is a BYTE offset: 8 bytes == 1 i64 element
+    unsafe set pb: varda<i64> = ptr_byte_offset(p0, 24);
+    unsafe store(pb, 99);
+    echo!(fmt("ptr_byte_offset(p0,24 bytes) -> buf[3]={buf[3]}  (expect 99)"));
+}

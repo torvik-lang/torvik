@@ -1,0 +1,18 @@
+df loud(x: i64) -> bool {
+    echo!("CALLED");
+    return x > 0;
+}
+df main() -> void {
+    check false && loud(1) { echo!("bad"); } fallback { echo!("and-sc"); }
+    check true || loud(1) { echo!("or-sc"); } fallback { echo!("bad"); }
+    check true && loud(1) { echo!("and-run"); }
+    set xs: list<i64> = list_new();
+    push(xs, 10);
+    set i: i64 = 9;
+    check i < len(xs) && xs[i] == 10 { echo!("bad"); } fallback { echo!("guarded"); }
+    set j: i64 = 0;
+    whilst j < len(xs) && xs[j] >= 0 { j += 1; }
+    echo!(j);
+    fixed b: bool = (2 > 1) && (3 > 2);
+    echo!(b);
+}

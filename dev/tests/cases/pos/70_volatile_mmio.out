@@ -1,0 +1,3 @@
+ptr_add(p0,1) -> buf[1]=22  (expect 22)
+u32 ptr_add(q0,2) -> b2[2]=77 load_vol=77  (expect 77 77)
+ptr_byte_offset(p0,24 bytes) -> buf[3]=99  (expect 99)

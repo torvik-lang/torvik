@@ -1,0 +1,23 @@
+df main() -> void {
+    // i64 fixed array: zeroed inline storage, walked via pointers
+    set buf: [i64; 4] = array_zero();
+    unsafe fixed base: varda<i64> = addr_of(buf);
+    unsafe store(base, 100);
+    unsafe fixed p1: varda<i64> = ptr_add(base, 1);
+    unsafe store(p1, 200);
+    unsafe fixed v0: i64 = load(base);
+    unsafe fixed v1: i64 = load(p1);
+    echo!(v0);                 // 100
+    echo!(v1);                 // 200
+    unsafe fixed p2: varda<i64> = ptr_add(base, 2);
+    unsafe fixed v2: i64 = load(p2);
+    echo!(v2);                 // 0 (array_zero, untouched cell)
+    echo!(len(buf));           // 4
+    // u8 fixed array: narrow element trunc/extend across the pointer
+    set bytes: [u8; 8] = array_zero();
+    unsafe fixed bp: varda<u8> = addr_of(bytes);
+    unsafe store(bp, 300);     // wraps to 44
+    unsafe fixed bv: u8 = load(bp);
+    echo!(bv);                 // 44
+    echo!(len(bytes));         // 8
+}

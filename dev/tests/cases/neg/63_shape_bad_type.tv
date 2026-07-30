@@ -1,0 +1,4 @@
+shape S { v: i128 }
+df main() -> void {
+    echo!("x");
+}

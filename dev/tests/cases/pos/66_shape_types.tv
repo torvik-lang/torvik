@@ -1,0 +1,9 @@
+shape AllInts { a: i8, b: i16, c: i32, d: i64, e: u8, f: u16, g: u32, h: u64 }
+shape Mixed { flag: bool, ratio: f64, count: i64 }
+df main() -> void {
+    set s: AllInts = AllInts { a: -5, b: -300, c: -70000, d: -5000000000, e: 200, f: 60000, g: 4000000000, h: 9000000000 };
+    echo!(fmt("i8={s.a} i16={s.b} i32={s.c} i64={s.d}"));
+    echo!(fmt("u8={s.e} u16={s.f} u32={s.g} u64={s.h}"));
+    set m: Mixed = Mixed { flag: true, ratio: 3.5, count: 7 };
+    echo!(fmt("bool={m.flag} f64={m.ratio} i64={m.count}"));
+}

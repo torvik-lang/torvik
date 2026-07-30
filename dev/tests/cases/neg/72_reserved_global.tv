@@ -1,0 +1,4 @@
+set torvik_argc: i64 = 5;
+df main() -> void {
+    echo!(torvik_argc);
+}

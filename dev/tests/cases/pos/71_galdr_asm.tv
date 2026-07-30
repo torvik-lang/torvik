@@ -1,0 +1,27 @@
+df main() -> void {
+    echo!("start");
+    unsafe galdr { "nop"; }
+    echo!("single");
+    unsafe galdr { "nop"; "nop"; "nop"; }
+    echo!("multi");
+    unsafe galdr { "mfence"; }
+    echo!("fence");
+    unsafe pause_cpu();
+    echo!("pause");
+    fixed n: i64 = args();
+    check n > 99 {
+        unsafe cli();
+        unsafe outb(996, 255);
+        unsafe fixed b: i64 = inb(996);
+        echo!(b);
+        unsafe outw(996, 65535);
+        unsafe fixed w: i64 = inw(996);
+        echo!(w);
+        unsafe outl(996, 123456);
+        unsafe fixed l: i64 = inl(996);
+        echo!(l);
+        unsafe sti();
+        unsafe hlt();
+    }
+    echo!("done");
+}

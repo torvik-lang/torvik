@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed x: f256 = 1.5;
+    echo!(x);
+}

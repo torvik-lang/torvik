@@ -1,0 +1,4 @@
+df main() -> void {
+    unsafe galdr { }
+    echo!("x");
+}

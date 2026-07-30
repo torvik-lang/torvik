@@ -1,0 +1,7 @@
+df puts(x: i64) -> i64 {
+    return x + 1;
+}
+df main() -> void {
+    fixed r: i64 = puts(1);
+    echo!(r);
+}

@@ -1,0 +1,4 @@
+df main() -> void {
+    galdr { "nop"; }
+    echo!("x");
+}

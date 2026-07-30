@@ -1,0 +1,12 @@
+shape P { x: i64, y: i64 }
+df main() -> void {
+    fixed s: str = "hello";
+    echo!(byte_at(s, 0) * 2);
+    echo!(toint("21") * 2);
+    echo!(len(s) * 3);
+    echo!(size_of(P) * 4);
+    fixed n: i64 = byte_at(s, 1) + 1;
+    echo!(n);
+    fixed c: i64 = toint("10");
+    echo!(c);
+}

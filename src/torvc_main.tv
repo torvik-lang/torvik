@@ -33,6 +33,40 @@ df main() -> void {
     fixed hf: i64 = is_help_arg(first);
     check hf == 1 { print_help(); exit(0); }
 
+    // v1.5.0: mode selection. `-o` anywhere => BUILD (emit a binary, existing
+    // behavior). No `-o` => RUN (python3-style: compile + execute, no binary left).
+    // Internal tooling (fixpoint, rune) always passes -o, so it stays in build mode.
+    set has_o: i64 = 0;
+    set oj: i64 = 1;
+    whilst oj < argc { check args_get(oj) == "-o" { has_o = 1; } oj += 1; }
+
+    check has_o == 0 {
+        // RUN mode:  torvc [flags] script.tv [program args...]
+        // Flags recognized before the script; the first .tv is the script; every
+        // token after it is forwarded verbatim to the program (even .tv data files).
+        set r_verbose: i64 = 0;
+        set r_script: str = "";
+        set r_sidx: i64 = 0;
+        set rr: i64 = 1;
+        whilst rr < argc && len(r_script) == 0 {
+            fixed ra: str = args_get(rr);
+            check ra == "-v" || ra == "--verbose" { r_verbose = 1; } fallback {
+                check ra == "--no-warn" { warn_suppress = 1; } fallback {
+                    check ends(ra, ".tv") { r_script = ra; r_sidx = rr; }
+                }
+            }
+            rr += 1;
+        }
+        check len(r_script) == 0 {
+            echo!("torvc: no source file given (try 'torvc --help')"); exit(1);
+        }
+        set prog_argv: list<str> = list_new();
+        set pa: i64 = r_sidx + 1;
+        whilst pa < argc { push(prog_argv, args_get(pa)); pa += 1; }
+        run_file(r_script, prog_argv, r_verbose);
+        exit(0);
+    }
+
     set srcfile: str = "";
     set outpath: str = "";
     set verbose: i64 = 0;
@@ -44,18 +78,42 @@ df main() -> void {
         check a == "-o" {
             check i + 1 < argc { outpath = args_get(i + 1); i += 1; }
         } fallback {
-            check a == "-v" || a == "--verbose" { verbose = 1; } fallback {
-                check a == "-q" || a == "--quiet" { quiet = 1; } fallback {
-                    check a == "--final" { final = 1; } fallback {
-                        check a == "--no-warn" { warn_suppress = 1; } fallback {
-                            check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
+            check a == "--entry" {
+                check i + 1 < argc { g_build_entry = args_get(i + 1); i += 1; }
+            } fallback {
+                check a == "--arch" || a == "--target" {
+                    check i + 1 < argc { g_build_arch = args_get(i + 1); i += 1; }
+                } fallback {
+                    check a == "--link-script" {
+                        check i + 1 < argc { g_build_linkscript = args_get(i + 1); i += 1; }
+                    } fallback {
+                      check a == "--elf32" { g_build_elf32 = 1; } fallback {
+                      check a == "--link-with" {
+                        check i + 1 < argc { g_build_linkwith = args_get(i + 1); i += 1; }
+                      } fallback {
+                        check a == "--bare" { g_build_bare = 1; no_std_flag = 1; } fallback {
+                            check a == "--no-std" { no_std_flag = 1; } fallback {
+                                check a == "-v" || a == "--verbose" { verbose = 1; } fallback {
+                                    check a == "-q" || a == "--quiet" { quiet = 1; } fallback {
+                                        check a == "--final" { final = 1; } fallback {
+                                            check a == "--no-warn" { warn_suppress = 1; } fallback {
+                                                check ends(a, ".tv") { check len(srcfile) == 0 { srcfile = a; } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
+                      }
+                      }
                     }
                 }
             }
         }
         i += 1;
     }
+    // v1.5.0 Forge F6: hand the freestanding settings to codegen before it runs.
+    set_bare_mode(g_build_bare, g_build_entry);
     check len(srcfile) == 0 {
         echo!("torvc: no source file given (try 'torvc --help')"); exit(1);
     }
@@ -152,24 +210,49 @@ df ver_field(content: str, key: str) -> str {
 }
 
 df version_of(key: str) -> str {
+    // Only trust a VERSION file in the current directory if it is actually Torvik's
+    // (it names the key we're asking for). Plenty of projects keep their own VERSION
+    // file, and one of those used to shadow the toolchain's - `torvc --version` then
+    // reported 0.0.0 from inside any such directory.
     fixed content: str = readfile(resolve_asset("./", "VERSION"));
     fixed v: str = ver_field(content, key);
     check len(v) > 0 { return v; }
+    fixed installed: str = str_concat(sys_home_dir(), "/.torvik/lib/VERSION");
+    check diag_path_exists(installed) == 1 {
+        fixed v2: str = ver_field(readfile(installed), key);
+        check len(v2) > 0 { return v2; }
+    }
     return "0.0.0";
 }
 
 df print_version() -> void {
     echo!(str_concat(str_concat("torvik v", version_of("torvik")), str_concat(" / torvc v", version_of("torvc"))));
-    echo!(str_concat("std v", version_of("std")));
+    // v1.5.0: the standard library ships from its own repository and records its
+    // version in lib/std.VERSION, not in Torvik's VERSION.
+    set _sv: str = "";
+    fixed _svp: str = resolve_asset("./", "std.VERSION");
+    check diag_path_exists(_svp) == 1 { _sv = ver_field(readfile(_svp), "std"); }
+    check len(_sv) > 0 {
+        echo!(str_concat("std v", _sv));
+    } fallback {
+        echo!("std  not installed");
+    }
 }
 
 df print_help() -> void {
     echo!("torvc - the Torvik compiler");
     echo!("");
     echo!("USAGE:");
-    echo!("  torvc <file.tv> [-o <out>] [-v] [--final]   Compile a Torvik source file");
+    echo!("  torvc <file.tv> [args...]                    Run a Torvik file (compile + execute)");
+    echo!("  torvc <file.tv> -o <out> [-v] [--final]      Compile a Torvik file to a binary");
     echo!("  torvc version | --version | -V              Show version");
     echo!("  torvc help | --help | -h                    Show this help");
+    echo!("");
+    echo!("RUN vs BUILD:");
+    echo!("  With no -o, torvc runs the file directly (python3-style) and leaves no binary.");
+    echo!("  Any tokens after the file are passed to the program as arguments, readable with");
+    echo!("  args() / args_get(i)  (e.g. `torvc scan.tv a.txt b.txt`).");
+    echo!("  With -o, torvc compiles to that binary instead of running.");
     echo!("");
     echo!("FLAGS:");
     echo!("  -v, --verbose   Show compile details (bytes, tokens, IR path)");
@@ -360,7 +443,16 @@ df is_name_char(c: i64) -> i64 {
 // `apply std...` is hard-refused when the project is built with no_std.
 df add_import(out: list<str>, base: str, item: str, no_std: i64) -> void {
     check no_std == 1 && line_eq(base, "std") == 1 {
-        echo!("torvc: `apply std` is disabled - torvik.rune sets std = no_std");
+        check g_build_bare == 1 {
+            echo!("torvc: `apply std` is disabled - this is a freestanding build (--bare).");
+            echo!("  The standard library assumes an operating system underneath it.");
+        } fallback {
+            check no_std_flag == 1 {
+                echo!("torvc: `apply std` is disabled - this build passed --no-std.");
+            } fallback {
+                echo!("torvc: `apply std` is disabled - torvik.rune sets std = no_std");
+            }
+        }
         exit(1);
     }
     check len(item) > 0 {
@@ -462,6 +554,48 @@ df build_prelude(source: str, seen: list<str>, no_std: i64) -> str {
     return prelude;
 }
 
+// v1.5.0 Forge F6: freestanding build options, set from the command line in main()
+// and read by compile_file when it links. Kept as globals so the compile_file
+// signature (also used by run mode) stays unchanged.
+set g_build_bare: i64 = 0;
+set no_std_flag: i64 = 0;
+set g_build_entry: str = "_start";
+set g_build_linkscript: str = "";
+// Extra sources/objects to compile and link into a freestanding image - typically a
+// boot stub in assembly that the Torvik side cannot express (32-bit entry code,
+// descriptor tables, a long-mode switch).
+set g_build_linkwith: str = "";
+// Multiboot 1 loaders (GRUB, QEMU -kernel) require a 32-bit ELF container, even for a
+// kernel whose code is 64-bit. Set by --elf32.
+set g_build_elf32: i64 = 0;
+set g_build_arch: str = "x86_64-unknown-none-elf";
+
+// v1.5.0: every path handed to clang goes through here. Unquoted, a directory with
+// a space ("My Documents", "Program Files") split into two arguments and the build
+// died with clang "no such file or directory" behind an internal TVC-5002 - and an
+// unquoted path interpolated into a shell command is the classic injection shape
+// that static analysis (rightly) flags. Double quotes work for both POSIX sh and
+// cmd.exe. Any embedded double quote is dropped rather than escaped: no legitimate
+// build path contains one, and dropping it cannot create a new argument boundary.
+df shq(pth: str) -> str {
+    set clean: str = "";
+    set i: i64 = 0;
+    whilst i < len(pth) {
+        fixed c: i64 = byte_at(pth, i);
+        check c != 34 { clean = str_concat(clean, substr(pth, i, i + 1)); }
+        i += 1;
+    }
+    return str_concat(str_concat("\"", clean), "\"");
+}
+
+// Silence a probe command on either shell. `>/dev/null 2>&1` is meaningless to
+// cmd.exe, which printed "The system cannot find the path specified." and left the
+// exit status useless - so the probe reported the wrong answer on Windows.
+df probe_cmd(c: str) -> str {
+    check line_eq(sys_os_name(), "windows") == 1 { return str_concat(c, " >NUL 2>&1"); }
+    return str_concat(c, " >/dev/null 2>&1");
+}
+
 df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> void {
     // A missing input file is a user error, not a toolchain fault — give a clean
     // message instead of letting readfile raise a runtime panic.
@@ -502,7 +636,9 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     }
 
     set import_seen_set: list<str> = list_new();
-    fixed no_std: i64 = project_no_std();
+    // --no-std (and --bare, which implies it) force no_std regardless of manifest.
+    set no_std: i64 = project_no_std();
+    check no_std_flag == 1 { no_std = 1; }
     fixed prelude: str = build_prelude(source, import_seen_set, no_std);
     fixed combined:  str = str_concat(prelude, source);
     // v1.2.1: record where the user's own text begins so diagnostics report
@@ -534,6 +670,153 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     check verbose == 1 { echo!(str_concat("   IR -> ", ir_path)); }
 
     fixed rt_src: str = resolve_asset("./runtime/", "torvik_runtime.c");
+    // v1.5.0 Forge F6: freestanding build. There is no libc and no hosted runtime
+    // here, so the bundled runtime C is not compiled or linked at all. The target
+    // is decided by the TARGET triple, never by the build host — a kernel built on
+    // Windows is the same ELF as one built on Linux — so the hosted Windows/GNU
+    // branch below must not run. -nostdlib drops crt/libc, -ffreestanding tells
+    // clang not to assume library semantics, and the entry symbol comes from
+    // --entry (default _start). An optional linker script places the sections.
+    check g_build_bare == 1 {
+        set bare_ld: str = "";
+        check len(g_build_linkscript) > 0 {
+            check diag_path_exists(g_build_linkscript) == 0 {
+                echo!(fmt("torvc: link script '{}' not found.", g_build_linkscript));
+                exit(1);
+            }
+            bare_ld = str_concat(str_concat(" -T ", shq(g_build_linkscript)), " ");
+        }
+        set bare_opt: str = "-O2";
+        check final == 1 { bare_opt = "-O3"; }
+        // Axis A: if the program defines the allocator hooks, compile the Torvik
+        // runtime freestanding and link it, so heap types work bare. Per-function
+        // sections plus --gc-sections are what make this practical - they drop every
+        // runtime function the program never reaches, which is the difference between
+        // a couple of undefined symbols and dozens (sockets, stdio, ctype, errno).
+        // Extra object/source (a boot stub, say). Assembled or compiled for the same
+        // target, then linked alongside the Torvik code.
+        set bare_extra: str = "";
+        check len(g_build_linkwith) > 0 {
+            check diag_path_exists(g_build_linkwith) == 0 {
+                echo!(fmt("torvc: --link-with file '{}' not found.", g_build_linkwith));
+                exit(1);
+            }
+            fixed ext_obj: str = torvik_path_join(torvik_build_dir(), "torvik_linkwith.o");
+            fixed ext_cmd: str = str_concat(str_concat(str_concat(str_concat("clang -target ", g_build_arch), " -ffreestanding -mno-red-zone -c "), shq(g_build_linkwith)), str_concat(" -o ", shq(ext_obj)));
+            check verbose == 1 { echo!(str_concat("   LINK-WITH -> ", ext_cmd)); }
+            fixed ext_rc: i64 = sys_run(ext_cmd);
+            check ext_rc != 0 {
+                echo!(fmt("torvc: could not build '{}' for this target.", g_build_linkwith));
+                exit(1);
+            }
+            bare_extra = str_concat(" ", shq(ext_obj));
+        }
+        set bare_rt: str = "";
+        check g_bare_alloc_hooks == 1 {
+            fixed brt_obj: str = torvik_path_join(torvik_build_dir(), "torvik_runtime_bare.o");
+            // v1.5.0: compiled for the TARGET, not the host. torvik_runtime.c has a
+            // TORVIK_BARE path that skips every hosted header and declares what little
+            // it needs by hand, so a bare triple resolves cleanly. This is what makes a
+            // freestanding build genuinely host-independent: on Windows the host
+            // toolchain would otherwise emit a COFF object, which cannot link into an
+            // ELF kernel. --gc-sections then drops every function the program never
+            // reaches, so the OS-dependent parts are absent from the image entirely.
+            fixed brt_cmd: str = str_concat(str_concat(str_concat(str_concat("clang -target ", g_build_arch), " -ffreestanding -DTORVIK_BARE -mno-red-zone -ffunction-sections -fdata-sections -Wno-override-module -c "), shq(rt_src)), str_concat(" -o ", shq(brt_obj)));
+            check verbose == 1 { echo!(str_concat("   BARE-RT -> ", brt_cmd)); }
+            fixed brt_rc: i64 = sys_run(brt_cmd);
+            check brt_rc != 0 {
+                echo!("torvc: could not compile the Torvik runtime for a freestanding target.");
+                echo!("  Defining on_alloc/on_free pulls the runtime into a bare build so that heap");
+                echo!("  types work. Remove the hooks and the runtime is left out entirely.");
+                exit(1);
+            }
+            bare_rt = str_concat(" ", shq(brt_obj));
+        }
+        // When a link script is supplied it carries ENTRY(...), which is the more
+        // specific statement of intent - passing -e as well just invites the two to
+        // disagree silently.
+        // Windows: clang defaults to the MinGW/COFF linker driver, which rejects the
+        // ELF objects a bare build produces ("unknown file type"). LLVM's linker
+        // handles ELF on every host, and llvm-mingw bundles it. Use it when present -
+        // but only then, since a plain Linux clang may have no lld installed and the
+        // system linker works fine there.
+        set have_lld: i64 = 0;
+        check sys_run(probe_cmd("ld.lld --version")) == 0 { have_lld = 1; }
+        set bare_entry_flag: str = str_concat(" -Wl,-e,", g_build_entry);
+        check len(g_build_linkscript) > 0 { bare_entry_flag = ""; }
+        // Compile the IR to an object of its own. Doing this as a separate step lets
+        // the LINK be handled by ld.lld directly below - going through the clang
+        // driver on Windows routed the link via gcc/MinGW, which then handed ELF
+        // objects to a linker expecting COFF ("unknown file type").
+        fixed ir_obj: str = torvik_path_join(torvik_build_dir(), "torvik_bare_ir.o");
+        fixed irc_cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat("clang -target ", g_build_arch), " "), bare_opt), str_concat(" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -Wno-override-module -c ", shq(ir_path))), str_concat(" -o ", shq(ir_obj)));
+        check verbose == 1 { echo!(str_concat("   BARE-IR -> ", irc_cmd)); }
+        check sys_run(irc_cmd) != 0 {
+            echo!("torvc: could not compile the generated IR for this target.  [TVC-6001]");
+            echo!(fmt("  target: {}", g_build_arch));
+            exit(1);
+        }
+
+        set bare_cmd: str = "";
+        check have_lld == 1 {
+            // The LLVM linker handles ELF on every host, and llvm-mingw bundles it.
+            // Invoking it directly keeps the platform's own linker driver out of the
+            // way entirely, which is what makes a bare build behave the same on
+            // Windows as on Linux.
+            set lld_ent: str = str_concat(" -e ", g_build_entry);
+            check len(g_build_linkscript) > 0 { lld_ent = ""; }
+            set lld_ld: str = "";
+            check len(g_build_linkscript) > 0 { lld_ld = str_concat(" -T ", shq(g_build_linkscript)); }
+            bare_cmd = str_concat(str_concat(str_concat(str_concat("ld.lld -m elf_x86_64 --gc-sections", lld_ent), lld_ld), str_concat(" ", str_concat(shq(ir_obj), str_concat(bare_rt, bare_extra)))), str_concat(" -o ", shq(out)));
+        } fallback {
+            // No lld: fall back to the platform toolchain. Fine on Linux, where the
+            // system linker reads ELF natively.
+            bare_cmd = str_concat(str_concat(str_concat(str_concat(str_concat("clang -target ", g_build_arch), " -ffreestanding -nostdlib -static -fno-pic -Wno-override-module -Wl,--gc-sections"), bare_entry_flag), str_concat(bare_ld, str_concat(" ", str_concat(shq(ir_obj), str_concat(bare_rt, bare_extra))))), str_concat(" -o ", shq(out)));
+        }
+        check verbose == 1 { echo!(str_concat("   BARE -> ", bare_cmd)); }
+        fixed bare_rc: i64 = sys_run(bare_cmd);
+        check bare_rc == 0 {
+            // Multiboot 1 hands control to the kernel in 32-bit mode and, less
+            // obviously, refuses to load a 64-bit ELF at all - QEMU says "Cannot load
+            // x86-64 image, give a 32bit one". The CODE stays 64-bit; only the ELF
+            // container is rewritten, which is safe because the link is already
+            // complete and every relocation resolved.
+            check g_build_elf32 == 1 {
+                set oc: str = "llvm-objcopy";
+                check sys_run(probe_cmd("llvm-objcopy --version")) != 0 { oc = "objcopy"; }
+                // objcopy must not be given the same path for input and output - it
+                // truncates the file and you are left with a success message and no
+                // binary. Write beside it, then move into place.
+                fixed oc_tmp: str = str_concat(out, ".elf32.tmp");
+                fixed oc_cmd: str = str_concat(str_concat(str_concat(oc, " -O elf32-i386 "), shq(out)), str_concat(" ", shq(oc_tmp)));
+                check verbose == 1 { echo!(str_concat("   ELF32 -> ", oc_cmd)); }
+                set oc_rc: i64 = sys_run(oc_cmd);
+                check oc_rc == 0 {
+                    set mv_cmd: str = str_concat(str_concat("mv -f ", shq(oc_tmp)), str_concat(" ", shq(out)));
+                    check line_eq(sys_os_name(), "windows") == 1 {
+                        mv_cmd = str_concat(str_concat("move /Y ", shq(oc_tmp)), str_concat(" ", str_concat(shq(out), " >NUL")));
+                    }
+                    check sys_run(mv_cmd) != 0 { oc_rc = 1; }
+                }
+                check oc_rc != 0 {
+                    echo!("torvc: could not rewrite the image as a 32-bit ELF.");
+                    echo!("  --elf32 needs llvm-objcopy or objcopy on PATH. Without it the image is");
+                    echo!("  still a valid 64-bit freestanding ELF - it just won't load via Multiboot 1.");
+                    exit(1);
+                }
+            }
+            check quiet == 0 { echo!(fmt("Forged freestanding image! ({})", diag_fmt_secs(time_ms() - _t_build0))); }
+            return;
+        }
+        echo!("torvc: the freestanding link failed.  [TVC-6001]");
+        echo!(fmt("  target: {}   entry: {}", g_build_arch, g_build_entry));
+        echo!("  A bare build links no libc and no Torvik runtime, so any call that needs");
+        echo!("  either shows up here as an undefined symbol. Common causes:");
+        echo!("    - a heap type (str/list/table/bag) without the on_alloc/on_free hooks");
+        echo!("    - a linker script that doesn't define the sections your target needs");
+        echo!("    - lld not installed (bare linking uses the LLVM linker)");
+        exit(1);
+    }
     // On Windows, target the GNU (mingw) toolchain explicitly. Without this,
     // clang defaults to the MSVC target and needs Visual Studio's headers/libs;
     // the GNU target uses the mingw-w64 headers and libs that ship with the
@@ -541,7 +824,7 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     // native default target is correct, so no flag is added.
     set tgt: str = "";
     check line_eq(sys_os_name(), "windows") == 1 { tgt = " -target x86_64-w64-windows-gnu "; }
-    fixed rt_compile: str = str_concat(str_concat(str_concat(str_concat("clang", tgt), " -Wno-override-module -ffunction-sections -fdata-sections -c "), rt_src), str_concat(" -o ", rt_obj));
+    fixed rt_compile: str = str_concat(str_concat(str_concat(str_concat("clang", tgt), " -Wno-override-module -ffunction-sections -fdata-sections -c "), shq(rt_src)), str_concat(" -o ", shq(rt_obj)));
     fixed rt_result: i64 = sys_run(rt_compile);
     check rt_result != 0 {
         // On Windows the usual cause is a clang install without the mingw-w64
@@ -583,10 +866,78 @@ df compile_file(path: str, out: str, verbose: i64, quiet: i64, final: i64) -> vo
     } fallback {
         check final == 1 { optflags = "-O3"; stripflag = " -Wl,-s "; }
     }
-    fixed cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("clang", tgt), " "), str_concat(optflags, " -Wno-override-module")), gcflag), stripflag), reproflag), str_concat(ir_path, str_concat(" ", str_concat(rt_obj, libflags)))), str_concat(" -o ", out));
+    fixed cmd: str = str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat(str_concat("clang", tgt), " "), str_concat(optflags, " -Wno-override-module")), gcflag), stripflag), reproflag), str_concat(shq(ir_path), str_concat(" ", str_concat(shq(rt_obj), libflags)))), str_concat(" -o ", shq(out)));
     fixed result: i64 = sys_run(cmd);
     check result == 0 {
         check verbose == 1 { echo!(str_concat("   BIN -> ", out)); }
         check quiet == 0 { echo!(fmt("Compiled successfully! ({})", diag_fmt_secs(time_ms() - _t_build0))); }
-    } fallback { internal_error("TVC-5002", "ir-build", path, "clang rejected generated IR or linking failed"); }
+    } fallback {
+        // Inline assembly is the one place a user can hand the backend text the
+        // compiler cannot validate. If this module used galdr, blame the assembly
+        // rather than telling the user to file a toolchain bug.
+        check g_used_galdr == 1 {
+            echo!("torvc: the assembler rejected this build.");
+            echo!("  This program contains `galdr { ... }` inline assembly, which torvc passes");
+            echo!("  through untouched - so the instruction text itself is the likely cause.");
+            echo!("  Check the mnemonics and operand syntax (AT&T form, e.g. `mov $1, %rax`),");
+            echo!("  and that every instruction is a separate string.");
+            exit(1);
+        }
+        internal_error("TVC-5002", "ir-build", path, "clang rejected generated IR or linking failed");
+    }
+}
+
+// v1.5.0: run mode. Compile the script to a throwaway binary and execute it
+// immediately, python3-style, forwarding any extra arguments to the program (so
+// `torvc scan.tv a.txt b.txt` gives the program argv = [bin, a.txt, b.txt], which
+// it reads with the usual file builtins). No binary is left in the user's tree.
+// The temp binary lives under ~/.torvik/run (an executable location — /tmp is
+// mounted noexec on some systems, so the build dir there can't be run from).
+df run_file(script: str, prog_argv: list<str>, verbose: i64) -> void {
+    fixed home: str = sys_home_dir();
+    set rundir: str = str_concat(home, "/.torvik/run");
+    check line_eq(sys_os_name(), "windows") == 1 { rundir = str_concat(home, "\\.torvik\\run"); }
+    // Create the run directory, and make sure it actually exists before compiling
+    // into it. The very first `rune run` on a machine was failing while every later
+    // one worked - a fresh-directory race. A shell mkdir is idempotent and creates
+    // parents, so it costs nothing to be certain here.
+    fs_mkdir(rundir);
+    check fs_exists(rundir) == 0 {
+        set mk: str = str_concat("mkdir -p ", shq(rundir));
+        check line_eq(sys_os_name(), "windows") == 1 {
+            mk = str_concat(str_concat("if not exist ", shq(rundir)), str_concat(" mkdir ", shq(rundir)));
+        }
+        sys_run(mk);
+    }
+    check fs_exists(rundir) == 0 {
+        echo!(fmt("torvc: could not create the run directory '{}'.", rundir));
+        echo!("  Run mode compiles to a throwaway binary there. Build with -o instead,");
+        echo!("  or check the permissions on your Torvik home.");
+        exit(1);
+    }
+    fixed pid: i64 = sys_pid();
+    set binname: str = str_concat("tvrun_", int_to_str(pid));
+    check line_eq(sys_os_name(), "windows") == 1 { binname = str_concat(binname, ".exe"); }
+    fixed binpath: str = torvik_path_join(rundir, binname);
+    // Compile quietly (no "Compiled successfully" banner in run mode); compile
+    // errors and warnings still print, and a hard error still exits non-zero.
+    compile_file(script, binpath, verbose, 1, 0);
+    // Build: "binpath" "arg1" "arg2" ...  (each token quoted so paths with spaces
+    // survive the shell on both POSIX sh and cmd.exe).
+    set cmd: str = str_concat("\"", str_concat(binpath, "\""));
+    set k: i64 = 0;
+    whilst k < len(prog_argv) {
+        cmd = str_concat(cmd, str_concat(" \"", str_concat(prog_argv[k], "\"")));
+        k += 1;
+    }
+    // Same cmd.exe quirk as in rune: a command that begins and ends with a quote has
+    // that outer pair stripped, mangling the line. Give cmd a spare pair to remove.
+    set runcmd: str = cmd;
+    check line_eq(sys_os_name(), "windows") == 1 {
+        runcmd = str_concat(str_concat("\"", cmd), "\"");
+    }
+    fixed code: i64 = sys_run(runcmd);
+    // Best-effort cleanup; the run dir stays but never accumulates (pid-named).
+    fs_remove(binpath);
+    exit(code);
 }

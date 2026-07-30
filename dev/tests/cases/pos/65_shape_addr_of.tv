@@ -1,0 +1,18 @@
+shape Point { x: i64, y: i64 }
+packed shape Reg { lo: u8, hi: u8 }
+df main() -> void {
+    set p: Point = Point { x: 10, y: 20 };
+    unsafe set px: varda<i64> = addr_of(p.x);
+    unsafe fixed got: i64 = load(px);
+    echo!(got);
+    unsafe store(px, 99);
+    echo!(p.x);
+    unsafe set py: varda<i64> = addr_of(p.y);
+    unsafe store(py, 77);
+    echo!(p.y);
+    set r: Reg = Reg { lo: 1, hi: 2 };
+    unsafe set plo: varda<u8> = addr_of(r.lo);
+    unsafe store(plo, 200);
+    echo!(r.lo);
+    echo!(r.hi);
+}
