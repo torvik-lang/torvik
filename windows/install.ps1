@@ -196,22 +196,63 @@ Install-Binary $torvcTmp (Join-Path $BinDir 'torvc.exe')
 # --- runtime + standard library --------------------------------------------
 Download "$RawRef/runtime/torvik_runtime.c" (Join-Path $LibDir 'torvik_runtime.c')
 Download "$RawRef/VERSION"                   (Join-Path $LibDir 'VERSION')
-# Compiler library sources + the std umbrella module, matching the Linux
-# installer. std.tv in particular must be present or `apply std;` fails.
-foreach ($a in @('torvik_lexer.tv','torvik_parser.tv','torvik_codegen.tv','diag.tv','std.tv')) {
+# Compiler library sources. std.tv is NOT here any more - the standard library
+# has its own repository as of v1.5.0 and is installed just below.
+foreach ($a in @('torvik_lexer.tv','torvik_parser.tv','torvik_codegen.tv','diag.tv')) {
     try { Download "$RawRef/src/$a" (Join-Path $LibDir $a) } catch { }
 }
+
+# --- standard library --------------------------------------------------------
+# v1.5.0: std lives at torvik-lang/std with its own version line, so a project can
+# hold it on one major while the toolchain moves on.
+#
+# Older Torvik releases carried std inside their own tree. Git tags are immutable,
+# so a pinned install of anything before v1.5.0 still finds the matching std at that
+# tag - use it, and those versions keep working untouched.
+$StdRaw = 'https://raw.githubusercontent.com/torvik-lang/std'
 $stdDir = Join-Path $LibDir 'std'
 New-Item -ItemType Directory -Force -Path $stdDir | Out-Null
-# Derive the module list from the umbrella (std.tv) we just installed, so a new
-# module ships automatically once it's added to `apply std::X;` there. A
-# hardcoded list silently skipped new modules (v1.2.0's std::convert), and this
-# runs over HTTP where a directory glob isn't available.
-$stdUmbrella = Join-Path $LibDir 'std.tv'
-$mods = Select-String -Path $stdUmbrella -Pattern '^apply std::([a-z_]+)' |
-        ForEach-Object { $_.Matches[0].Groups[1].Value }
-foreach ($a in $mods) {
-    try { Download "$RawRef/src/std/$a.tv" (Join-Path $stdDir "$a.tv") } catch { }
+
+function Install-StdModules([string]$SrcBase, [string]$Ver) {
+    Download "$SrcBase/std.tv" (Join-Path $LibDir 'std.tv')
+    # Module list is DERIVED from the umbrella, never hardcoded - a hardcoded list
+    # silently skipped std::convert when it was added in v1.2.0.
+    $mods = Select-String -Path (Join-Path $LibDir 'std.tv') -Pattern '^apply std::([a-z_]+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value }
+    foreach ($m in $mods) { Download "$SrcBase/$m.tv" (Join-Path $stdDir "$m.tv") }
+    if ($Ver) { Set-Content -Path (Join-Path $LibDir 'std.VERSION') -Value "std = $Ver" -Encoding ascii }
+}
+
+$useOldStd = $false
+if ($env:TORVIK_VERSION) {
+    $parts = $V.Split('.')
+    if ($parts[0] -eq '1' -and [int]$parts[1] -lt 5) { $useOldStd = $true }
+}
+
+try {
+    if ($useOldStd) {
+        # Pre-split layout, straight from the pinned Torvik tag.
+        Install-StdModules "$RawRef/src/std" $null
+        Download "$RawRef/src/std.tv" (Join-Path $LibDir 'std.tv')
+        $sv = (Select-String -Path (Join-Path $LibDir 'VERSION') -Pattern '^\s*std\s*=\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+        if ($sv) { Set-Content -Path (Join-Path $LibDir 'std.VERSION') -Value "std = $sv" -Encoding ascii }
+    } else {
+        # A pinned toolchain asks for the std its VERSION names, so the pair stays
+        # matched; a latest install takes the newest published std.
+        $sv = $null
+        if ($env:TORVIK_VERSION) {
+            $m = Select-String -Path (Join-Path $LibDir 'VERSION') -Pattern '^\s*std\s*=\s*(.+)$'
+            if ($m) { $sv = $m.Matches[0].Groups[1].Value.Trim() }
+        }
+        if (-not $sv) {
+            $sv = ((iwr -useb "$StdRaw/main/VERSION").Content -split "`n" |
+                   Where-Object { $_ -match '^\s*std\s*=' } |
+                   ForEach-Object { ($_ -split '=')[1].Trim() })[0]
+        }
+        Install-StdModules "$StdRaw/v$sv/src" $sv
+    }
+} catch {
+    Write-Warning "Could not install the standard library. torvc works without it; 'apply std' will not."
 }
 
 # --- .tv file type + icon (v1.2.0) -------------------------------------------
