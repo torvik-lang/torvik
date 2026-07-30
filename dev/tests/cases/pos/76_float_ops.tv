@@ -1,0 +1,21 @@
+df sq(x: f32) -> f32 {
+    return x;
+}
+df main() -> void {
+    fixed r: f32 = sq(2.5);
+    echo!(r);
+    fixed a: f32 = 1.5;
+    fixed b: f64 = 2.5;
+    fixed c: f64 = a + b;
+    echo!(c);
+    check a < b { echo!("lt"); } fallback { echo!("ge"); }
+    fixed buf: [f32; 2] = [1.0, 2.0];
+    unsafe set p: varda<f32> = addr_of(buf);
+    unsafe store(p, 3.5);
+    unsafe fixed v: f64 = load(p);
+    echo!(v);
+    fixed big: f16 = 99999.0;
+    echo!(big);
+    fixed neg: f32 = 0.0 - 1.5;
+    echo!(neg);
+}

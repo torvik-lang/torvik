@@ -1,0 +1,7 @@
+df show(entry: str) -> void {
+    echo!(entry);
+}
+df main() -> void {
+    fixed entry: str = "entry-named identifiers work";
+    show(entry);
+}

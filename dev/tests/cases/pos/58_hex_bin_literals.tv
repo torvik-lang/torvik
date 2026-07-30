@@ -1,0 +1,20 @@
+df main() -> void {
+    // Hex (lower/upper prefix), binary, and '_' digit separators.
+    fixed vga: i64 = 0xB8000;            echo!(vga);        // 753664
+    fixed cap: i64 = 0XFF;               echo!(cap);        // 255
+    fixed mask: i64 = 0xDEAD_BEEF;       echo!(mask);       // 3735928559
+    fixed bits: i64 = 0b1010_1010;       echo!(bits);       // 170
+    fixed one: i64 = 0B1;                echo!(one);        // 1
+    fixed mil: i64 = 1_000_000;          echo!(mil);        // 1000000
+    // Full-width unsigned and 128-bit decode exactly.
+    fixed u: u64 = 0xFFFF_FFFF_FFFF_FFFF; echo!(u);         // 18446744073709551615
+    fixed w: i128 = 0x1_0000_0000_0000_0000; echo!(w);      // 18446744073709551616
+    // Sized types still range-check; unsafe wraps intentionally.
+    fixed small: u8 = 0xFF;              echo!(small);      // 255
+    unsafe fixed over: u8 = 0x1FF;       echo!(over);       // 255 (wrapped)
+    // Hex/binary usable in expression positions.
+    each i in 0..0b11 { echo!(i); }                          // 0 1 2
+    fixed sum: i64 = 0x10 + 0b0001;      echo!(sum);        // 17
+    // Floats remain unaffected.
+    fixed pi: f64 = 3.14159;             echo!(pi);
+}

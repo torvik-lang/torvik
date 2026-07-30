@@ -1,0 +1,9 @@
+size_of(i8)=1 align=1
+size_of(i32)=4 align=4
+size_of(i64)=8 align=8
+size_of(f64)=8 align=8
+size_of(bool)=1 align=1
+Point:  size=16 align=8   (expect 16 / 8)
+Mixed:  size=24 align=8   (expect 24 / 8 - padded)
+PMixed: size=10 align=1   (expect 10 / 1 - packed)
+size_of(Point) * 4 = 64

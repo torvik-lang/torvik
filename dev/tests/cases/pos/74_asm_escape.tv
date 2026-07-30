@@ -1,0 +1,6 @@
+df main() -> void {
+    unsafe galdr { "nop"; }
+    echo!("asm ok");
+    fixed s: str = "a \"quoted\" string still works";
+    echo!(s);
+}

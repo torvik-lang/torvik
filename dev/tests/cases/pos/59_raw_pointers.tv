@@ -1,0 +1,18 @@
+df main() -> void {
+    // int address -> pointer -> int address round-trip
+    unsafe fixed base: varda<i32> = from_addr(0x1000);
+    unsafe fixed a: u64 = as_addr(base);
+    echo!(a);                                  // 4096
+    // ptr_add scales by element size (i32 = 4 bytes)
+    unsafe fixed p2: varda<i32> = ptr_add(base, 2);
+    unsafe fixed a2: u64 = as_addr(p2);
+    echo!(a2);                                 // 4104
+    // ptr_byte_offset is a raw byte advance
+    unsafe fixed p3: varda<i32> = ptr_byte_offset(base, 3);
+    unsafe fixed a3: u64 = as_addr(p3);
+    echo!(a3);                                 // 4099
+    // null / is_null are safe (no unsafe needed)
+    fixed z: varda<i64> = null_addr();
+    check is_null(z) { echo!("znull"); }
+    check is_null(base) { echo!("bad"); } fallback { echo!("bnn"); }
+}

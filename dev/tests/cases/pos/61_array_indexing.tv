@@ -1,0 +1,26 @@
+df main() -> void {
+    set buf: [i64; 4] = array_zero();
+    buf[0] = 42;
+    buf[1] = 99;
+    buf[3] = 7;
+    echo!(buf[0]);
+    echo!(buf[1]);
+    echo!(buf[2]);
+    echo!(buf[3]);
+    fixed i: i64 = 1;
+    echo!(buf[i]);
+    // variable-index read loop
+    set total: i64 = 0;
+    set k: i64 = 0;
+    whilst k < len(buf) {
+        total += buf[k];
+        k += 1;
+    }
+    echo!(total);
+    // u8 array: write wraps, read zero-extends
+    set bytes: [u8; 4] = array_zero();
+    bytes[0] = 300;
+    bytes[1] = 255;
+    echo!(bytes[0]);
+    echo!(bytes[1]);
+}

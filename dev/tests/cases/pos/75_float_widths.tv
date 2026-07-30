@@ -1,0 +1,25 @@
+shape Vec3 { x: f32, y: f32, z: f32 }
+shape Mixed { h: f16, f: f32, d: f64, q: f128 }
+df main() -> void {
+    // scalar variables at each width
+    fixed a: f32 = 1.5;
+    fixed b: f16 = 0.5;
+    fixed c: f64 = 3.25;
+    fixed d: f128 = 2.75;
+    echo!(fmt("f32={a} f16={b} f64={c} f128={d}"));
+    // f32 rounding: 0.1 is not representable, f32 rounds differently than f64
+    fixed p: f32 = 0.1;
+    fixed q: f64 = 0.1;
+    echo!(fmt("f32(0.1)={p}  f64(0.1)={q}"));
+    // shapes with float fields
+    set v: Vec3 = Vec3 { x: 1.5, y: 2.5, z: 3.5 };
+    echo!(fmt("vec = {v.x} {v.y} {v.z}"));
+    v.x = 10.25;
+    echo!(fmt("after write: {v.x}"));
+    // layout is the real width
+    echo!(fmt("size_of(f16)={} f32={} f64={} f128={}", size_of(f16), size_of(f32), size_of(f64), size_of(f128)));
+    echo!(fmt("size_of(Vec3)={} (expect 12)", size_of(Vec3)));
+    // arrays of f32
+    fixed arr: [f32; 3] = [1.5, 2.5, 3.5];
+    echo!(fmt("arr={arr[0]} {arr[1]} {arr[2]}"));
+}
