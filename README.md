@@ -6,7 +6,7 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
@@ -37,7 +37,7 @@ there is no virtual machine and no garbage collector.
   written in Torvik.
 - **Automatic reference counting** — deterministic memory management, no GC, no manual frees.
 - **A small, sharp type system** — integers `i8`–`i64`, `u8`–`u64`, the wide `i128`/`u128`,
-  `f64`, `bool`, `str`, the `list`, `table`, and `bag` collections, `result<T>` for
+  `f16`/`f32`/`f64`/`f128`, `bool`, `str`, the `list`, `table`, and `bag` collections, `result<T>` for
   explicit error handling, and **`aett`** — enumerations named for the rune families,
   with exhaustiveness-checked **`when`** pattern matching.
 - **A compiler that talks to you** — clean located errors for every invalid program, and
@@ -52,7 +52,13 @@ there is no virtual machine and no garbage collector.
 - **Networking, opt-in** — `apply std::net;` adds a small HTTP layer (request parsing, MIME
   types, binary-safe file serving) over transport primitives that dead-strip out of programs
   that never use them.
-- **`rune` project tool** — create, build, and run projects with one command.
+- **Systems and OS development** — raw pointers (`varda<T>`), fixed arrays, `shape` value
+  structs (`packed` ones map byte-for-byte onto C structs), volatile MMIO, inline assembly
+  (`galdr`), and `torvc --bare` for freestanding images that boot on real hardware with no
+  OS beneath them. Every one of these is opt-in and `unsafe`-gated — the safe surface stays
+  safe. There's a [complete reference kernel and tutorial](examples/kernel/) in the repo.
+- **`rune` project tool** — create, build, and run projects with one command. Run a single
+  file with `rune run file.tv`, or declare a `[build]` section and build a kernel.
 - **Proven on real software** — [Vefna](https://github.com/torvik-lang/vefna), a parallel
   static site generator, is written entirely in Torvik (the
   [Torvik website](https://torvik-lang.github.io) is woven with it).
@@ -212,7 +218,10 @@ Check out our **[Wiki page](https://github.com/torvik-lang/torvik/wiki)** for mo
 - **[The Torvik website](https://torvik-lang.github.io)** — the language at a glance, install, and a tour.
 - **[The Torvik Guide](docs/GUIDE.md)** — full tutorial and language reference.
 - **[Tooling](docs/TOOLING.md)** — the `torvc` compiler and the `rune` project tool.
-- **[Standard library](docs/STDLIB.md)** — built-in function reference.
+- **[Standard library](https://github.com/torvik-lang/std)** — its own repository, with its
+  own version line.
+- **[Forge your first kernel](examples/kernel/README.md)** — freestanding builds, from three
+  lines to a booting kernel.
 
 ---
 
@@ -224,11 +233,14 @@ Check out our **[Wiki page](https://github.com/torvik-lang/torvik/wiki)** for mo
 | `rune`  | Project & build tool         |
 
 ```bash
+torvc myfile.tv               # run it (no binary left behind)
 torvc myfile.tv -o myfile     # compile
 torvc myfile.tv --final       # production build
+torvc kernel.tv --bare -o kernel.elf   # freestanding image
 rune new myapp                # create a project
 rune build                    # compile the project
 rune run                      # compile and run
+rune run script.tv a.txt      # run one file, with arguments
 ```
 
 ---
@@ -240,6 +252,17 @@ Torvik compiles itself. The compiler and package manager are written entirely in
 in the bootstrap. A clean self-rebuild reproduces the compiler bit-for-bit.
 
 ---
+
+## Support
+
+Every major version is supported for **five years**: three of active development, one
+of maintenance, one of security fixes. Torvik 1.x, rune 1.x and Vefna 1.x are all in
+**Active** support until 4 July 2029, with end of life on **4 July 2031**.
+
+`rune update` keeps you inside your current major and tells you when a new one
+appears rather than installing it, so upgrading is always a decision you make.
+
+Full policy: **[SUPPORT.md](SUPPORT.md)**
 
 ## License
 
