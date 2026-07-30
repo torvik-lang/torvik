@@ -2,14 +2,18 @@
 
 ## Supported versions
 
-Torvik is at an early stage. Security fixes are applied to the latest released
-version only. There is no backported-support window yet; when that changes, this
-section will be updated.
+Every major version is supported for five years: three of **Active** development
+(features, bugs, security), one of **Maintenance** (bugs and security), and one of
+**Security** fixes only. Security fixes are backported to every line still inside
+that window.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| Line | Stage | Security fixes until |
+| ---- | ----- | -------------------- |
+| 1.x  | **Active** | 4 July 2031 |
+| < 1.0 | End of life | — |
+
+The full schedule, including the Active and Maintenance boundaries, is in
+[SUPPORT.md](SUPPORT.md).
 
 ## Reporting a vulnerability
 
