@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed a: [str; 2] = [1, 2];
+    echo!("x");
+}

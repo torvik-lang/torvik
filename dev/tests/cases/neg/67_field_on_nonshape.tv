@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed n: i64 = 5;
+    echo!(n.x);
+}

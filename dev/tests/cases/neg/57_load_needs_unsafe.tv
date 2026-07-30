@@ -1,0 +1,6 @@
+df main() -> void {
+    set buf: [i64; 2] = array_zero();
+    unsafe fixed b: varda<i64> = addr_of(buf);
+    fixed v: i64 = load(b);
+    echo!(v);
+}

@@ -1,0 +1,5 @@
+df main() -> void {
+    unsafe fixed base: varda<i32> = from_addr(0x1000);
+    fixed a: u64 = as_addr(base);
+    echo!(a);
+}

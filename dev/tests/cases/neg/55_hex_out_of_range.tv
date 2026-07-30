@@ -1,0 +1,4 @@
+df main() -> void {
+    fixed b: i8 = 0x100;
+    echo!(b);
+}

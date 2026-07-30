@@ -1,0 +1,5 @@
+df main() -> void {
+    fixed b: [i64; 2] = array_zero();
+    unsafe set p: varda<i64> = addr_of(b);
+    unsafe store_vol(p);
+}

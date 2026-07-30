@@ -1,0 +1,4 @@
+shape Bad { }
+df main() -> void {
+    echo!("x");
+}
