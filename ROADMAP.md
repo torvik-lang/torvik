@@ -1,7 +1,32 @@
 # Torvik Roadmap
 
 
-## v1.4.0 — current public release
+## v1.5.0 — "The Forge" — current public release
+
+Systems and OS development. Torvik can now produce a freestanding image that boots on
+bare hardware. Everything here is opt-in and `unsafe`-gated — the safe surface is
+unchanged.
+
+- **Raw pointers** (`varda<T>`), **fixed arrays** (`[T; N]`, bounds-checked), and
+  **`shape` value structs**, plain and `packed` — a packed shape maps byte-for-byte
+  onto a C struct or a hardware descriptor.
+- **`size_of` / `align_of`** for any scalar or shape, resolved at compile time.
+- **Volatile MMIO** (`load_vol` / `store_vol`), **inline assembly** (`galdr`), and
+  named x86_64 intrinsics (`cli`, `sti`, `hlt`, `outb`/`inb`, …).
+- **Freestanding builds** — `torvc --bare`, an allocator hook (`on_alloc`/`on_free`),
+  and OS builtins refused at compile time with an error that says what to use instead.
+  A complete reference kernel and tutorial ship in `examples/kernel/`.
+- **Float widths** `f16`, `f32` and `f128` alongside `f64`, with true storage layout.
+- **Hex, binary and underscored integer literals.**
+- **Run mode** — `torvc file.tv` and `rune run file.tv` execute a file directly.
+- **`[build]` manifest section** so `rune build` / `rune run` work for a kernel.
+- **Major-version gating** for both the toolchain and the standard library: updates
+  stay inside your current major and surface a new one instead of installing it.
+- **The standard library moved to its own repository** with its own version line.
+- **`&&` and `||` now short-circuit** — a correctness fix; they previously evaluated
+  both sides.
+
+## v1.4.0
 
 - **Optional (`^`) and variadic (`*`) parameters.** Mark a trailing parameter `^` to let
   callers omit it (it takes a type-appropriate zero), or `*` to gather the remaining
@@ -215,10 +240,46 @@ v1.1.0 plan so that v1.1.0 — which carries important fixes for v1.0 users — 
 
 ### Language & types
 
-- **`shape`** — structs / record types.
 - **`pub`** — visibility / export control.
-- **`f32`**, a dedicated **`char`** type, and **fixed-size arrays** (`[T; N]`).
+- **`f32`** and a dedicated **`char`** type.
 - **`\u{...}` Unicode escapes** — with the scanner alignment that requires.
+
+#### Completing `shape` and fixed arrays (v1.7+)
+
+`shape` value structs and fixed arrays (`[T; N]`) shipped in **v1.5.0** holding the
+full machine-scalar set (`i8`–`i64`, `u8`–`u64`, `bool`, `f64`). Anything outside that
+set is refused with a clear error today rather than silently mis-stored. The
+remaining pieces are grouped here because they share one design problem:
+
+- **Heap-backed types as fields and elements** — `str`, `list`, `table`, `bag`, and
+  `i128`/`u128`. These are ARC-managed or boxed, so supporting them means threading
+  retain/release through field assignment, scope exit, and whole-shape copies. That
+  is the real work; the storage itself is the easy half.
+- **Nested shapes, and arrays inside shapes.**
+- **Fixed arrays as globals** — `set buf: [u8; 4096] = array_zero();` at module scope
+  is currently refused ("a global must be initialized"); only locals may be arrays.
+- **Shape parameters and returns** — passing a `shape` to a function and returning one,
+  which needs the calling-convention (ABI) decisions that value types imply.
+
+These are deliberately scheduled after **v1.6.0** (the full runtime port from C to
+Torvik), which is a large piece of work on its own.
+
+### Compiler internals — expression handling
+
+Follow-ups identified while fixing builtin chaining in v1.5.0. None of these produce
+wrong answers today; they either cost clarity in the compiler or surface as an
+awkward error rather than a working expression.
+
+- **`finish_f64_result`** — v1.5.0 added `finish_i64_result` so that any integer
+  builtin result folds into surrounding arithmetic and comparisons (`byte_at(s, 0) * 2`,
+  `args() >= 2`). The `f64`-returning builtins have the identical shape and would need
+  the matching finisher over `chain_tail_f`. Not yet audited, so some float builtin
+  results may still need binding to a variable before use in a larger expression.
+- **Typed-slots refactor** — the structural cure for the whole "result of a call or an
+  index used directly as an operand" family. Today each producer threads its own chain
+  continuation; typed slots would let the expression compiler treat every value
+  uniformly and retire the per-site duplication (and the remaining bind-first cases,
+  such as arithmetic directly on a `list<i128>` element).
 
 ### Standard library & tooling
 
