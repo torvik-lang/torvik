@@ -49,6 +49,7 @@ manager). The leading digit of the number identifies the subsystem:
 | `TVC-3xxx` | Codegen                                   |
 | `TVC-4xxx` | Imports / module resolution               |
 | `TVC-5xxx` | IR / runtime interface (clang, linking)   |
+| `TVC-6xxx` | Freestanding / target (v1.5.0)            |
 | `TVC-9xxx` | Internal invariant ("this cannot happen") |
 
 | Range       | Subsystem (rune)              |
@@ -65,6 +66,7 @@ manager). The leading digit of the number identifies the subsystem:
 | `TVC-1001` | lex           | Token/offset table length mismatch (lexer scan drift).        | `extract_offsets` and `lex_source` scanned the source differently — an internal lexer bug, reproducible from the recorded input file. |
 | `TVC-5001` | runtime-build | The bundled runtime C failed to compile (clang error).        | A broken or mismatched `torvik_runtime.c`, or a toolchain/`clang` problem in the environment. |
 | `TVC-5002` | ir-build      | `clang` rejected the generated IR, or linking failed.         | A codegen bug emitting invalid LLVM IR for some construct — usually reproducible from the recorded input file. |
+| `TVC-6001` | bare-link     | The freestanding (`--bare`) link failed.                      | Most often a heap type used without the `on_alloc` / `on_free` hooks, a link script that doesn't define the sections the target needs, or a missing `lld`. Unlike `TVC-5002` this is usually the program's own doing, so the message lists the likely causes rather than asking for a bug report. |
 | `TVC-9001` | codegen       | Code generation produced no IR output.                        | Codegen returned without writing the IR file — an internal invariant violation distinct from `TVC-5002` (where IR exists but `clang` rejects it). |
 | `RUNE-3001`| build         | `torvc` reported success but produced no output binary.       | An inconsistency between `torvc`'s exit status and its output — a `torvc` or `rune` orchestration bug. |
 
