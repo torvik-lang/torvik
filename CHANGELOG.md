@@ -1,5 +1,106 @@
 # Changelog
 
+## [1.5.0] — "The Forge" — 2026-07
+
+Systems and OS development. Torvik can now produce a freestanding image that boots
+on bare hardware with no operating system, no C library, and no runtime underneath
+it — while the safe surface stays exactly as safe as it was.
+
+Everything new here is opt-in and `unsafe`-gated. If you don't write the word
+`unsafe`, nothing in this release can reach an address it shouldn't.
+
+### Added — the language
+
+- **Hex, binary and underscored integer literals** — `0xB8000`, `0b1010_0110`,
+  `1_000_000`.
+- **Raw pointers — `varda<T>`.** `from_addr`, `as_addr`, `ptr_add` (element-scaled),
+  `ptr_byte_offset` (raw bytes), `load`, `store`, plus the safe `addr_of`,
+  `null_addr` and `is_null`.
+- **Fixed-size arrays — `[T; N]`.** Inline storage, `array_zero()`, array literals,
+  and **bounds-checked** indexing. The safe surface stays safe.
+- **`shape` value structs**, plain and `packed`. Fields read and write, take part in
+  arithmetic and comparison, and `addr_of(p.field)` yields a typed pointer into one.
+  A `packed shape` maps byte-for-byte onto a C struct.
+- **`size_of(T)` / `align_of(T)`** — compile-time layout facts for any scalar or
+  shape. Layout is LLVM's, so `packed` reports what the hardware manual says.
+- **Volatile memory access — `load_vol` / `store_vol`.** Never elided, merged or
+  reordered, which is what makes a hardware register write actually happen.
+- **Inline assembly — `galdr { "cli"; "hlt"; }`** — one instruction per string,
+  emitted with `sideeffect`.
+- **Named x86_64 intrinsics** — `cli`, `sti`, `hlt`, `pause_cpu`, `outb`/`outw`/`outl`,
+  `inb`/`inw`/`inl`. The register constraints live in the compiler, written once and
+  tested, instead of in every kernel.
+- **Float widths — `f16`, `f32`, `f128`** alongside `f64`. Storage is the true
+  declared width, so `shape Vec3 { x: f32, y: f32, z: f32 }` is twelve bytes.
+
+### Added — freestanding builds
+
+- **`torvc --bare`** produces a freestanding image: no libc, no runtime unless you
+  ask for one. `--no-std`, `--entry`, `--arch`, `--link-script` and `--link-with`
+  come with it.
+- **The allocator hook.** Define `on_alloc` / `on_free` and heap types work in a
+  bare image; leave them out and the runtime isn't linked at all.
+- **OS builtins are refused at compile time** in a bare build, with an error that
+  says what to use instead — rather than an undefined-symbol dump from the linker.
+- **The output is decided by the target, not the host.** A kernel built on Windows
+  is the same ELF as one built on Linux.
+- **`examples/kernel/`** — a complete reference kernel with VGA text output, port
+  I/O, a long-mode boot stub, a linker script, and a *Forge your first kernel*
+  tutorial.
+
+### Added — tooling
+
+- **Run mode.** `torvc file.tv` compiles and runs a file, leaving no
+  binary behind. Trailing arguments reach the program through `args_get`.
+- **`rune run file.tv [args...]`** does the same; a bare `rune run` still runs the
+  project.
+- **`[build]` in `torvik.rune`** — declare `target = bare`, `entry`, `arch`,
+  `link-script`, `link-with` and a `runner` once, and `rune build` / `rune run` do
+  the right thing for a kernel.
+- **Major-version gating.** `rune update` now keeps you on your current major and
+  *tells* you about a new one instead of installing it. Opt in with
+  `rune update v2 --yes`; quiet the notice with `--silence-major` (it returns when
+  the next major ships).
+
+### Changed
+
+- **`&&` and `||` now short-circuit.** They previously evaluated both sides, so
+  `i < len(xs) && xs[i] == 1` could read out of bounds. This is a correctness fix.
+- **Builtin results fold into surrounding expressions.** `byte_at(s, 0) * 2` and
+  `args() >= 2` used to fail with a confusing three-error cascade; only a handful of
+  builtins chained correctly. All of them do now.
+- **The standard library moved to its own repository**,
+  [torvik-lang/std](https://github.com/torvik-lang/std), with its own version line.
+  Pin it with `std = "1.3.0"` in your manifest; `rune update --std-major` opts into a
+  new major and records it for you. Installing an older Torvik still works exactly as
+  before.
+- rune is tested in its own repository now, so each project can be checked on its own.
+
+### Fixed
+
+- A user identifier named `entry` made the compiler fail with an internal error —
+  LLVM shares one namespace for values and block labels.
+- Defining a function or global named after a linked symbol (`puts`, `malloc`,
+  `torvik_argc`, …) reported an internal error asking you to file a compiler bug,
+  for what was a naming choice. It's now a clear message.
+- A decimal used as an index, and several float paths, produced internal errors.
+- Reporting a diagnostic could itself crash the compiler on an out-of-range position.
+- Paths containing spaces broke the build.
+- `galdr` assembly text is escaped, so a quote in an instruction can no longer inject
+  arbitrary IR.
+- Shape and array variables were wrongly reported as unused when only their
+  fields or elements were read.
+- Unsupported field and element types (`str`, `list`, `i128`, …) used to compile and
+  store garbage; they're now refused with a clear error listing what is allowed.
+
+### Notes
+
+- `f128` arithmetic computes at double precision; declaration, storage and layout are
+  exact. On x86 it also needs soft-float support, which a `--bare` build doesn't link.
+  Treat it as a storage and interop type.
+- Heap-backed types (`str`, `list`, `table`, `bag`, `i128`/`u128`), nested shapes and
+  shape parameters are not supported in shapes or fixed arrays yet — see the roadmap.
+
 ## [1.4.0] — 2026-07
 
 ### Added
