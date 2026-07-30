@@ -385,6 +385,44 @@ df parse_program(tokens: list<i64>, strings: list<str>, str_vals: list<str>,
             continue;
         }
 
+        // v1.5.0 Forge: `packed` modifier before a shape — consume it here so the
+        // KW_SHAPE skip below handles the rest. Nested checks: Torvik's `&&` does
+        // not short-circuit, so strings[str_idx] must be guarded by a nested check.
+        check t == TOK_IDENT {
+            check str_idx < len(strings) {
+                check line_eq(strings[str_idx], "packed") == 1 {
+                    check tok_peek(tokens, pos + 1) == KW_SHAPE {
+                        str_idx += 1; pos += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // v1.5.0 Forge: shape declarations are collected in collect_shapes and
+        // skipped here (same token shape as aett: a header then a { ... } body of
+        // idents/colons/commas). Advance the string/name cursors identically.
+        check t == KW_SHAPE {
+            pos += 1;
+            whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_LBRACE && tok_peek(tokens, pos) != TOK_EOF {
+                fixed shk: i64 = tok_peek(tokens, pos);
+                check shk == TOK_IDENT || shk == TOK_STRING { str_idx += 1; }
+                check shk == TOK_STRING || shk == TOK_INT || shk == TOK_FLOAT { str_idx_s += 1; }
+                pos += 1;
+            }
+            check tok_peek(tokens, pos) == PUNCT_LBRACE {
+                pos += 1;
+                whilst pos < ntok && tok_peek(tokens, pos) != PUNCT_RBRACE && tok_peek(tokens, pos) != TOK_EOF {
+                    fixed sbk: i64 = tok_peek(tokens, pos);
+                    check sbk == TOK_IDENT || sbk == TOK_STRING { str_idx += 1; }
+                    check sbk == TOK_STRING || sbk == TOK_INT || sbk == TOK_FLOAT { str_idx_s += 1; }
+                    pos += 1;
+                }
+                check tok_peek(tokens, pos) == PUNCT_RBRACE { pos += 1; }
+            }
+            continue;
+        }
+
+
         // Function definition: df NAME(PARAMS) -> TYPE { BODY }
         check t == KW_DF {
             // ── Validate the header shape BEFORE parsing it. Each required element
