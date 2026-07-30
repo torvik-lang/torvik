@@ -1,0 +1,173 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// The Torvik reference kernel.
+//
+// A complete freestanding x86_64 program: no operating system, no C library, no
+// Torvik runtime unless you ask for one. It writes to the VGA text buffer, reads
+// and writes hardware I/O ports, and then parks the machine.
+//
+//   Build:  torvc kernel.tv --bare --link-script linker.ld -o kernel.elf
+//   Run:    qemu-system-x86_64 -kernel kernel.elf
+//
+// Every hardware access below is `unsafe`. That is the deal Torvik offers: the
+// safe surface stays safe, and the moment you need to touch an address the machine
+// cares about, you say so in the source.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The VGA text buffer is memory-mapped at 0xB8000. It is 80x25 cells, each cell a
+// u16: the low byte is the character, the high byte is the colour attribute.
+fixed VGA_BASE: i64 = 0xB8000;
+fixed VGA_COLS: i64 = 80;
+fixed VGA_ROWS: i64 = 25;
+
+// Attribute byte: high nibble is background, low nibble is foreground.
+fixed COLOUR_GREY_ON_BLACK: i64 = 0x07;
+fixed COLOUR_WHITE_ON_BLUE: i64 = 0x1F;
+fixed COLOUR_YELLOW: i64 = 0x0E;
+
+// The VGA CRT controller is reached through two I/O ports rather than memory.
+fixed CRTC_INDEX: i64 = 0x3D4;
+fixed CRTC_DATA: i64 = 0x3D5;
+
+// One cell = character byte | (attribute << 8).
+df vga_cell(ch: i64, colour: i64) -> i64 {
+    return ch + (colour * 256);
+}
+
+// Write one cell. Volatile, because the write IS the visible effect - an ordinary
+// store to memory nothing else reads could legitimately be optimised away.
+df vga_put(row: i64, col: i64, ch: i64, colour: i64) -> void {
+    check row < 0 || row >= VGA_ROWS { return; }
+    check col < 0 || col >= VGA_COLS { return; }
+    fixed offset: i64 = (row * VGA_COLS) + col;
+    unsafe set base: varda<u16> = from_addr(VGA_BASE);
+    unsafe set cell: varda<u16> = ptr_add(base, offset);
+    unsafe store_vol(cell, vga_cell(ch, colour));
+}
+
+df vga_clear(colour: i64) -> void {
+    set row: i64 = 0;
+    whilst row < VGA_ROWS {
+        set col: i64 = 0;
+        whilst col < VGA_COLS {
+            vga_put(row, col, 32, colour);
+            col += 1;
+        }
+        row += 1;
+    }
+}
+
+// Print a string literal. String literals live in the image as static data, so
+// this needs no allocator - see heap_kernel.tv for the version that does.
+df vga_print(row: i64, col: i64, text: str, colour: i64) -> void {
+    fixed n: i64 = len(text);
+    set i: i64 = 0;
+    whilst i < n {
+        fixed ch: i64 = byte_at(text, i);
+        vga_put(row, col + i, ch, colour);
+        i += 1;
+    }
+}
+
+// Move the hardware cursor. Two 8-bit halves, written through the CRTC index/data
+// port pair: select a register on 0x3D4, then write its value on 0x3D5.
+df vga_move_cursor(row: i64, col: i64) -> void {
+    fixed pos: i64 = (row * VGA_COLS) + col;
+    fixed hi: i64 = pos / 256;
+    fixed lo: i64 = pos - (hi * 256);
+    unsafe outb(CRTC_INDEX, 14);
+    unsafe outb(CRTC_DATA, hi);
+    unsafe outb(CRTC_INDEX, 15);
+    unsafe outb(CRTC_DATA, lo);
+}
+
+// Read a CRTC register back, to show that input ports work too.
+df crtc_read(reg: i64) -> i64 {
+    unsafe outb(CRTC_INDEX, reg);
+    unsafe fixed v: i64 = inb(CRTC_DATA);
+    return v;
+}
+
+// Render a non-negative integer in decimal. No allocation: digits are extracted
+// into a fixed array and written straight to the screen.
+df vga_print_int(row: i64, col: i64, value: i64, colour: i64) -> void {
+    check value == 0 {
+        vga_put(row, col, 48, colour);
+        return;
+    }
+    fixed digits: [u8; 20] = array_zero();
+    set n: i64 = value;
+    set count: i64 = 0;
+    whilst n > 0 {
+        fixed d: i64 = n - ((n / 10) * 10);
+        digits[count] = d + 48;
+        n = n / 10;
+        count += 1;
+    }
+    set i: i64 = 0;
+    whilst i < count {
+        fixed ch: i64 = digits[count - 1 - i];
+        vga_put(row, col + i, ch, colour);
+        i += 1;
+    }
+}
+
+// ── The allocator hook ───────────────────────────────────────────────────────
+// Anything that touches the Torvik runtime — and `str` does, for len() and
+// byte_at() — bottoms out in malloc/free. Freestanding there is no libc to supply
+// them, so the kernel supplies its own. Define both hooks and torvc wires the C
+// names onto them and links the runtime; leave them out and the runtime is not
+// linked at all (see hello_kernel.tv for that stripped-down case).
+//
+// This is a bump allocator over a fixed region of physical memory: hand out
+// 16-byte-aligned blocks, never reclaim. Crude, but a kernel this size never frees,
+// and it is honest about what it is.
+fixed ARENA_BASE: i64 = 0x200000;
+fixed ARENA_SIZE: i64 = 0x100000;
+set arena_off: i64 = 0;
+
+df on_alloc(size: i64) -> varda<u8> {
+    set n: i64 = size;
+    fixed rem: i64 = n - ((n / 16) * 16);
+    check rem != 0 { n = n + (16 - rem); }
+    check arena_off + n > ARENA_SIZE {
+        // Out of arena. Returning null is the documented contract; the runtime
+        // panics, and bare a panic parks the machine.
+        unsafe set nul: varda<u8> = from_addr(0);
+        return nul;
+    }
+    fixed at: i64 = ARENA_BASE + arena_off;
+    arena_off = arena_off + n;
+    unsafe set block: varda<u8> = from_addr(at);
+    return block;
+}
+
+df on_free(p: varda<u8>) -> void {
+    // A bump allocator has nothing to give back.
+}
+
+df main() -> void {
+    vga_clear(COLOUR_GREY_ON_BLACK);
+
+    vga_print(1, 2, "Torvik kernel - forged, not hosted.", COLOUR_WHITE_ON_BLUE);
+    vga_print(3, 2, "No OS. No libc. No runtime.", COLOUR_GREY_ON_BLACK);
+
+    // Prove size_of/align_of are compile-time facts, available bare.
+    vga_print(5, 2, "size_of(i64)  = ", COLOUR_GREY_ON_BLACK);
+    vga_print_int(5, 18, size_of(i64), COLOUR_YELLOW);
+    vga_print(6, 2, "align_of(i64) = ", COLOUR_GREY_ON_BLACK);
+    vga_print_int(6, 18, align_of(i64), COLOUR_YELLOW);
+
+    // Read a hardware register back through a port.
+    vga_print(8, 2, "CRTC reg 14 (cursor hi) = ", COLOUR_GREY_ON_BLACK);
+    vga_print_int(8, 28, crtc_read(14), COLOUR_YELLOW);
+
+    vga_print(10, 2, "Parked. Interrupts disabled.", COLOUR_GREY_ON_BLACK);
+    vga_move_cursor(11, 2);
+
+    // Disable interrupts and stop. `hlt` waits for an interrupt that will never
+    // arrive, so the loop costs nothing - unlike spinning on `whilst true { }`.
+    unsafe cli();
+    whilst true {
+        unsafe hlt();
+    }
+}

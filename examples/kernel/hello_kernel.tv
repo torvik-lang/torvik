@@ -1,0 +1,11 @@
+// A minimal freestanding kernel: write to VGA text memory, then park.
+df main() -> void {
+    unsafe set vga: varda<u16> = from_addr(753664);
+    // 0x0F48 = white-on-black 'H'
+    unsafe store_vol(vga, 3912);
+    unsafe set p1: varda<u16> = ptr_add(vga, 1);
+    unsafe store_vol(p1, 3913);
+    whilst true {
+        unsafe hlt();
+    }
+}
