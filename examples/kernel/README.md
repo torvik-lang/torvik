@@ -320,9 +320,7 @@ freestanding link needs.
 
 The kernel here prints and halts. The next steps are the classic ones: a GDT, an
 interrupt descriptor table so the keyboard can talk to you, a timer, then paging and
-a real allocator behind `on_alloc`. Nothing in the Forge stops you: interrupt
-handlers are ordinary functions plus `galdr`, and descriptor tables are `packed
-shape`s written into memory through a raw pointer.
+a real allocator behind `on_alloc`. 
 
 `packed shape` is worth a mention there. A normal `shape` lets the compiler insert
 padding for alignment; a `packed` one doesn't. Hardware structures are defined byte
