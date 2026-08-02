@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.5.1] — 2026-08
+
+Three freestanding link failures. All are `--bare` only: hosted programs are
+unaffected, and no existing behavior changes.
+
+### Fixed
+
+- **`len()` on a `str` under `--bare`** referenced an undefined `@strlen`. The
+  freestanding `strlen`/`strcmp` implementations existed but were emitted only
+  alongside the `on_alloc`/`on_free` shims, so a bare program that used a string
+  without defining an allocator failed to link. They are pure string walks with no
+  allocation in them and are now always available in a freestanding build.
+- **Integer division and modulo under `--bare`** referenced an undefined
+  `torvik_div`/`torvik_mod`, so a freestanding program could not divide at all —
+  which also meant it could not format a number for display. `torvc` now emits
+  freestanding implementations carrying the same divide-by-zero and
+  `INT64_MIN / -1` checks the runtime performs; with no stderr to report through,
+  a violation parks the CPU, which is the freestanding equivalent of a panic.
+- **A `str` local under `--bare`** referenced an undefined `torvik_str_retain` /
+  `torvik_str_release`. String locals are reference-counted on scope entry and exit
+  even when the string is a literal, so any bare program that so much as named a
+  string hit this. String literals carry an immortal refcount, so with no allocator
+  present both operations are correctly no-ops.
+
+A bare build that defines `on_alloc`/`on_free` links the target-compiled runtime,
+which already provides `torvik_div` and the refcount helpers; those are emitted only
+when that runtime is absent. `strlen` and `strcmp` are different — the runtime
+references them and defines neither — so they are emitted either way.
+
 ## [1.5.0] — "The Forge" — 2026-07
 
 Systems and OS development. Torvik can now produce a freestanding image that boots
