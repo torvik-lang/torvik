@@ -1089,6 +1089,49 @@ set g_shape_fkeys: list<str> = list_new();    // flat: "Point.x", "Point.y"
 set g_shape_ford: list<i64> = list_new();     // flat: 0, 1 (parallel to fkeys)
 set g_shape_ftype: list<str> = list_new();    // flat: "i64", "i64" (parallel to fkeys)
 
+// A target triple is interpolated into `clang -target <triple>`, and an entry
+// symbol is emitted directly into LLVM IR. Both can arrive from a torvik.rune
+// manifest, which means both can arrive from a repository someone merely cloned.
+// They are VALIDATED, not quoted: shell double-quoting does not stop command
+// substitution ("$(...)" still expands), and nothing quotes IR at all.
+df build_triple_ok(t: str) -> i64 {
+    check len(t) == 0 { return 0; }
+    set i: i64 = 0;
+    whilst i < len(t) {
+        fixed c: i64 = byte_at(t, i);
+        set ok: i64 = 0;
+        check c >= 97 && c <= 122 { ok = 1; }
+        check c >= 65 && c <= 90  { ok = 1; }
+        check c >= 48 && c <= 57  { ok = 1; }
+        check c == 95 || c == 46 || c == 45 { ok = 1; }
+        check ok == 0 { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
+df entry_symbol_ok(t: str) -> i64 {
+    check len(t) == 0 { return 0; }
+    fixed c0: i64 = byte_at(t, 0);
+    set start_ok: i64 = 0;
+    check c0 >= 97 && c0 <= 122 { start_ok = 1; }
+    check c0 >= 65 && c0 <= 90  { start_ok = 1; }
+    check c0 == 95 { start_ok = 1; }
+    check start_ok == 0 { return 0; }
+    set i: i64 = 1;
+    whilst i < len(t) {
+        fixed c: i64 = byte_at(t, i);
+        set ok: i64 = 0;
+        check c >= 97 && c <= 122 { ok = 1; }
+        check c >= 65 && c <= 90  { ok = 1; }
+        check c >= 48 && c <= 57  { ok = 1; }
+        check c == 95 { ok = 1; }
+        check ok == 0 { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
 df is_shape_name(nm: str) -> i64 {
     set i: i64 = 0;
     whilst i < len(g_shape_names) {
