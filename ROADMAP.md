@@ -1,7 +1,7 @@
 # Torvik Roadmap
 
 
-## v1.5.1 — "The Forge" — current public release
+## v1.5.2 — "The Forge" — current public release
 
 *(v1.5.1 is a patch on v1.5.0: three freestanding link failures, no feature changes.
 See CHANGELOG.md.)*
