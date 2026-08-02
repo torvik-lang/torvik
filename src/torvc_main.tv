@@ -79,10 +79,33 @@ df main() -> void {
             check i + 1 < argc { outpath = args_get(i + 1); i += 1; }
         } fallback {
             check a == "--entry" {
-                check i + 1 < argc { g_build_entry = args_get(i + 1); i += 1; }
+                check i + 1 < argc {
+                    fixed _te: str = args_get(i + 1);
+                    check entry_symbol_ok(_te) == 0 {
+                        echo!(fmt("torvc: '{}' is not a usable entry symbol name.", _te));
+                        echo!("  The entry symbol is emitted directly into LLVM IR, so it follows C");
+                        echo!("  identifier rules: a letter or underscore, then letters, digits or");
+                        echo!("  underscores.");
+                        exit(1);
+                    }
+                    g_build_entry = _te;
+                    i += 1;
+                }
             } fallback {
                 check a == "--arch" || a == "--target" {
-                    check i + 1 < argc { g_build_arch = args_get(i + 1); i += 1; }
+                    check i + 1 < argc {
+                        fixed _ta: str = args_get(i + 1);
+                        check build_triple_ok(_ta) == 0 {
+                            echo!(fmt("torvc: '{}' is not a usable target triple.", _ta));
+                            echo!("  The triple is passed to clang as `-target <triple>`, so it is limited to");
+                            echo!("  letters, digits, and _ . - ; anything else is refused rather than handed");
+                            echo!("  to a shell. This value can come from torvik.rune, which means it can come");
+                            echo!("  from a repository you only cloned.");
+                            exit(1);
+                        }
+                        g_build_arch = _ta;
+                        i += 1;
+                    }
                 } fallback {
                     check a == "--link-script" {
                         check i + 1 < argc { g_build_linkscript = args_get(i + 1); i += 1; }
