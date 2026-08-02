@@ -15,6 +15,40 @@ that window.
 The full schedule, including the Active and Maintenance boundaries, is in
 [SUPPORT.md](SUPPORT.md).
 
+## Advisories
+
+### TV-2026-001 — command injection via build configuration (fixed in 1.5.2)
+
+**Severity: critical. Update promptly.**
+
+`torvc` interpolated the `--arch` target triple into the `clang` command line
+without validating it, so a value containing shell syntax executed at build time.
+The same value can be set from a project's `torvik.rune` manifest, which means the
+vulnerability was reachable by cloning a repository and running an ordinary
+`rune build` — no need to run the resulting binary, and no warning that anything
+unusual happened.
+
+`--entry` was affected in the same way. It is written directly into generated LLVM
+IR, so a crafted value could inject arbitrary IR into the compiled program.
+
+Both values are now validated against an allowlist: a target triple may contain
+letters, digits, and `_ . -`; an entry symbol follows C identifier rules. Anything
+else is refused with a clear message rather than passed to a shell.
+
+**Affected:** Torvik 1.5.0 and 1.5.1 (the `--arch` flag was introduced in 1.5.0).
+**Fixed in:** 1.5.2.
+**Companion fix:** `rune` 1.5.1 validates the same fields in `torvik.rune` before
+building its own command line, so both tools must be updated. See that project's
+advisory.
+
+**What to do:** update both `torvc` and `rune`. If you have built an untrusted or
+unfamiliar project with an affected version, treat that build as having run
+arbitrary code with your user's privileges.
+
+Quoting was not a sufficient fix and was not used as one. Shell double-quoting
+prevents word-splitting but **does not prevent command substitution** — `"$(...)"`
+still expands — so every value that reaches a shell is validated instead.
+
 ## Reporting a vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues,
