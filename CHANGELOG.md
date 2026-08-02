@@ -1,9 +1,31 @@
 # Changelog
 
+## [1.5.2] — 2026-08
+
+### Security
+
+- **Command injection via build configuration (critical).** `torvc` interpolated
+  the `--arch` target triple into the `clang` command line without validating it,
+  so a value containing shell syntax executed at build time. The same value can be
+  set from a project's `torvik.rune`, which made this reachable by cloning a
+  repository and running an ordinary `rune build` — the resulting binary never had
+  to be run. `--entry` was affected in the same way; it is written directly into
+  generated LLVM IR, so a crafted value could inject arbitrary IR.
+
+  Both are now validated against an allowlist: a target triple may contain letters,
+  digits and `_ . -`, and an entry symbol follows C identifier rules. See
+  [SECURITY.md](SECURITY.md) (TV-2026-001). Requires rune 1.5.1, which validates
+  the same values before building its own command line — each tool was
+  independently vulnerable.
+
+  Quoting was not used as the fix. Shell double-quoting stops word-splitting but
+  not command substitution — `"$(...)"` still expands — so validation is the only
+  reliable answer.
+
 ## [1.5.1] — 2026-08
 
 Three freestanding link failures. All are `--bare` only: hosted programs are
-unaffected, and no existing behavior changes.
+unaffected, and no existing behaviour changes.
 
 ### Fixed
 
