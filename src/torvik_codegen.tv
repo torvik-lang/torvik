@@ -8839,6 +8839,12 @@ set g_entry_sym: str = "_start";
 // Set during codegen when the program defines on_alloc/on_free, so torvc knows to
 // compile and link the runtime freestanding (heap types then work in a bare image).
 set g_bare_alloc_hooks: i64 = 0;
+// Set before the IR preamble is written: 1 when the program defines BOTH on_alloc
+// and on_free, which is what pulls the target-compiled runtime into a freestanding
+// link. The preamble needs it to know whether torvik_div and the string refcount
+// helpers arrive from that runtime (declare them) or are emitted locally further
+// down as freestanding fallbacks (declaring them too would be a redefinition).
+set g_bare_has_rt: i64 = 0;
 // Set when the program emits any galdr block. If clang later rejects the module, the
 // most likely cause is the assembly text itself - a user mistake, not a compiler bug -
 // so torvc says so instead of raising the internal "please report this" error.
@@ -9086,6 +9092,17 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     // to f64. Registered before any body compiles; locals/params pushed later shadow
     // via last-match, so a same-named local still wins. Non-float returns are inert.
     set fri: i64 = 0;
+    check g_bare == 1 {
+        set hk0: i64 = 0;
+        set ha0: i64 = 0;
+        set hf0: i64 = 0;
+        whilst hk0 < len(fn_names) {
+            check line_eq(fn_names[hk0], "on_alloc") == 1 { ha0 = 1; }
+            check line_eq(fn_names[hk0], "on_free") == 1 { hf0 = 1; }
+            hk0 += 1;
+        }
+        check ha0 == 1 && hf0 == 1 { g_bare_has_rt = 1; }
+    }
     whilst fri < len(fn_names) {
         push(var_names, fn_names[fri]);
         push(var_types, str_concat("fnret:", fn_ret_types[fri]));
@@ -9256,12 +9273,21 @@ df codegen_tokens(tokens: list<i64>, source: str, ir_out_path: str, srcfile: str
     emit(ir, "declare ptr @torvik_list_retain(ptr)");
     emit(ir, "declare void @torvik_list_release(ptr)");
     emit(ir, "declare ptr @torvik_args_copy(i64, ptr)");
-    emit(ir, "declare ptr @torvik_str_retain(ptr)");
-    emit(ir, "declare void @torvik_str_release(ptr)");
-    emit(ir, "declare i64 @torvik_div(i64, i64)");
-    emit(ir, "declare i64 @torvik_mod(i64, i64)");
-    emit(ir, "declare i64 @torvik_udiv(i64, i64)");
-    emit(ir, "declare i64 @torvik_umod(i64, i64)");
+    // Likewise: declared when a runtime supplies them, defined below when not.
+    check g_bare == 0 || g_bare_has_rt == 1 {
+        emit(ir, "declare ptr @torvik_str_retain(ptr)");
+        emit(ir, "declare void @torvik_str_release(ptr)");
+    }
+    // Declared when something else provides them: the hosted runtime, or the
+    // target-compiled runtime a bare build links when it supplies allocator hooks.
+    // Without hooks a bare build defines them locally further down instead, and
+    // LLVM rejects a declare and a define of the same function.
+    check g_bare == 0 || g_bare_has_rt == 1 {
+        emit(ir, "declare i64 @torvik_div(i64, i64)");
+        emit(ir, "declare i64 @torvik_mod(i64, i64)");
+        emit(ir, "declare i64 @torvik_udiv(i64, i64)");
+        emit(ir, "declare i64 @torvik_umod(i64, i64)");
+    }
     emit(ir, "declare ptr @torvik_result_ok(ptr)");
     emit(ir, "declare ptr @torvik_result_err(i64, ptr)");
     emit(ir, "declare void @torvik_result_mark_managed(ptr)");
@@ -9686,6 +9712,178 @@ whilst fi < len(fn_names) {
             check line_eq(fn_names[hk_i], "on_free") == 1 { has_free = 1; }
             hk_i += 1;
         }
+        // Freestanding implementations of the helpers a bare program still calls.
+        // Always emitted: the target-compiled runtime REFERENCES strlen, strcmp,
+        // torvik_div and friends but defines none of them (they come from libc and
+        // from the hosted runtime's own translation unit), so a freestanding link
+        // needs them here whether or not the program supplies allocator hooks.
+        // strlen and strcmp are pure string walks with no allocation in them, so a
+        // freestanding build needs them whether or not it defines the heap hooks.
+        // They were previously emitted only alongside malloc/free, which left any
+        // bare program that called len() on a str - and defined no allocator -
+        // referencing an undefined @strlen at link time.
+        emit(ir, "define i64 @strlen(ptr %s) {");
+        emit(ir, "tv_entry:");
+        emit(ir, "  br label %sl_loop");
+        emit(ir, "sl_loop:");
+        emit(ir, "  %i = phi i64 [ 0, %tv_entry ], [ %next, %sl_body ]");
+        emit(ir, "  %cp = getelementptr i8, ptr %s, i64 %i");
+        emit(ir, "  %c = load i8, ptr %cp");
+        emit(ir, "  %z = icmp eq i8 %c, 0");
+        emit(ir, "  br i1 %z, label %sl_done, label %sl_body");
+        emit(ir, "sl_body:");
+        emit(ir, "  %next = add i64 %i, 1");
+        emit(ir, "  br label %sl_loop");
+        emit(ir, "sl_done:");
+        emit(ir, "  ret i64 %i");
+        emit(ir, "}");
+        emit(ir, "define i32 @strcmp(ptr %a, ptr %b) {");
+        emit(ir, "tv_entry:");
+        emit(ir, "  br label %sc_loop");
+        emit(ir, "sc_loop:");
+        emit(ir, "  %i = phi i64 [ 0, %tv_entry ], [ %next, %sc_body ]");
+        emit(ir, "  %ap = getelementptr i8, ptr %a, i64 %i");
+        emit(ir, "  %bp = getelementptr i8, ptr %b, i64 %i");
+        emit(ir, "  %ac = load i8, ptr %ap");
+        emit(ir, "  %bc = load i8, ptr %bp");
+        emit(ir, "  %ne = icmp ne i8 %ac, %bc");
+        emit(ir, "  br i1 %ne, label %sc_diff, label %sc_same");
+        emit(ir, "sc_same:");
+        emit(ir, "  %atz = icmp eq i8 %ac, 0");
+        emit(ir, "  br i1 %atz, label %sc_eq, label %sc_body");
+        emit(ir, "sc_body:");
+        emit(ir, "  %next = add i64 %i, 1");
+        emit(ir, "  br label %sc_loop");
+        emit(ir, "sc_diff:");
+        emit(ir, "  %a32 = zext i8 %ac to i32");
+        emit(ir, "  %b32 = zext i8 %bc to i32");
+        emit(ir, "  %d = sub i32 %a32, %b32");
+        emit(ir, "  ret i32 %d");
+        emit(ir, "sc_eq:");
+        emit(ir, "  ret i32 0");
+        emit(ir, "}");
+        // torvik_div/mod and the string refcount helpers are DEFINED by the
+        // target-compiled runtime, which is linked only when the program supplies
+        // on_alloc/on_free. Emitting them unconditionally would be a duplicate
+        // symbol in that case, so they are the fallback for a runtime-less build.
+        // (strlen and strcmp above are different: the runtime REFERENCES those and
+        // defines neither, so they are always needed.)
+        check has_alloc == 0 || has_free == 0 {
+            // Integer division and modulo route through the runtime so that a divide by
+            // zero is a clean panic rather than a CPU trap. Freestanding there is no
+            // runtime to route to, which left `a / b` on plain i64 referencing an
+            // undefined torvik_div - and a kernel cannot format a number without it.
+            // These are the same checks the runtime performs; with no stderr to report
+            // through, a violation parks the machine, which is the honest freestanding
+            // equivalent of a panic.
+            emit(ir, "define i64 @torvik_div(i64 %a, i64 %b) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %dz = icmp eq i64 %b, 0");
+            emit(ir, "  br i1 %dz, label %dv_park, label %dv_chk");
+            emit(ir, "dv_chk:");
+            emit(ir, "  %da = icmp eq i64 %a, -9223372036854775808");
+            emit(ir, "  %db = icmp eq i64 %b, -1");
+            emit(ir, "  %dov = and i1 %da, %db");
+            emit(ir, "  br i1 %dov, label %dv_park, label %dv_ok");
+            emit(ir, "dv_ok:");
+            emit(ir, "  %dr = sdiv i64 %a, %b");
+            emit(ir, "  ret i64 %dr");
+            emit(ir, "dv_park:");
+            emit(ir, "  call void asm sideeffect \"hlt\", \"\"()");
+            emit(ir, "  br label %dv_park");
+            emit(ir, "}");
+            emit(ir, "define i64 @torvik_mod(i64 %a, i64 %b) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %mz = icmp eq i64 %b, 0");
+            emit(ir, "  br i1 %mz, label %md_park, label %md_chk");
+            emit(ir, "md_chk:");
+            emit(ir, "  %ma = icmp eq i64 %a, -9223372036854775808");
+            emit(ir, "  %mb = icmp eq i64 %b, -1");
+            emit(ir, "  %mov = and i1 %ma, %mb");
+            emit(ir, "  br i1 %mov, label %md_zero, label %md_ok");
+            emit(ir, "md_zero:");
+            emit(ir, "  ret i64 0");
+            emit(ir, "md_ok:");
+            emit(ir, "  %mr = srem i64 %a, %b");
+            emit(ir, "  ret i64 %mr");
+            emit(ir, "md_park:");
+            emit(ir, "  call void asm sideeffect \"hlt\", \"\"()");
+            emit(ir, "  br label %md_park");
+            emit(ir, "}");
+            emit(ir, "define i64 @torvik_udiv(i64 %a, i64 %b) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %uz = icmp eq i64 %b, 0");
+            emit(ir, "  br i1 %uz, label %ud_park, label %ud_ok");
+            emit(ir, "ud_ok:");
+            emit(ir, "  %ur = udiv i64 %a, %b");
+            emit(ir, "  ret i64 %ur");
+            emit(ir, "ud_park:");
+            emit(ir, "  call void asm sideeffect \"hlt\", \"\"()");
+            emit(ir, "  br label %ud_park");
+            emit(ir, "}");
+            emit(ir, "define i64 @torvik_umod(i64 %a, i64 %b) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %uz2 = icmp eq i64 %b, 0");
+            emit(ir, "  br i1 %uz2, label %um_park, label %um_ok");
+            emit(ir, "um_ok:");
+            emit(ir, "  %umr = urem i64 %a, %b");
+            emit(ir, "  ret i64 %umr");
+            emit(ir, "um_park:");
+            emit(ir, "  call void asm sideeffect \"hlt\", \"\"()");
+            emit(ir, "  br label %um_park");
+            emit(ir, "}");
+            // String reference counting. A `str` local is retained on entry and
+            // released at scope exit even when it is a literal, so any bare program
+            // that so much as names a string needs these symbols - there is no
+            // allocator involved in the common case. The guards are the runtime's:
+            // NULL, a bad magic (not a Torvik string), and the IMMORTAL refcount that
+            // marks a literal in .rodata are all left alone. Only a heap-allocated
+            // string reaching zero calls free(), and free() only exists here when the
+            // program defined on_alloc/on_free; without them a bare program cannot
+            // have made a heap string in the first place, so the branch is dead.
+            emit(ir, "define ptr @torvik_str_retain(ptr %p) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %pn = icmp eq ptr %p, null");
+            emit(ir, "  br i1 %pn, label %sr_out, label %sr_hdr");
+            emit(ir, "sr_hdr:");
+            emit(ir, "  %sh = getelementptr i8, ptr %p, i64 -16");
+            emit(ir, "  %sm = load i64, ptr %sh, align 8");
+            emit(ir, "  %smok = icmp eq i64 %sm, 6075164953064788552");
+            emit(ir, "  br i1 %smok, label %sr_rc, label %sr_out");
+            emit(ir, "sr_rc:");
+            emit(ir, "  %srp = getelementptr i8, ptr %p, i64 -8");
+            emit(ir, "  %src = load i64, ptr %srp, align 8");
+            emit(ir, "  %srim = icmp eq i64 %src, 5281962941054468428");
+            emit(ir, "  br i1 %srim, label %sr_out, label %sr_inc");
+            emit(ir, "sr_inc:");
+            emit(ir, "  %srn = add i64 %src, 1");
+            emit(ir, "  store i64 %srn, ptr %srp, align 8");
+            emit(ir, "  br label %sr_out");
+            emit(ir, "sr_out:");
+            emit(ir, "  ret ptr %p");
+            emit(ir, "}");
+            emit(ir, "define void @torvik_str_release(ptr %p) {");
+            emit(ir, "tv_entry:");
+            emit(ir, "  %qn = icmp eq ptr %p, null");
+            emit(ir, "  br i1 %qn, label %sd_out, label %sd_hdr");
+            emit(ir, "sd_hdr:");
+            emit(ir, "  %qh = getelementptr i8, ptr %p, i64 -16");
+            emit(ir, "  %qm = load i64, ptr %qh, align 8");
+            emit(ir, "  %qmok = icmp eq i64 %qm, 6075164953064788552");
+            emit(ir, "  br i1 %qmok, label %sd_rc, label %sd_out");
+            emit(ir, "sd_rc:");
+            emit(ir, "  %qrp = getelementptr i8, ptr %p, i64 -8");
+            emit(ir, "  %qrc = load i64, ptr %qrp, align 8");
+            emit(ir, "  %qrim = icmp eq i64 %qrc, 5281962941054468428");
+            emit(ir, "  br i1 %qrim, label %sd_out, label %sd_dec");
+            emit(ir, "sd_dec:");
+            emit(ir, "  %qrn = sub i64 %qrc, 1");
+            emit(ir, "  store i64 %qrn, ptr %qrp, align 8");
+            emit(ir, "  br label %sd_out");
+            emit(ir, "sd_out:");
+            emit(ir, "  ret void");
+            emit(ir, "}");
+        }
         check has_alloc == 1 && has_free == 1 {
             g_bare_alloc_hooks = 1;
             emit(ir, "define ptr @malloc(i64 %n) {");
@@ -9719,49 +9917,6 @@ whilst fi < len(fn_names) {
             // - which is the correct behaviour for a kernel. Diagnostics are the
             // program's job here (write to VGA or a serial port from on_panic-style
             // code of your own).
-            // Freestanding implementations of the few libc string functions the
-            // runtime slice still calls. Small, obvious, and correct beats pulling
-            // in a C library that does not exist here.
-            emit(ir, "define i64 @strlen(ptr %s) {");
-            emit(ir, "tv_entry:");
-            emit(ir, "  br label %sl_loop");
-            emit(ir, "sl_loop:");
-            emit(ir, "  %i = phi i64 [ 0, %tv_entry ], [ %next, %sl_body ]");
-            emit(ir, "  %cp = getelementptr i8, ptr %s, i64 %i");
-            emit(ir, "  %c = load i8, ptr %cp");
-            emit(ir, "  %z = icmp eq i8 %c, 0");
-            emit(ir, "  br i1 %z, label %sl_done, label %sl_body");
-            emit(ir, "sl_body:");
-            emit(ir, "  %next = add i64 %i, 1");
-            emit(ir, "  br label %sl_loop");
-            emit(ir, "sl_done:");
-            emit(ir, "  ret i64 %i");
-            emit(ir, "}");
-            emit(ir, "define i32 @strcmp(ptr %a, ptr %b) {");
-            emit(ir, "tv_entry:");
-            emit(ir, "  br label %sc_loop");
-            emit(ir, "sc_loop:");
-            emit(ir, "  %i = phi i64 [ 0, %tv_entry ], [ %next, %sc_body ]");
-            emit(ir, "  %ap = getelementptr i8, ptr %a, i64 %i");
-            emit(ir, "  %bp = getelementptr i8, ptr %b, i64 %i");
-            emit(ir, "  %ac = load i8, ptr %ap");
-            emit(ir, "  %bc = load i8, ptr %bp");
-            emit(ir, "  %ne = icmp ne i8 %ac, %bc");
-            emit(ir, "  br i1 %ne, label %sc_diff, label %sc_same");
-            emit(ir, "sc_same:");
-            emit(ir, "  %atz = icmp eq i8 %ac, 0");
-            emit(ir, "  br i1 %atz, label %sc_eq, label %sc_body");
-            emit(ir, "sc_body:");
-            emit(ir, "  %next = add i64 %i, 1");
-            emit(ir, "  br label %sc_loop");
-            emit(ir, "sc_diff:");
-            emit(ir, "  %a32 = zext i8 %ac to i32");
-            emit(ir, "  %b32 = zext i8 %bc to i32");
-            emit(ir, "  %d = sub i32 %a32, %b32");
-            emit(ir, "  ret i32 %d");
-            emit(ir, "sc_eq:");
-            emit(ir, "  ret i32 0");
-            emit(ir, "}");
             emit(ir, "@stderr = global ptr null");
             emit(ir, "define i32 @fprintf(ptr %s, ptr %f, ...) {");
             emit(ir, "tv_entry:");
