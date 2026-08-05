@@ -29,7 +29,7 @@ A clear and concise description of what you expected to happen.
 - Compiler/LLVM/Clang version (if relevant)
 
 **Additional context**
-Add any other context about the problem here (screenshots, logs, etc.).
+Add any other context about the problem here (screenshots, logs, workarounds, etc.).
 
 **Checklist**
 - [ ] I have searched existing issues to make sure this is not a duplicate.
