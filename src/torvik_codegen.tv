@@ -609,6 +609,7 @@ df scan_warn_directives(source: str, suppress: list<i64>, allow_cats: list<str>,
                 check line_eq(cat, "unreachable_code") == 1 { cat_ok = 1; }
                 check line_eq(cat, "deprecated") == 1 { cat_ok = 1; }
                 check line_eq(cat, "unused_result") == 1 { cat_ok = 1; }
+                check line_eq(cat, "narrowing") == 1 { cat_ok = 1; }
                 check cat_ok == 1 { push(allow_cats, cat); }
                 check cat_ok == 0 {
                     push(derr_off, dstart);
@@ -1340,6 +1341,14 @@ df is_expr_builtin(nm: str) -> i64 {
 // which is actively misleading - the function exists, the call shape was wrong.
 // This lets that diagnostic say what actually went wrong.
 df builtin_sig(nm: str) -> str {
+    // v1.5.3: these three had an arity guard on their dispatch but no entry here,
+    // so a wrong argument count fell past the guard into the undefined-function
+    // branch and reported "call to undefined function 'fs_mkdir'" - about a
+    // builtin that exists and works. `cwd(1)` was the worst: it takes no
+    // arguments, so passing one made the builtin vanish.
+    check line_eq(nm, "fs_mkdir") == 1 { return "fs_mkdir(path)"; }
+    check line_eq(nm, "cwd") == 1 { return "cwd()"; }
+    check line_eq(nm, "list_pop") == 1 { return "list_pop(list)"; }
     check line_eq(nm, "size_of") == 1 { return "size_of(TYPE)"; }
     check line_eq(nm, "align_of") == 1 { return "align_of(TYPE)"; }
     check line_eq(nm, "load") == 1 { return "load(pointer)"; }
@@ -3482,8 +3491,24 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             return;
         }
         check suppress_chain == 0 && cur_ty != "i1" && cur_ty != "f64" && cur_ty != "str" && (chain_tier6(paren_next) > 0 || paren_next == OP_EQEQ || paren_next == OP_BANGEQ || paren_next == OP_LT || paren_next == OP_GT || paren_next == OP_LTEQ || paren_next == OP_GTEQ) {
-            fixed pci: str = coerce_i64(cur, ir, ctr);
-            chain_tail(tokens, strings, allnames, pci, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, 0);
+            // v1.5.3 (#18): only coerce when the value is NOT already a real i64.
+            //
+            // `coerce_i64` emits `ptrtoint`, which needs a pointer. A parenthesized
+            // expression that folded a chain comes back as a genuine i64 SSA value,
+            // and applying ptrtoint to it produced "'%t5' defined with type 'i64'
+            // but expected 'ptr'" - an internal compiler error naming generated IR
+            // the author never wrote.
+            //
+            // It needed the paren to be the LEAD operand of a further chain:
+            // `(x >> 4) & 255` failed while `255 & (x >> 4)` and `(x >> 4)` alone
+            // both worked, because only the lead path came through here. Reported
+            // against shifts, but any parenthesized arithmetic in lead position hit
+            // it once the inner expression folded to an i64.
+            set pci: str = cur;
+            check line_eq(cur_ty, "i64") == 0 && line_eq(cur_ty, "u64") == 0 { pci = coerce_i64(cur, ir, ctr); }
+            set pc_uns: i64 = 0;
+            check line_eq(cur_ty, "u64") == 1 { pc_uns = 1; }
+            chain_tail(tokens, strings, allnames, pci, p, s, an, ir, ctr, gvals, gnames, var_names, var_types, out_val, out_pos, out_si, out_ani, out_ty, pc_uns);
             return;
         }
         push(out_val, cur); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, cur_ty); return;
@@ -3935,6 +3960,29 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                                 emit(ir, str_concat(str_concat(str_concat("  ", st_b), " = call ptr @torvik_int_to_str(i64 "), str_concat(zt_b, ")")));
                                 fmt_sv = st_b;
                             } fallback {
+                            // v1.5.3: a 128-bit value is a heap BOX, so the pointer
+                            // has to go to its own stringifier - `int_to_str` on the
+                            // box printed an address, while `echo!(x)` printed the
+                            // value correctly, which is how the discrepancy survived.
+                            //
+                            // The matching `fmt` bugs for u64 (printed as -1) and for
+                            // lists (printed as an address) are NOT fixed here. They
+                            // need the argument's Torvik type, and on this line
+                            // `args_ty` carries the LLVM type - every scalar reads
+                            // back as "ptr" under the uniform-pointer model. Getting
+                            // at the real type needs argument-name plumbing that does
+                            // not exist in 1.5.x, and adding it is a structural change
+                            // a patch release should not carry. Both are fixed on the
+                            // 2.0 line, where `fmt` and `echo` share one stringifier.
+                            check fmt_aty == "i128" || fmt_aty == "u128" {
+                                fixed st_q: str = make_tmp(ctr);
+                                check fmt_aty == "u128" {
+                                    emit(ir, str_concat(str_concat(str_concat("  ", st_q), " = call ptr @torvik_u128_to_str(ptr "), str_concat(args[fmt_ai], ")")));
+                                } fallback {
+                                    emit(ir, str_concat(str_concat(str_concat("  ", st_q), " = call ptr @torvik_i128_to_str(ptr "), str_concat(args[fmt_ai], ")")));
+                                }
+                                fmt_sv = st_q;
+                            } fallback {
                                 // i64, or a bare integer/bool var loaded as ptr: coerce
                                 // to a real i64 (no-op if already i64) and stringify.
                                 set iv_n: str = args[fmt_ai];
@@ -3942,6 +3990,7 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
                                 fixed st_n: str = make_tmp(ctr);
                                 emit(ir, str_concat(str_concat(str_concat("  ", st_n), " = call ptr @torvik_int_to_str(i64 "), str_concat(iv_n, ")")));
                                 fmt_sv = st_n;
+                            }
                             }
                         }
                     }
@@ -4141,8 +4190,26 @@ df compile_expr(tokens: list<i64>, strings: list<str>, allnames: list<str>, pos:
             check nm == "unwrap" && len(args) >= 1 {
                 set uwt: str = ""; check len(lone_arg_name) > 0 { uwt = lookup_var_type(lone_arg_name, var_names, var_types); }
                 emit(ir, str_concat(str_concat(str_concat("  ", tmp), " = call ptr @torvik_result_unwrap(ptr "), str_concat(args[0], ")")));
-                check uwt == "result<i64>" {
+                // v1.5.3: EVERY integer width, not just i64. This tested for the
+                // exact string "result<i64>", so `result<u8>` - and i8, i16, i32,
+                // u16, u32, u64 - fell through to the STRING path below, and
+                // `fixed v: u8 = unwrap(r);` reported "can't assign a value of type
+                // str to 'v'". The payload is a machine word packed into the
+                // uniform pointer whatever its declared width, so the same
+                // ptrtoint serves them all; the declaration's own narrowing rules
+                // then apply as usual. (issue #19)
+                set uwiw: str = "";
+                check starts(uwt, "result<") && ends(uwt, ">") { uwiw = substr(uwt, 7, len(uwt) - 1); }
+                check int_width(uwiw) > 0 && int_width(uwiw) <= 64 {
                     fixed uwi: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", uwi), " = ptrtoint ptr "), str_concat(tmp, " to i64")));
+                    // Report the payload's OWN width when nothing follows. Saying
+                    // "i64" here would make `fixed v: u8 = unwrap(r);` on a
+                    // `result<u8>` look like a narrowing to the declaration check -
+                    // a warning about a conversion that is not happening. Inside a
+                    // chain the value is an ordinary i64 and takes the usual path.
+                    check tok_peek(tokens, p) == PUNCT_SEMI {
+                        push(out_val, uwi); push(out_pos, p); push(out_si, s); push(out_ani, an); push(out_ty, uwiw); return;
+                    }
                     finish_i64_result(tokens, strings, allnames, uwi, p, s, an, suppress_chain, 0, ir, ctr, gvals, gnames, out_val, out_pos, out_si, out_ani, out_ty, var_names, var_types); return;
                 }
                 check starts(uwt, "result<f") && is_float_ty(substr(uwt, 7, len(uwt) - 1)) == 1 {
@@ -6496,6 +6563,12 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 push(rv, _nbx); push(rp, pos + 2); push(rs, s + 1); push(rs_ai, an); push(rv_ty, vann);
                 _i128lit = 1;
             }
+            // v1.5.3 (#17): remember where the RHS begins, and the name-stream
+            // index there, before compiling consumes both. Needed to recognise a
+            // bare-variable RHS afterwards, whose declared type the SSA class does
+            // not carry.
+            fixed rhs_start: i64 = pos;
+            fixed rhs_an: i64 = an;
             check _i128lit == 0 {
                 compile_value(tokens, strings, allnames, pos, s, an, ir, ctr, gvals, gnames, rv, rp, rs, rs_ai, rv_ty, var_names, var_types);
             }
@@ -6562,6 +6635,71 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
             // like `set x: i64 = "hello"` or `set s: str = 5` would otherwise store a
             // pointer-as-int (or vice versa) and print garbage. "other" kinds
             // (bag/table/result, or the ambiguous uniform "ptr") are never flagged.
+            // v1.5.3: warn when a value is narrowed into a smaller integer type.
+            //
+            // On the 1.x line a declared width is not a storage constraint - every
+            // integer occupies a full-width slot, and `u8` affects only literal
+            // range-checking and unsigned printing. So `fixed x: u8 = f();` where
+            // f returns 70000 TRUNCATES with no diagnostic, and the same from a
+            // variable leaves the annotation simply unenforced. Both are silent.
+            //
+            // v2.0 refuses this at compile time, but that fix cannot be backported:
+            // it would turn working 1.x programs into ones that do not build, which
+            // a patch release must never do. A warning tells you where the loss
+            // happens while leaving the program's behaviour exactly as it was - and
+            // every site it flags is a site that will need an explicit cast on 2.0,
+            // so clearing these warnings is also the migration.
+            //
+            // Only fires when BOTH types are concretely known. A value read from a
+            // variable arrives here as the uniform "ptr" and cannot be judged, so
+            // the variable case goes unreported - the call case is the one that
+            // silently loses data, and it is the one this catches.
+            // v1.5.3 (#17): the RHS type as the checks below should see it.
+            //
+            // `rv_ty[0]` is the SSA class, and a value read from a variable arrives
+            // as the uniform "ptr" - so `set n: i64 = 5; fixed f: f64 = n;` passed
+            // every check and stored the integer's BITS into a double, printing
+            // 2.47033e-323. The same assignment from a literal or a call was caught
+            // cleanly, which is why only the variable form got through.
+            //
+            // When the RHS is a bare variable, its declared type is known and is
+            // the honest answer. Only substituted when the SSA class is the
+            // uninformative "ptr", so nothing that already resolved is overridden.
+            set rhs_eff: str = "";
+            check len(rv_ty) > 0 { rhs_eff = rv_ty[0]; }
+            check line_eq(rhs_eff, "ptr") == 1 {
+                check tok_peek(tokens, rhs_start) == TOK_IDENT {
+                    fixed nx_r: i64 = tok_peek(tokens, rhs_start + 1);
+                    check nx_r == PUNCT_SEMI {
+                        set rnm: str = ""; check rhs_an < len(allnames) { rnm = allnames[rhs_an]; }
+                        fixed rlt: str = lookup_var_type(rnm, var_names, var_types);
+                        check len(rlt) > 0 { rhs_eff = rlt; }
+                    }
+                }
+            }
+            check len(vann) > 0 && len(rhs_eff) > 0 {
+                fixed vk2: str = ty_kind(vann);
+                fixed rk2: str = ty_kind(rhs_eff);
+                check line_eq(vk2, "other") == 0 && line_eq(rk2, "other") == 0 && line_eq(vk2, rk2) == 0 {
+                    push(err_pos, decl_pos);
+                    // The float advice only when a float is actually involved -
+                    // appended unconditionally it told someone assigning a `str`
+                    // to a `u8` about representations of numbers.
+                    check line_eq(vk2, "float") == 1 || line_eq(rk2, "float") == 1 {
+                        push(err_msg, fmt("type mismatch: can't assign a value of type {} to '{}', which has type {}. An integer and a float have different representations, so this is a conversion rather than an assignment - wrap it in `to_f64(...)` if that is what you meant.", rhs_eff, vname, vann));
+                    } fallback {
+                        push(err_msg, fmt("type mismatch: can't assign a value of type {} to '{}', which has type {}", rhs_eff, vname, vann));
+                    }
+                    continue;
+                }
+            }
+            check len(vann) > 0 && len(rv_ty) > 0 {
+                fixed nw_to: i64 = int_width(vann);
+                fixed nw_from: i64 = int_width(rv_ty[0]);
+                check nw_to > 0 && nw_from > 0 && nw_from > nw_to {
+                    emit_warn(ir, decl_pos, "narrowing", fmt("narrowing {} to {} loses information here, and 1.x does not enforce the declared width - the value is truncated (or the annotation ignored) with no error. Wrap it: `to_{}(...)` to truncate deliberately, or `try_to_{}(...)` for a result that reports when it does not fit. Torvik 2.0 requires this.", rv_ty[0], vann, vann, vann));
+                }
+            }
             check len(vann) > 0 && len(rv_ty) > 0 {
                 fixed rtt: str = rv_ty[0];
                 fixed vk: str = ty_kind(vann);
@@ -7767,7 +7905,18 @@ df compile_stmts(tokens: list<i64>, strings: list<str>, allnames: list<str>, sta
                 set wval: str = "0"; check len(wv) > 0 { wval = wv[0]; }
                 set wval_ty: str = "ptr"; check len(wv_ty) > 0 { wval_ty = wv_ty[0]; }
                 set wi: str = wval;
+                // v1.5.3: a FLOAT is bit-cast into the i64 the uniform-pointer model
+                // carries, not coerced. `coerce_i64` emits `ptrtoint`, which does not
+                // typecheck against a double, so `xs[0] = 9.0` on a `list<f64>` was
+                // rejected by the backend. Reading an element already worked, so a
+                // list of floats could be built and read but never updated.
+                check is_float_ty(wval_ty) == 1 {
+                    fixed wfb: str = make_tmp(ctr);
+                    emit(ir, str_concat(str_concat(str_concat("  ", wfb), " = bitcast double "), str_concat(wval, " to i64")));
+                    wi = wfb;
+                } fallback {
                 check wval_ty == "i1" { fixed wzx: str = make_tmp(ctr); emit(ir, str_concat(str_concat(str_concat("  ", wzx), " = zext i1 "), str_concat(wval, " to i64"))); wi = wzx; } fallback { check wval_ty != "i64" { wi = coerce_i64(wval, ir, ctr); } }
+                }
                 set w_ty: str = lookup_var_type(nm, var_names, var_types);
                 check is_array_type(w_ty) == 1 {
                     // v1.5.0 Forge: fixed-array element write. Bounds-checked, then a

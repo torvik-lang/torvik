@@ -338,21 +338,20 @@ df hex_val(c: i64) -> i64 {
 // Strategy: find an existing source byte equal to b and substr it. Falls back to
 // scanning a 256-entry ASCII reference the compiler embeds once. For control bytes
 // not present in source we use a tiny embedded table of escapable controls.
+// One byte as a one-character string.
+//
+// v1.5.3: this used to index constant tables - eight named control bytes, then
+// printable ASCII at (b - 32) - and returned an EMPTY STRING for anything else.
+// That silently dropped every byte outside 32..126, so `"\x1b[2J"` compiled
+// cleanly and produced `[2J`: the ESC vanished, along with DEL and every byte
+// from 0x80 up. The most common use of a hex escape - an ANSI terminal sequence -
+// was the case that did not work.
+//
+// `chr` is a builtin and is correct across 1..255, so the tables were doing by
+// hand, badly, what the runtime already did. Byte 0 still yields an empty string:
+// a Torvik `str` is NUL-terminated and cannot carry an embedded NUL.
 df chr_str(b: i64) -> str {
-    fixed ref: str = "\0\a\b\t\n\v\f\r";
-    // ref decodes (via THIS lexer) to the 8 control bytes 0,7,8,9,10,11,12,13 in order.
-    check b == 0  { return substr(ref, 0, 1); }
-    check b == 7  { return substr(ref, 1, 2); }
-    check b == 8  { return substr(ref, 2, 3); }
-    check b == 9  { return substr(ref, 3, 4); }
-    check b == 10 { return substr(ref, 4, 5); }
-    check b == 11 { return substr(ref, 5, 6); }
-    check b == 12 { return substr(ref, 6, 7); }
-    check b == 13 { return substr(ref, 7, 8); }
-    // Printable ASCII: index into a constant table at position (b - 32)
-    fixed printable: str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-    check b >= 32 && b <= 126 { return substr(printable, b - 32, b - 31); }
-    return "";
+    return chr(b);
 }
 
 // ─── Numeric literal scanning (v1.5.0) ──────────────────────────────────────

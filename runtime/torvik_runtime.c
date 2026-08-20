@@ -529,8 +529,14 @@ int64_t torvik_readint(const char *prompt) {
         char *end;
         errno = 0;
         long long v = strtoll(s, &end, 10);
+        /* v1.5.3: `end` points INTO `s`, so the validity test has to happen
+           BEFORE the string is released. Reading *end after the release is a
+           use-after-free - it usually appeared to work, because the freed block
+           still held the old bytes, which is exactly what makes this class of bug
+           survive testing. */
+        int ok = (*end == '\0' && errno == 0);
         torvik_str_release(s);   /* B1: s is headered now */
-        if (*end == '\0' && errno == 0) return (int64_t)v;
+        if (ok) return (int64_t)v;
         fputs("Invalid integer, please try again: ", stdout);
         fflush(stdout);
     }
@@ -543,8 +549,9 @@ double torvik_readfloat(const char *prompt) {
         char *end;
         errno = 0;
         double v = strtod(s, &end);
+        int ok = (*end == '\0' && errno == 0);
         torvik_str_release(s);   /* B1: s is headered now */
-        if (*end == '\0' && errno == 0) return v;
+        if (ok) return v;
         fputs("Invalid number, please try again: ", stdout);
         fflush(stdout);
     }

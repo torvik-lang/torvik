@@ -17,6 +17,33 @@ The full schedule, including the Active and Maintenance boundaries, is in
 
 ## Advisories
 
+### TV-2026-002 — command injection via `torvc run` arguments (fixed in 1.5.3)
+
+**Severity:** high. **Affected:** all 1.x up to and including 1.5.2.
+**Fixed in:** torvc 1.5.3.
+
+Arguments forwarded to a program under `torvc run` were placed into a command line
+handed to a shell. Each argument was double-quoted, which prevents word-splitting
+but **not command substitution** — `$(...)` and backticks expand inside double
+quotes — so an argument containing shell syntax could execute arbitrary commands
+with the privileges of the user running `torvc`.
+
+    torvc run prog.tv '$(rm -rf ~/data)'
+
+This matters wherever the arguments are not typed by the person running the
+command: a CI job, a wrapper script, a task runner, anything passing a filename or
+a field it read from data.
+
+**Fix.** An argument containing shell syntax is now refused with a clear message
+rather than quoted and hoped for. Quoting was never sufficient here, which is why
+the argument is rejected instead. To pass such an argument, compile with `-o` and
+run the binary directly — no shell is involved on that path.
+
+This is the same class as TV-2026-001 and the sixth issue found in this family
+during a review of every place the compiler builds a command line.
+
+**Credit:** found during internal review; no reports of exploitation.
+
 ### TV-2026-001 — command injection via build configuration (fixed in 1.5.2)
 
 **Severity: critical. Update promptly.**

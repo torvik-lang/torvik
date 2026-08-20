@@ -1,0 +1,16 @@
+// v1.5.3 (#17): an integer assigned to an f64 from a VARIABLE.
+//
+// The declaration check compares the annotation against the RHS's SSA class, and
+// a value read from a variable arrives as the uniform "ptr" - so this passed every
+// check and stored the integer's BITS into the double. `set n: i64 = 5; fixed f:
+// f64 = n;` printed 2.47033e-323.
+//
+// The same assignment from a literal or a call was already caught cleanly, which
+// is why only the variable form got through. When the RHS is a bare variable its
+// declared type is known, and that is what the check now uses.
+
+df main() -> void {
+    set n: i64 = 5;
+    fixed f: f64 = n;
+    echo!(f);
+}

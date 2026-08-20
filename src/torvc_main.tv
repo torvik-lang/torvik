@@ -5,6 +5,27 @@ apply torvik_parser;
 apply torvik_codegen;
 apply diag;
 
+// v1.5.3: an argument forwarded to a program under `torvc run` is refused when it
+// contains shell syntax.
+//
+// The command line is handed to a shell, and double-quoting an argument stops
+// word-splitting but NOT command substitution - "$(...)" and backticks still
+// expand inside quotes. `torvc run` is reachable from scripts and CI where the
+// arguments come from data rather than from someone typing, so this is a real
+// trust boundary. Refusing is the same fix the --arch and --link-lib
+// vulnerabilities needed.
+df run_arg_ok(a: str) -> i64 {
+    set i: i64 = 0;
+    whilst i < len(a) {
+        fixed c: i64 = byte_at(a, i);
+        check c == 36 || c == 96 || c == 34 || c == 92 { return 0; }
+        check c == 59 || c == 124 || c == 38 { return 0; }
+        check c == 60 || c == 62 || c == 10 || c == 13 { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
 df is_version_arg(c: str) -> i64 {
     check c == "version" { return 1; }
     check c == "--version" { return 1; }
@@ -950,6 +971,14 @@ df run_file(script: str, prog_argv: list<str>, verbose: i64) -> void {
     set cmd: str = str_concat("\"", str_concat(binpath, "\""));
     set k: i64 = 0;
     whilst k < len(prog_argv) {
+        check run_arg_ok(prog_argv[k]) == 0 {
+            echo!(fmt("torvc: the argument '{}' cannot be passed to a program under `torvc run`.", prog_argv[k]));
+            echo!("  It contains shell syntax, and the argument is handed to a shell to start");
+            echo!("  the program. Quoting does not make this safe - command substitution still");
+            echo!("  expands inside quotes - so it is refused. Compile the program with -o and");
+            echo!("  run it directly if you need to pass an argument like this.");
+            exit(1);
+        }
         cmd = str_concat(cmd, str_concat(" \"", str_concat(prog_argv[k], "\"")));
         k += 1;
     }
