@@ -1,0 +1,37 @@
+// v1.5.3: the reported issues that could be fixed on the 1.x line.
+//
+// #18 — `(x >> n) & mask` produced an internal compiler error. A parenthesized
+// expression in LEAD position was always run through coerce_i64, which emits
+// `ptrtoint` and needs a pointer; a folded chain comes back as a real i64, so the
+// generated IR did not typecheck. `255 & (x >> 4)` and `(x >> 4)` alone both
+// worked, because only the lead path went through that coercion.
+//
+// #19 — `unwrap` on a `result` of any integer width except i64 fell through to
+// the STRING path, so `fixed v: u8 = unwrap(r);` reported "can't assign a value
+// of type str".
+//
+// #17 is a negative case (see neg/75) - an integer assigned to an f64 from a
+// variable used to store the integer's bits and print 2.47033e-323.
+
+df get_u8() -> result<u8> { return ok(200); }
+df get_i32() -> result<i32> { return ok(0 - 5); }
+
+df main() -> void {
+    fixed x: i64 = 1024;
+    // Every shape that failed, and two that did not, so a fix that breaks the
+    // working ones is caught too.
+    echo!(fmt("{} {} {} {} {}",
+              (x >> 4) & 255,
+              (x >> 4) + 1,
+              (x & 255) >> 2,
+              (x + 1) & 255,
+              255 & (x >> 4)));
+
+    // Bound to a variable first: the unwrap path reads the result's declared type
+    // from the variable, so unwrapping a call directly still has no type to read.
+    fixed ru: result<u8> = get_u8();
+    fixed ri: result<i32> = get_i32();
+    fixed a: u8 = unwrap(ru);
+    fixed b: i32 = unwrap(ri);
+    echo!(fmt("unwrap widths: {} {}", a, b));
+}
