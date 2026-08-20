@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.5.3] — 2026-08
+
+### Security
+
+- **Command injection through `torvc run` arguments** (TV-2026-002). An argument
+  containing shell syntax could execute arbitrary commands, because the argument
+  was handed to a shell and double-quoting does not stop command substitution.
+  Such arguments are now refused. See [SECURITY.md](SECURITY.md).
+
+### Fixed
+
+- **Hex escapes dropped bytes outside printable ASCII.** `"\x1b[2J"` compiled
+  cleanly and produced `[2J` — the escape character was silently discarded, along
+  with DEL and every byte from `0x80` up. Any byte written `\x00`–`\xFF` now
+  decodes correctly.
+- **`list<f64>` could not be updated.** `xs[0] = 9.0` was rejected by the backend.
+  Reading worked, so a list of floats could be built and read but never modified.
+- **`fmt` printed a memory address for `i128` and `u128`.** `echo` was correct;
+  `fmt` handed the heap box to the integer stringifier.
+- **`(x >> n) & mask` failed with an internal compiler error** (#18). A
+  parenthesized expression in left-operand position was always converted as
+  though it were a pointer, but a folded arithmetic chain is a real integer.
+  Affected any parenthesized arithmetic in that position, not only shifts.
+- **`unwrap` on a `result` of any integer width except `i64`** (#19). The code
+  tested for `i64` exactly, so `u8`, `i8`, `i16`, `i32`, `u16`, `u32` and `u64`
+  fell through to the string path and reported a type mismatch.
+- **An integer assigned to an `f64` produced a meaningless value** (#17).
+  `set n: i64 = 5; fixed f: f64 = n;` stored the integer's bits and printed
+  `2.47033e-323`. Now a clean type error.
+- **`readint` and `readfloat` read freed memory** (#22) when rejecting bad input:
+  the validity check dereferenced a pointer into the string after releasing it.
+- **`fs_mkdir`, `cwd` and `list_pop` denied their own existence.** Called with the
+  wrong number of arguments they reported `call to undefined function` about
+  builtins that exist. They now report the expected form.
+
+### Added
+
+- **`narrowing` warning.** 1.x does not enforce a declared integer width: a value
+  narrowed from a call is truncated with no diagnostic. The conversion still
+  behaves exactly as before — this only tells you where it happens. Silence with
+  `!@ALLOW[narrowing];` or `--no-warn`. Torvik 2.0 requires an explicit cast at
+  every site this flags, so clearing these warnings is also the migration.
+
+### Documentation
+
+- The website documented `appendfile` and `try_appendfile`, which never existed;
+  the real names are `appendline` and `try_appendline`.
+- Install requirements now list `lld` and `llvm` alongside `clang` — separate
+  packages on most distributions, and needed for `--bare` builds.
+
 ## [1.5.2] — 2026-08
 
 ### Security
