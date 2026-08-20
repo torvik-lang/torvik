@@ -1,10 +1,10 @@
 # Torvik Roadmap
 
 
-## v1.5.2 — "The Forge" — current public release
+## v1.5.3 — "The Forge" — current public release
 
-*(v1.5.1 is a patch on v1.5.0: three freestanding link failures, no feature changes.
-See CHANGELOG.md.)*
+*(v1.5.3 and v1.5.2 are patches on v1.5.0, and v1.5.1 before them: security fixes and
+correctness bugs, no feature changes. See CHANGELOG.md.)*
 
 Systems and OS development. Torvik can now produce a freestanding image that boots on
 bare hardware. Everything here is opt-in and `unsafe`-gated — the safe surface is
