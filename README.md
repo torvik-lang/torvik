@@ -1,10 +1,3 @@
-> [!WARNING]
-> **Torvik 1.5.2 fixes a critical security issue — please update.** Earlier 1.5.x
-> versions could execute arbitrary commands while *building* a project, triggered
-> by values in a `torvik.rune` manifest. Cloning a repository and running
-> `rune build` was enough. Update `rune` to 1.5.1 as well; both tools are involved.
-> Details: [SECURITY.md](SECURITY.md#tv-2026-001--command-injection-via-build-configuration-fixed-in-152).
-
 <div align="center">
 
 <img src="assets/torvik-mark.png" alt="Torvik" width="128" height="128">
@@ -13,7 +6,7 @@
 
 **A self-hosting, compiled, general-purpose programming language**
 
-[![Version](https://img.shields.io/badge/version-1.5.2-blue)](https://github.com/torvik-lang/torvik/releases)
+[![Version](https://img.shields.io/badge/version-1.5.3-blue)](https://github.com/torvik-lang/torvik/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Self-Hosting](https://img.shields.io/badge/self--hosting-yes-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)]()
@@ -89,8 +82,8 @@ curl -fsSL https://raw.githubusercontent.com/torvik-lang/torvik/main/linux/insta
 iwr -useb https://raw.githubusercontent.com/torvik-lang/torvik/main/windows/install.ps1 | iex
 ```
 
-You also need `clang` installed — Torvik uses it as its linker and back-end:
-`sudo eopkg install clang` on Solus, `sudo apt install clang` on Debian/Ubuntu.
+You also need `clang`, `llvm` and `lld` installed — Torvik uses it as its linker and back-end:
+`sudo eopkg install clang` on Solus, `sudo apt install clang` on Debian/Ubuntu.  
 On Windows you need a clang that bundles the MinGW-w64
 headers/libraries — [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases) (simplest),
 MSYS2 (`pacman -S mingw-w64-clang-x86_64-toolchain`), or [WinLibs](https://winlibs.com) — on
