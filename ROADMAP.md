@@ -1,9 +1,9 @@
 # Torvik Roadmap
 
 
-## v1.5.3 — "The Forge" — current public release
+## v1.5.4 — "The Forge" — current public release
 
-*(v1.5.3 and v1.5.2 are patches on v1.5.0, and v1.5.1 before them: security fixes and
+*(v1.5.4, v1.5.3, v1.5.2 and v1.5.1 are patches on v1.5.0, before them: security fixes and
 correctness bugs, no feature changes. See CHANGELOG.md.)*
 
 Systems and OS development. Torvik can now produce a freestanding image that boots on
