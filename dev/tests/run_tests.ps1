@@ -43,6 +43,26 @@ function Read-Norm([string]$path) {
 
 # ---------- positive cases ----------
 Note ""
+# The corpus has to be here before anything else is worth trying. Without this
+# check, a missing cases directory produced a wall of Get-ChildItem exceptions -
+# one per loop - and then a SUMMARY line, which reads as though the suite ran.
+# It is the same shape as a skip reported as a pass: the run looks like a result
+# and is not.
+foreach ($needed in @("pos", "neg")) {
+    $dir = Join-Path (Join-Path $Here "cases") $needed
+    if (-not (Test-Path $dir)) {
+        Write-Host ""
+        Write-Host "error: the test corpus is missing." -ForegroundColor Red
+        Write-Host "       expected: $dir"
+        Write-Host ""
+        Write-Host "       run_tests.ps1 needs the whole dev/tests directory, not just the"
+        Write-Host "       script. If you copied the script on its own, unpack the full"
+        Write-Host "       release folder instead."
+        Write-Host ""
+        exit 1
+    }
+}
+
 Note "== POSITIVE CASES =="
 Get-ChildItem (Join-Path $Here "cases\pos\*.tv") | ForEach-Object {
     $base = $_.BaseName
@@ -59,7 +79,13 @@ Get-ChildItem (Join-Path $Here "cases\pos\*.tv") | ForEach-Object {
         ForEach-Object { Copy-Item $_.FullName $srcDir }
 
     Push-Location $d
-    & $TorvcExe "$base.tv" -o prog -q *> compile.log
+    # Optional NAME.flags: extra torvc flags for this case, one line.
+    $flagsFile = Join-Path $Here (Join-Path "cases" (Join-Path "pos" ($base + ".flags")))
+    $extra = @()
+    if (Test-Path $flagsFile) {
+        $extra = ((Get-Content $flagsFile -Raw).Trim() -split '\s+')
+    }
+    & $TorvcExe "$base.tv" -o prog -q @extra *> compile.log
     $crc = $LASTEXITCODE
     if ($crc -ne 0) {
         Pop-Location
@@ -98,7 +124,16 @@ Get-ChildItem (Join-Path $Here "cases\neg\*.tv") | ForEach-Object {
     New-Item -ItemType Directory -Path $d | Out-Null
     Copy-Item $_.FullName $d
     Push-Location $d
-    & $TorvcExe "$base.tv" -o prog -q *> compile.log
+    # Optional NAME.flags - needed when what is refused is a FLAG rather than the
+    # source. A bad OUTPUT PATH has no representation inside a .tv file, so the
+    # case supplies it here. Keep in step with run_tests.sh.
+    $negFlagsFile = Join-Path $Here (Join-Path "cases" (Join-Path "neg" ($base + ".flags")))
+    if (Test-Path $negFlagsFile) {
+        $negArgs = ((Get-Content $negFlagsFile -Raw).Trim() -split '\s+', 2)
+        & $TorvcExe "$base.tv" -q @negArgs *> compile.log
+    } else {
+        & $TorvcExe "$base.tv" -o prog -q *> compile.log
+    }
     $code = $LASTEXITCODE
     Pop-Location
     if ($code -eq 0) {
@@ -266,6 +301,36 @@ Flag-Case2 "warns/apply_line_numbers" {
 Pop-Location
 
 # ---------- summary ----------
+# v1.5.4: the security gate and the fuzzer, wired here as well as in
+# run_tests.sh. A gate that runs on one platform only is a gate that drifts.
+$scriptDir = $Here
+foreach ($g in @(
+    @{ name = "security/cmdline_validated"; file = "check_cmdline.ps1"; args = @() },
+    @{ name = "fuzz/crash_freedom";         file = "fuzz.ps1";          args = @($TorvcExe, 150) }
+)) {
+    $gp = Join-Path $scriptDir $g.file
+    if (Test-Path $gp) {
+        # Whichever PowerShell is actually running this. Hard-coding "powershell"
+        # means Windows PowerShell 5.1, which is not present on PowerShell 7 for
+        # Linux or macOS - so the gates failed there with "term not recognized"
+        # while the compiler itself was fine.
+        $psExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+        $glog = Join-Path $Work "$($g.file).log"
+        & $psExe -ExecutionPolicy Bypass -File $gp @($g.args) *> $glog
+        if ($LASTEXITCODE -eq 0) {
+            $script:Pass++; Note "ok    $($g.name)"
+        } else {
+            $script:Fail++; $script:Failed += $g.name
+            Note "FAIL  $($g.name)"
+            # Guarded: if the gate could not start there is no log to read, and an
+            # unguarded Get-Content buries the real error under its own.
+            if (Test-Path $glog) {
+                Get-Content $glog -TotalCount 12 | ForEach-Object { Note "      $_" }
+            }
+        }
+    }
+}
+
 Note ""
 Note "== SUMMARY: $($script:PASS) passed, $($script:FAIL) failed =="
 if ($script:FAILED.Count -gt 0) { Note ("failed: " + ($script:FAILED -join " ")) }

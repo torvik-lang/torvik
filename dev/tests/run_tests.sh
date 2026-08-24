@@ -78,9 +78,20 @@ for tv in "$HERE"/cases/neg/*.tv; do
     base="$(basename "$tv" .tv)"
     errf="$HERE/cases/neg/$base.err"
     d="$WORK/neg_$base"; mkdir -p "$d"; cp "$tv" "$d/"
+    # Optional NAME.flags - needed when what is refused is a FLAG rather than the
+    # source. A bad output path has no representation inside a .tv file.
+    nflags_f="$HERE/cases/neg/$base.flags"
+    nflags=""
+    [ -f "$nflags_f" ] && nflags="$(cat "$nflags_f")"
     (
       cd "$d" || exit 9
-      "$TORVC" "$base.tv" -o prog -q > compile.log 2>&1
+      if [ -n "$nflags" ]; then
+          # Unquoted on purpose: the flags file supplies its own words, and the
+          # point of these cases is to pass shell syntax through as one argument.
+          "$TORVC" "$base.tv" -q $nflags > compile.log 2>&1
+      else
+          "$TORVC" "$base.tv" -o prog -q > compile.log 2>&1
+      fi
       echo "$?" > compile.code
     )
     code="$(cat "$d/compile.code")"
@@ -225,6 +236,24 @@ if [ $? = 1 ] && grep -q "lineoff.tv:3:" w9.log; then
 else FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES warns/apply_line_numbers"; note "FAIL  warns/apply_line_numbers"; fi
 
 # ---------- summary ----------
+# v1.5.4: source-level gate against the command-injection family, and a fuzzer
+# asserting the compiler never loses control on user input. See the scripts.
+if sh "$HERE/check_cmdline.sh" > "$WORK/cmdline.log" 2>&1; then
+    PASS=$((PASS+1)); note "ok    security/cmdline_validated"
+else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES security/cmdline_validated"
+    note "FAIL  security/cmdline_validated"
+    head -12 "$WORK/cmdline.log" | while IFS= read -r l; do note "      $l"; done
+fi
+
+if sh "$HERE/fuzz.sh" "$TORVC" 150 > "$WORK/fuzz.log" 2>&1; then
+    PASS=$((PASS+1)); note "ok    fuzz/crash_freedom"
+else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES fuzz/crash_freedom"
+    note "FAIL  fuzz/crash_freedom"
+    head -12 "$WORK/fuzz.log" | while IFS= read -r l; do note "      $l"; done
+fi
+
 note ""
 note "== SUMMARY: $PASS passed, $FAIL failed =="
 [ -n "$FAILED_NAMES" ] && note "failed:$FAILED_NAMES"

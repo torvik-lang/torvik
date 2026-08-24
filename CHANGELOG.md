@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.5.4] — 2026-08
+
+### Security
+
+- **Shell injection via paths** (TV-2026-003). Every path placed on a command
+  line went through a helper that wrapped it in double quotes — which do not stop
+  command substitution, so `$(...)` and backticks expanded. Confirmed through the
+  `-o` output path and through `HOME`, which reaches the same helper via the run
+  directory. The helper now refuses shell syntax rather than quoting it, covering
+  all seventeen call sites at once.
+
+  This is the seventh and last of a family of injection issues; see
+  [SECURITY.md](SECURITY.md) for what changed beyond the fix, and why anyone
+  writing wrappers around `torvc` should check their own.
+
 ## [1.5.3] — 2026-08
 
 ### Security

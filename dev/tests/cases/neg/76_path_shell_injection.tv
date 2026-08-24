@@ -1,0 +1,14 @@
+// v1.5.4 (TV-2026-003): shell syntax in a path is refused, not quoted.
+//
+// There is no bad code in this file - the vulnerability was in the OUTPUT PATH,
+// so the suite drives it through a flags file. The case exists so the guard
+// cannot be removed without a failure.
+//
+// The quoting helper wrapped paths in DOUBLE quotes, and `$(...)` and backticks
+// expand inside double quotes - so quoting never made a path safe, only made it
+// look safe. Confirmed through `-o` and through HOME, which reaches the same
+// helper via the run directory.
+
+df main() -> void {
+    echo!("this should never build");
+}
