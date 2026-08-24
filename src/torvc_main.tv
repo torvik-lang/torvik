@@ -18,9 +18,13 @@ df run_arg_ok(a: str) -> i64 {
     set i: i64 = 0;
     whilst i < len(a) {
         fixed c: i64 = byte_at(a, i);
-        check c == 36 || c == 96 || c == 34 || c == 92 { return 0; }
+        check c == 36 || c == 96 || c == 34 { return 0; }
         check c == 59 || c == 124 || c == 38 { return 0; }
         check c == 60 || c == 62 || c == 10 || c == 13 { return 0; }
+        // Backslash is allowed except at the end, where it would escape the
+        // closing quote. Refusing it outright would reject every Windows path
+        // passed as a program argument - `torvc p.tv run C:\data\in.txt`.
+        check c == 92 && i == len(a) - 1 { return 0; }
         i += 1;
     }
     return 1;
@@ -621,15 +625,67 @@ set g_build_arch: str = "x86_64-unknown-none-elf";
 // that static analysis (rightly) flags. Double quotes work for both POSIX sh and
 // cmd.exe. Any embedded double quote is dropped rather than escaped: no legitimate
 // build path contains one, and dropping it cannot create a new argument boundary.
+// Quote a path for a command line - and REFUSE it if quoting would not be enough.
+//
+// v1.5.4 (TV-2026-003). This stripped double quotes and wrapped the result in
+// double quotes, which is not safe and never was: `$(...)` and backticks EXPAND
+// INSIDE DOUBLE QUOTES. Two vectors were confirmed - an output path given as
+// `-o '$(cmd)'`, and a HOME containing the same, which reaches here through the
+// run directory - and with seventeen call sites the honest assumption is that
+// any of them could be reached with hostile input given the right wrapper.
+//
+// The check lives HERE, in the one function every path goes through, rather than
+// at each site. Fixing call sites one at a time is how a family of seven
+// injections accumulated: each fix was correct, and the next site was still open.
+//
+// Refusing rather than escaping is the same decision taken for extern library
+// names, --link-lib, --target and `torvc run` arguments. An escaping scheme has
+// to be right on two shells and stays right only until one of them changes; a
+// path containing shell syntax is vanishingly rare and always worth a second look.
 df shq(pth: str) -> str {
-    set clean: str = "";
+    // BACKSLASH IS ALLOWED, and this is the interesting part of the rule.
+    //
+    // The first version of this check rejected it along with the other shell
+    // metacharacters, and that broke Windows outright: every path there contains
+    // backslashes, so gen2 of the fixpoint could not compile anything. It passed
+    // on Linux, where paths have none. A guard that refuses the platform's own
+    // path separator is not a guard, it is an outage.
+    //
+    // Backslash is not dangerous inside double quotes in the middle of a path. In
+    // POSIX sh it escapes only $ ` " \ and newline - and $ ` " are already
+    // refused here, so an escaped one cannot appear. cmd.exe does not treat
+    // backslash as an escape at all.
+    //
+    // The one real hazard is a path ENDING in a backslash: the closing quote we
+    // add would be escaped by it, breaking out of the quoting entirely. That case
+    // is refused below, and it is the only backslash case that needs to be.
     set i: i64 = 0;
     whilst i < len(pth) {
         fixed c: i64 = byte_at(pth, i);
-        check c != 34 { clean = str_concat(clean, substr(pth, i, i + 1)); }
+        set bad: i64 = 0;
+        check c == 36 || c == 96 || c == 34 { bad = 1; }
+        check c == 59 || c == 124 || c == 38 { bad = 1; }
+        check c == 60 || c == 62 || c == 10 || c == 13 { bad = 1; }
+        // A trailing backslash would escape the closing quote. Backslashes
+        // ELSEWHERE are allowed: they are the Windows path separator, and every
+        // path on that platform has several. Safe, because inside POSIX double
+        // quotes a backslash is only special before $ ` " \ or a newline, and all
+        // of those are refused above - so it can never reach anything to escape.
+        check c == 92 && i == len(pth) - 1 { bad = 1; }
+        // For cmd.exe rather than sh: %VAR% expands there and ^ escapes. A path
+        // needing either is as suspicious as one needing $ on POSIX.
+        check c == 37 || c == 94 { bad = 1; }
+        check bad == 1 {
+            echo!(fmt("torvc: the path '{}' cannot be used - it contains shell syntax.", pth));
+            echo!("  Paths are placed on the command lines that run clang and the linker, and");
+            echo!("  quoting does not make them safe: command substitution expands inside");
+            echo!("  quotes. Characters $ ` \" \\ ; | & < > and newlines are refused.");
+            echo!("  If this came from HOME or another environment variable, check its value.");
+            exit(1);
+        }
         i += 1;
     }
-    return str_concat(str_concat("\"", clean), "\"");
+    return str_concat(str_concat("\"", pth), "\"");
 }
 
 // Silence a probe command on either shell. `>/dev/null 2>&1` is meaningless to
