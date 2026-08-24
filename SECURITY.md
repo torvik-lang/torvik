@@ -17,6 +17,56 @@ The full schedule, including the Active and Maintenance boundaries, is in
 
 ## Advisories
 
+### TV-2026-003 — shell injection via paths (fixed in 1.5.4)
+
+**Severity:** high. **Affected:** all 1.x up to and including 1.5.3.
+**Fixed in:** torvc 1.5.4.
+
+Every path the compiler puts on a command line — the output path from `-o`, the
+run directory derived from `HOME`, temporary objects, link scripts — went through
+one quoting helper that wrapped it in **double quotes**. Double quotes do not stop
+command substitution: `$(...)` and backticks expand inside them. So a path
+containing shell syntax executed with the privileges of whoever ran `torvc`.
+
+Two vectors were confirmed:
+
+    torvc x.tv -o '$(command)'
+    HOME='/tmp/x$(command)' torvc x.tv run
+
+The second matters more than it looks. Any context where `HOME` comes from
+configuration rather than from a login — CI runners, container entrypoints,
+service accounts, wrapper scripts — was exposed without the caller passing
+anything unusual.
+
+**Fix.** The quoting helper now REFUSES a path containing shell syntax instead of
+quoting it. The check lives in that one function, so all seventeen call sites are
+covered at once.
+
+---
+
+### A note on this family of issues
+
+TV-2026-003 is the seventh command-injection issue found in Torvik, and the last
+of a family. They shared one cause: the compiler builds command lines for `clang`
+and the linker, and values reached those command lines without being checked.
+
+Each earlier fix was correct and incomplete — it closed the site that had been
+found and left the others open. Manifest fields were fixed in 1.5.2, `torvc run`
+arguments in 1.5.3, and this release fixes the path helper that all of them
+ultimately passed through.
+
+**What changed beyond the fix.** The rule now is that no path or user-supplied
+string reaches a command line without passing a validator, and the validators
+refuse rather than escape. Escaping has to be correct on two different shells and
+stays correct only until either changes; refusing does not.
+
+**If you write tooling around torvc**, this is worth a look at your own wrappers.
+A script that builds a `torvc` command line from a filename, a branch name, or any
+value it did not choose has the same problem, and updating Torvik does not fix
+your script.
+
+**Credit:** found during internal review. No reports of exploitation.
+
 ### TV-2026-002 — command injection via `torvc run` arguments (fixed in 1.5.3)
 
 **Severity:** high. **Affected:** all 1.x up to and including 1.5.2.
